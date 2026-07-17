@@ -171,10 +171,20 @@ private fun parseController(value: JSONObject?): ControllerState? {
     value ?: return null
     val profile = parseProfile(value.optJSONObject("profile"))
     val agents = value.optJSONArray("agents").objects().mapNotNull { agent ->
+        val id = agent.safeString("id")?.takeIf(AgentIdPattern::matches) ?: return@mapNotNull null
         val label = agent.safeString("label")?.take(64) ?: return@mapNotNull null
-        AgentStatus(label, TaskState.fromWire(agent.safeString("state").orEmpty()))
+        AgentStatus(
+            id = id,
+            label = label,
+            state = TaskState.fromWire(agent.safeString("state").orEmpty()),
+            focused = agent.optBoolean("focused", false),
+        )
     }.take(6)
     val focused = value.optInt("focusedAgentIndex", -1).takeIf { it in agents.indices } ?: -1
+    val focusedAgentId = value.safeString("focusedAgentId")
+        ?.takeIf(AgentIdPattern::matches)
+        ?.takeIf { id -> agents.any { it.id == id } }
+        ?: agents.singleOrNull { it.focused }?.id
     return ControllerState(
         profile = profile,
         gestures = parseGestures(value.optJSONArray("gestures")),
@@ -184,6 +194,8 @@ private fun parseController(value: JSONObject?): ControllerState? {
         taskState = TaskState.fromWire(value.safeString("taskState").orEmpty()),
         agents = agents,
         focusedAgentIndex = focused,
+        focusedAgentId = focusedAgentId,
+        voice = parseVoice(value.optJSONObject("voice")),
         mode = parseSelector(value.optJSONObject("mode")),
         reasoning = parseSelector(value.optJSONObject("reasoning")),
     )
@@ -282,6 +294,13 @@ private fun parseSelector(value: JSONObject?): SelectorStatus = SelectorStatus(
     label = value?.safeString("label")?.take(64).orEmpty(),
 )
 
+private fun parseVoice(value: JSONObject?): VoiceStatus? = value?.let {
+    VoiceStatus(
+        available = it.optBoolean("available", false),
+        active = it.optBoolean("active", false),
+    )
+}
+
 private fun JSONArray?.objects(): List<JSONObject> {
     if (this == null) return emptyList()
     return buildList {
@@ -298,7 +317,7 @@ internal fun PocketCommand.toJson(): JSONObject = when (this) {
         .put("inputId", inputId)
         .put("gesture", gesture.wireValue)
     is PocketCommand.SelectLayer -> JSONObject().put("kind", "select_layer").put("layerId", layerId)
-    is PocketCommand.FocusAgent -> JSONObject().put("kind", "focus_agent").put("index", index)
+    is PocketCommand.FocusAgent -> JSONObject().put("kind", "focus_agent").put("agentId", agentId)
     is PocketCommand.UpdateBinding -> JSONObject()
         .put("kind", "update_binding")
         .put("layerId", layerId)
@@ -317,6 +336,8 @@ internal fun PocketCommand.toJson(): JSONObject = when (this) {
     PocketCommand.ResetProfile -> JSONObject().put("kind", "reset_profile")
     PocketCommand.Attach -> JSONObject().put("kind", "attach")
     PocketCommand.Voice -> JSONObject().put("kind", "voice")
+    PocketCommand.VoiceStart -> JSONObject().put("kind", "voice_start")
+    PocketCommand.VoiceStop -> JSONObject().put("kind", "voice_stop")
     PocketCommand.Stop -> JSONObject().put("kind", "stop")
     PocketCommand.NewTask -> JSONObject().put("kind", "new_task")
     PocketCommand.Approve -> JSONObject().put("kind", "approve")

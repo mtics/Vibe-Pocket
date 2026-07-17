@@ -41,6 +41,10 @@ export class MacCodexDesktopController {
     return this.#invoke("control", [control]);
   }
 
+  async setVoice(active) {
+    return this.#invoke(active ? "voice-start" : "voice-stop");
+  }
+
   async navigate(direction) {
     return this.#invoke("navigate", [direction]);
   }
@@ -57,8 +61,8 @@ export class MacCodexDesktopController {
     return this.#invoke("clear-input");
   }
 
-  async focusAgent(index) {
-    return this.#invoke("focus-agent", [String(index)]);
+  async focusAgent(agentId) {
+    return this.#invoke("focus-agent", [agentId]);
   }
 
   async workflow(prompt) {

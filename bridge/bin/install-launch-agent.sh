@@ -86,3 +86,5 @@ launchctl kickstart -k "gui/$UID/$LABEL"
 
 print "Vibe Pocket LaunchAgent installed on 127.0.0.1:$PORT."
 print "Pairing token is stored in $CONFIG_FILE with mode 0600."
+print "Request Accessibility permission with:"
+printf '  %q request-accessibility\n' "$HELPER_PATH"

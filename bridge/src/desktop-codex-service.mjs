@@ -22,7 +22,7 @@ import { PocketError } from "./pocket-controller-service.mjs";
 
 const DESKTOP_SESSION_ID = "desktop-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
-const TASK_STATES = new Set(["idle", "executing", "waiting", "complete", "error"]);
+const TASK_STATES = new Set(["idle", "unread", "thinking", "executing", "waiting", "complete", "error"]);
 
 export class DesktopCodexService extends EventEmitter {
   #workspaces;
@@ -39,6 +39,7 @@ export class DesktopCodexService extends EventEmitter {
   #commandQueue = Promise.resolve();
   #pollIntervalMs;
   #pollTimer = null;
+  #pollRefresh = null;
 
   constructor({
     workspaces,
@@ -76,7 +77,7 @@ export class DesktopCodexService extends EventEmitter {
     this.#touch("snapshot_changed");
     if (this.#pollIntervalMs > 0) {
       this.#pollTimer = setInterval(() => {
-        void this.#refreshAvailability({ publishIfChanged: true });
+        this.#schedulePollRefresh();
       }, this.#pollIntervalMs);
       this.#pollTimer.unref?.();
     }
@@ -85,6 +86,8 @@ export class DesktopCodexService extends EventEmitter {
   async dispose() {
     if (this.#pollTimer) clearInterval(this.#pollTimer);
     this.#pollTimer = null;
+    await this.#pollRefresh?.catch(() => {});
+    this.#pollRefresh = null;
   }
 
   async snapshot() {
@@ -138,6 +141,21 @@ export class DesktopCodexService extends EventEmitter {
     }
 
     try {
+      if (command.kind === "voice_start" || command.kind === "voice_stop") {
+        requireCommandKeys(command, ["kind"]);
+        await this.#setVoice(command.kind === "voice_start");
+        return;
+      }
+
+      if (command.kind === "focus_agent" && Object.hasOwn(command, "agentId")) {
+        requireCommandKeys(command, ["kind", "agentId"]);
+        if (typeof command.agentId !== "string" || !/^agent-[a-f0-9]{24}$/.test(command.agentId)) {
+          throw new ControllerProfileValidationError("A stable Codex agent ID is required.");
+        }
+        await this.#focusAgentById(command.agentId);
+        return;
+      }
+
       if (command.kind === "binding") {
         requireCommandKeys(command, ["kind", "inputId"], ["gesture"]);
         validateInputId(command.inputId);
@@ -221,7 +239,7 @@ export class DesktopCodexService extends EventEmitter {
         await this.#perform(() => this.#desktop.attach(), "Attached to the visible ChatGPT Codex task.");
         return;
       case "voice":
-        await this.#press("voice", "Toggled Codex dictation on the M5.");
+        await this.#setVoice(!this.#controllerState.voice.active);
         return;
       case "stop":
         await this.#press("stop", "Pressed Stop in the visible ChatGPT Codex task.");
@@ -254,8 +272,8 @@ export class DesktopCodexService extends EventEmitter {
           return;
         }
         const nextIndex = (this.#controllerState.focusedAgentIndex + 1) % agents.length;
-        await this.#perform(() => this.#desktop.focusAgent(nextIndex), `Focused ${agents[nextIndex].label}.`);
-        this.#controllerState.focusedAgentIndex = nextIndex;
+        await this.#perform(() => this.#desktop.focusAgent(agents[nextIndex].id), `Focused ${agents[nextIndex].label}.`);
+        this.#markFocusedAgent(agents[nextIndex].id);
         return;
       }
       case "focus_agent": {
@@ -263,8 +281,8 @@ export class DesktopCodexService extends EventEmitter {
         if (!agent) {
           throw new PocketError(409, "agent_slot_unavailable", "That Codex agent slot is not currently available.");
         }
-        await this.#perform(() => this.#desktop.focusAgent(action.index), `Focused ${agent.label}.`);
-        this.#controllerState.focusedAgentIndex = action.index;
+        await this.#perform(() => this.#desktop.focusAgent(agent.id), `Focused ${agent.label}.`);
+        this.#markFocusedAgent(agent.id);
         return;
       }
       case "reasoning_depth":
@@ -300,6 +318,12 @@ export class DesktopCodexService extends EventEmitter {
     this.#recordAction(message);
   }
 
+  #schedulePollRefresh() {
+    if (this.#pollRefresh) return;
+    this.#pollRefresh = this.#refreshAvailability({ publishIfChanged: true })
+      .finally(() => { this.#pollRefresh = null; });
+  }
+
   async #refreshAvailability({ publishIfChanged = false } = {}) {
     const before = this.#stateFingerprint();
     try {
@@ -309,7 +333,7 @@ export class DesktopCodexService extends EventEmitter {
         message: result.message ?? null,
         controls: normalizeControls(result.controls),
       };
-      this.#controllerState = normalizeControllerState(result, this.#controllerState.focusedAgentIndex);
+      this.#controllerState = normalizeControllerState(result, this.#controllerState.focusedAgentId);
       this.#session.state = this.#controllerState.taskState === "error" ? "error" : "active";
       this.#session.canInterrupt = this.#status.controls.stop;
       this.#session.terminalTail = result.message ?? "Ready to control the visible ChatGPT Codex task.";
@@ -336,6 +360,32 @@ export class DesktopCodexService extends EventEmitter {
 
   async #press(control, fallbackMessage) {
     await this.#perform(() => this.#desktop.press(control), fallbackMessage);
+  }
+
+  async #setVoice(active) {
+    await this.#perform(
+      () => this.#desktop.setVoice(active),
+      active ? "Started Codex dictation on the M5." : "Stopped Codex dictation on the M5.",
+    );
+  }
+
+  async #focusAgentById(agentId) {
+    const index = this.#controllerState.agents.findIndex((agent) => agent.id === agentId);
+    if (index < 0) {
+      throw new PocketError(409, "agent_unavailable", "That Codex agent is no longer available.");
+    }
+    const agent = this.#controllerState.agents[index];
+    await this.#perform(() => this.#desktop.focusAgent(agent.id), `Focused ${agent.label}.`);
+    this.#markFocusedAgent(agent.id);
+  }
+
+  #markFocusedAgent(agentId) {
+    this.#controllerState.focusedAgentId = agentId;
+    this.#controllerState.focusedAgentIndex = this.#controllerState.agents.findIndex((agent) => agent.id === agentId);
+    this.#controllerState.agents = this.#controllerState.agents.map((agent) => ({
+      ...agent,
+      focused: agent.id === agentId,
+    }));
   }
 
   #recordAction(message) {
@@ -457,24 +507,45 @@ function emptyControllerState() {
     taskState: "idle",
     agents: [],
     focusedAgentIndex: -1,
+    focusedAgentId: null,
+    voice: { available: false, active: false },
     mode: { available: false, label: "" },
     reasoning: { available: false, label: "" },
   };
 }
 
-function normalizeControllerState(result, previousFocusedAgentIndex) {
+function normalizeControllerState(result, previousFocusedAgentId) {
   const agents = Array.isArray(result.agents)
     ? result.agents
-      .filter((agent) => agent && typeof agent.label === "string" && typeof agent.state === "string")
+      .filter((agent) => agent && typeof agent.id === "string" && /^agent-[a-f0-9]{24}$/.test(agent.id)
+        && typeof agent.label === "string" && typeof agent.state === "string")
       .slice(0, 6)
-      .map((agent) => ({ label: agent.label.slice(0, 64), state: TASK_STATES.has(agent.state) ? agent.state : "idle" }))
+      .map((agent) => ({
+        id: agent.id,
+        label: agent.label.slice(0, 64),
+        state: TASK_STATES.has(agent.state) ? agent.state : "idle",
+        focused: agent.focused === true,
+      }))
     : [];
+  const reportedFocused = agents.find((agent) => agent.focused)?.id ?? null;
+  const focusedAgentId = reportedFocused
+    ?? (agents.some((agent) => agent.id === previousFocusedAgentId) ? previousFocusedAgentId : null);
+  const agentsWithFocus = agents.map((agent) => ({ ...agent, focused: agent.id === focusedAgentId }));
   return {
     taskState: TASK_STATES.has(result.taskState) ? result.taskState : "idle",
-    agents,
-    focusedAgentIndex: previousFocusedAgentIndex < agents.length ? previousFocusedAgentIndex : -1,
+    agents: agentsWithFocus,
+    focusedAgentIndex: focusedAgentId ? agentsWithFocus.findIndex((agent) => agent.id === focusedAgentId) : -1,
+    focusedAgentId,
+    voice: normalizeVoice(result.voice),
     mode: normalizeSelector(result.mode),
     reasoning: normalizeSelector(result.reasoning),
+  };
+}
+
+function normalizeVoice(value) {
+  return {
+    available: value?.available === true,
+    active: value?.active === true,
   };
 }
 

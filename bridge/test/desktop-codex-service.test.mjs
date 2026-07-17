@@ -12,6 +12,11 @@ class FakeEvents {
 class FakeDesktop {
   calls = [];
   taskState = "waiting";
+  voice = { available: true, active: false };
+  agents = [
+    { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true },
+    { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false },
+  ];
 
   async status() {
     return {
@@ -31,7 +36,8 @@ class FakeDesktop {
         reasoning: true,
         workflow: true,
       },
-      agents: [{ label: "Turing", state: "executing" }],
+      agents: this.agents,
+      voice: this.voice,
       mode: { available: true, label: "Codex" },
       reasoning: { available: true, label: "High" },
     };
@@ -39,6 +45,10 @@ class FakeDesktop {
 
   async attach() { this.calls.push(["attach"]); }
   async press(control) { this.calls.push(["press", control]); }
+  async setVoice(active) {
+    this.calls.push(["setVoice", active]);
+    this.voice = { available: true, active };
+  }
   async navigate(direction) { this.calls.push(["navigate", direction]); }
   async cycleMode() { this.calls.push(["cycleMode"]); }
   async clearInput() { this.calls.push(["clearInput"]); }
@@ -83,7 +93,12 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.ok(snapshot.controller.actionCatalog.some(({ id }) => id === "workflow_debug"));
   assert.equal(snapshot.controller.activeLayerId, "layer-1");
   assert.equal(snapshot.controller.taskState, "waiting");
-  assert.deepEqual(snapshot.controller.agents, [{ label: "Turing", state: "executing" }]);
+  assert.deepEqual(snapshot.controller.agents, [
+    { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true },
+    { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false },
+  ]);
+  assert.equal(snapshot.controller.focusedAgentId, "agent-111111111111111111111111");
+  assert.deepEqual(snapshot.controller.voice, { available: true, active: false });
   assert.equal(snapshot.controller.mode.label, "Codex");
   assert.equal(snapshot.controller.reasoning.label, "High");
   assert.equal(snapshot.controls.reasoning, true);
@@ -114,13 +129,13 @@ test("routes default-layer keys, joystick, touch, and dial inputs", async () => 
   assert.deepEqual(desktop.calls.slice(0, 9), [
     ["press", "approve"],
     ["press", "reject"],
-    ["press", "voice"],
+    ["setVoice", true],
     ["press", "new-task"],
     ["press", "stop"],
     ["cycleMode"],
     ["clearInput"],
     ["navigate", "up"],
-    ["focusAgent", 0],
+    ["focusAgent", "agent-222222222222222222222222"],
   ]);
   assert.equal(desktop.calls[9][0], "workflow");
   assert.match(desktop.calls[9][1], /Review the current change/);
@@ -132,13 +147,25 @@ test("focuses one of the six explicit Codex agent slots", async () => {
   const service = makeService(desktop);
   await service.start();
 
-  await service.command({ kind: "focus_agent", index: 0 }, "focus-agent-1");
-  assert.deepEqual(desktop.calls, [["focusAgent", 0]]);
+  await service.command({ kind: "focus_agent", agentId: "agent-111111111111111111111111" }, "focus-agent-1");
+  assert.deepEqual(desktop.calls, [["focusAgent", "agent-111111111111111111111111"]]);
   assert.equal((await service.snapshot()).controller.focusedAgentIndex, 0);
   await assert.rejects(
-    () => service.command({ kind: "focus_agent", index: 5 }, "focus-agent-6"),
-    (error) => error.code === "agent_slot_unavailable",
+    () => service.command({ kind: "focus_agent", agentId: "agent-666666666666666666666666" }, "focus-agent-6"),
+    (error) => error.code === "agent_unavailable",
   );
+});
+
+test("serializes push-to-talk target states without losing release", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await service.command({ kind: "voice_start" }, "voice-down");
+  await service.command({ kind: "voice_stop" }, "voice-up");
+
+  assert.deepEqual(desktop.calls, [["setVoice", true], ["setVoice", false]]);
+  assert.equal((await service.snapshot()).controller.voice.active, false);
 });
 
 test("switches layers and rejects inputs that are not mapped on that layer", async () => {
@@ -161,7 +188,7 @@ test("binds idempotency keys to one request body", async () => {
   const first = await service.command({ kind: "voice" }, "same-key");
   const replay = await service.command({ kind: "voice" }, "same-key");
   assert.deepEqual(replay, first);
-  assert.deepEqual(desktop.calls, [["press", "voice"]]);
+  assert.deepEqual(desktop.calls, [["setVoice", true]]);
   await assert.rejects(
     () => service.command({ kind: "stop" }, "same-key"),
     (error) => error.code === "idempotency_key_reused",
@@ -211,6 +238,35 @@ test("polling publishes an event only when desktop state changes", async () => {
   assert.ok(events.published.length > initialEvents);
   assert.equal((await service.snapshot()).controller.taskState, "complete");
   await service.dispose();
+});
+
+test("slow polling remains single-flight instead of accumulating status calls", async () => {
+  class SlowDesktop extends FakeDesktop {
+    inFlight = 0;
+    maxInFlight = 0;
+    statusCalls = 0;
+
+    async status() {
+      this.statusCalls += 1;
+      this.inFlight += 1;
+      this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 24));
+      try {
+        return await super.status();
+      } finally {
+        this.inFlight -= 1;
+      }
+    }
+  }
+
+  const desktop = new SlowDesktop();
+  const service = makeService(desktop, new FakeEvents(), { pollIntervalMs: 5 });
+  await service.start();
+  await new Promise((resolve) => setTimeout(resolve, 58));
+  await service.dispose();
+
+  assert.equal(desktop.maxInFlight, 1);
+  assert.ok(desktop.statusCalls <= 4, `expected bounded status calls, saw ${desktop.statusCalls}`);
 });
 
 test("updates and dispatches a selected layer gesture while preserving legacy tap dispatch", async () => {

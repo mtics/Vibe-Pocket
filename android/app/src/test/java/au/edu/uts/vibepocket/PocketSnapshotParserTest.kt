@@ -14,10 +14,17 @@ class PocketSnapshotParserTest {
 
         assertEquals("r_42", snapshot.revision)
         assertEquals(TaskState.WAITING, snapshot.controller?.taskState)
+        assertEquals("agent-0123456789abcdef01234567", snapshot.controller?.focusedAgentId)
+        assertEquals(0, snapshot.controller?.focusedAgentIndex)
+        assertEquals(VoiceStatus(available = true, active = false), snapshot.controller?.voice)
         assertEquals("Codex", snapshot.controller?.mode?.label)
         assertEquals("High", snapshot.controller?.reasoning?.label)
         assertEquals(2, snapshot.controller?.agents?.size)
         assertEquals("Turing", snapshot.controller?.agents?.first()?.label)
+        assertEquals("agent-0123456789abcdef01234567", snapshot.controller?.agents?.first()?.id)
+        assertFalse(snapshot.controller?.agents?.first()?.focused == true)
+        assertEquals(TaskState.THINKING, snapshot.controller?.agents?.first()?.state)
+        assertEquals(TaskState.UNREAD, snapshot.controller?.agents?.last()?.state)
         assertEquals(6, snapshot.controller?.profile?.layers?.size)
         assertEquals(5, snapshot.controller?.profile?.inputs?.size)
         assertTrue(snapshot.inputEnabled("key_accept"))
@@ -28,8 +35,23 @@ class PocketSnapshotParserTest {
         assertTrue(snapshot.inputEnabled("dial_cw"))
         assertFalse(snapshot.inputEnabled("key_stop"))
         assertEquals(3, snapshot.controller?.gestures?.size)
-        assertTrue(snapshot.agentFocusEnabled(0))
-        assertFalse(snapshot.agentFocusEnabled(2))
+        assertTrue(snapshot.agentFocusEnabled("agent-0123456789abcdef01234567"))
+        assertFalse(snapshot.agentFocusEnabled("agent-ffffffffffffffffffffffff"))
+    }
+
+    @Test
+    fun emptyAgentSlotsAreDisabledUnfocusedPlaceholders() {
+        val snapshot = parsePocketSnapshot(JSONObject(CONTROLLER_SNAPSHOT))
+
+        val slots = snapshot.agentSlots()
+
+        assertEquals(6, slots.size)
+        assertTrue(slots[0].canFocus)
+        assertTrue(slots[0].focused)
+        assertFalse(slots[1].focused)
+        assertNull(slots[2].agent)
+        assertFalse(slots[2].canFocus)
+        assertFalse(slots[2].focused)
     }
 
     @Test
@@ -97,7 +119,11 @@ class PocketSnapshotParserTest {
                     "profile":{"version":-2,"inputs":[],"layers":[]},
                     "taskState":"teleporting",
                     "focusedAgentIndex":99,
-                    "agents":[{"label":"A","state":"unknown"},{"state":"complete"}],
+                    "focusedAgentId":"agent-bbbbbbbbbbbbbbbbbbbbbbbb",
+                    "agents":[
+                      {"id":"agent-aaaaaaaaaaaaaaaaaaaaaaaa","label":"A","state":"unknown","focused":false},
+                      {"id":"agent-not-hex","label":"Invalid ID","state":"complete"}
+                    ],
                     "mode":{"available":"yes","label":null}
                   }
                 }
@@ -108,7 +134,11 @@ class PocketSnapshotParserTest {
         assertNull(snapshot.controller?.profile)
         assertEquals(TaskState.IDLE, snapshot.controller?.taskState)
         assertEquals(-1, snapshot.controller?.focusedAgentIndex)
-        assertEquals(listOf(AgentStatus("A", TaskState.IDLE)), snapshot.controller?.agents)
+        assertNull(snapshot.controller?.focusedAgentId)
+        assertEquals(
+            listOf(AgentStatus("agent-aaaaaaaaaaaaaaaaaaaaaaaa", "A", TaskState.IDLE, false)),
+            snapshot.controller?.agents,
+        )
         assertFalse(snapshot.controller?.mode?.available ?: true)
         assertFalse(snapshot.inputEnabled("key_mode"))
     }
@@ -117,7 +147,7 @@ class PocketSnapshotParserTest {
     fun serializesOnlyStructuredControllerCommands() {
         val binding = PocketCommand.Binding("key_voice", ControllerGesture.DOUBLE_TAP).toJson()
         val layer = PocketCommand.SelectLayer("layer-3").toJson()
-        val focus = PocketCommand.FocusAgent(4).toJson()
+        val focus = PocketCommand.FocusAgent("agent-444444444444444444444444").toJson()
         val update = PocketCommand.UpdateBinding(
             "layer-2",
             "key_voice",
@@ -138,7 +168,8 @@ class PocketSnapshotParserTest {
         assertEquals("select_layer", layer.getString("kind"))
         assertEquals("layer-3", layer.getString("layerId"))
         assertEquals("focus_agent", focus.getString("kind"))
-        assertEquals(4, focus.getInt("index"))
+        assertEquals("agent-444444444444444444444444", focus.getString("agentId"))
+        assertFalse(focus.has("index"))
         assertEquals("update_binding", update.getString("kind"))
         assertEquals("hold", update.getString("gesture"))
         assertEquals("debug", update.getJSONObject("action").getString("workflowId"))
@@ -147,6 +178,8 @@ class PocketSnapshotParserTest {
         assertEquals("rename_layer", rename.getString("kind"))
         assertEquals("Research", rename.getString("name"))
         assertEquals(setOf("kind"), reset.keys().asSequence().toSet())
+        assertEquals("voice_start", PocketCommand.VoiceStart.toJson().getString("kind"))
+        assertEquals("voice_stop", PocketCommand.VoiceStop.toJson().getString("kind"))
     }
 
     private companion object {
@@ -163,7 +196,12 @@ class PocketSnapshotParserTest {
                 "activeLayerId":"layer-1",
                 "taskState":"waiting",
                 "focusedAgentIndex":0,
-                "agents":[{"label":"Turing","state":"executing"},{"label":"Dalton","state":"complete"}],
+                "focusedAgentId":"agent-0123456789abcdef01234567",
+                "voice":{"available":true,"active":false},
+                "agents":[
+                  {"id":"agent-0123456789abcdef01234567","label":"Turing","state":"thinking","focused":false},
+                  {"id":"agent-89abcdef0123456789abcdef","label":"Dalton","state":"unread","focused":false}
+                ],
                 "mode":{"available":true,"label":"Codex"},
                 "reasoning":{"available":true,"label":"High"},
                 "gestures":[

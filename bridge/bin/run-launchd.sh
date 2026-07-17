@@ -16,4 +16,20 @@ source "$CONFIG_FILE"
 set +a
 
 cd "$BRIDGE_DIR"
-exec "${VIBE_POCKET_NODE:-$(command -v node)}" src/index.mjs
+NODE_BIN=${VIBE_POCKET_NODE:-$(command -v node)}
+exec /usr/bin/env -i \
+  HOME="$HOME" \
+  USER="$USER" \
+  LOGNAME="${LOGNAME:-$USER}" \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  LANG="${LANG:-en_US.UTF-8}" \
+  VIBE_POCKET_TOKEN="$VIBE_POCKET_TOKEN" \
+  VIBE_POCKET_HOST="$VIBE_POCKET_HOST" \
+  VIBE_POCKET_PORT="$VIBE_POCKET_PORT" \
+  VIBE_POCKET_WORKSPACE="$VIBE_POCKET_WORKSPACE" \
+  VIBE_POCKET_PROFILE_PATH="$VIBE_POCKET_PROFILE_PATH" \
+  VIBE_POCKET_NODE="$VIBE_POCKET_NODE" \
+  VIBE_POCKET_SWIFTC="$VIBE_POCKET_SWIFTC" \
+  VIBE_POCKET_HELPER_PATH="$VIBE_POCKET_HELPER_PATH" \
+  "$NODE_BIN" src/index.mjs

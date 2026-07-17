@@ -42,7 +42,9 @@ import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MarkChatUnread
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Refresh
@@ -123,6 +125,8 @@ private val VibeColors: ColorScheme = darkColorScheme(
 )
 
 private val IdleColor = Color(0xFF9AA39D)
+private val UnreadColor = Color(0xFFF08BC1)
+private val ThinkingColor = Color(0xFFB9A7FF)
 private val ExecutingColor = Color(0xFF59C7F2)
 private val WaitingColor = Color(0xFFF2B95F)
 private val CompleteColor = Color(0xFF55D6A4)
@@ -185,8 +189,16 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val onInput: (String, ControllerGesture) -> Unit = { inputId, gesture ->
         if (viewModel.activateInput(inputId, gesture)) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
-    val onAgent: (Int) -> Unit = { index ->
-        if (viewModel.focusAgent(index)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    val onVoiceStart: (String) -> Boolean = { inputId ->
+        viewModel.startVoice(inputId).also { started ->
+            if (started) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        }
+    }
+    val onVoiceStop: (String) -> Unit = { inputId ->
+        viewModel.stopVoice(inputId)
+    }
+    val onAgent: (String) -> Unit = { agentId ->
+        if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
     val onLayer: (String) -> Unit = { layerId ->
         if (viewModel.selectLayer(layerId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -232,6 +244,8 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                     snapshot = snapshot,
                     inFlightId = state.inFlightId,
                     onInput = onInput,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
                     onLayer = onLayer,
                 )
@@ -307,7 +321,9 @@ private fun ControllerScreen(
     snapshot: PocketSnapshot,
     inFlightId: String?,
     onInput: (String, ControllerGesture) -> Unit,
-    onAgent: (Int) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
+    onAgent: (String) -> Unit,
     onLayer: (String) -> Unit,
 ) {
     val controller = snapshot.controller
@@ -331,8 +347,6 @@ private fun ControllerScreen(
         TaskStatusStrip(snapshot)
         SectionLabel("Agents")
         AgentGrid(
-            agents = controller?.agents.orEmpty(),
-            focusedAgentIndex = controller?.focusedAgentIndex ?: -1,
             snapshot = snapshot,
             inFlightId = inFlightId,
             onAgentClick = onAgent,
@@ -354,6 +368,8 @@ private fun ControllerScreen(
             busy = busy,
             inFlightId = inFlightId,
             onInput = onInput,
+            onVoiceStart = onVoiceStart,
+            onVoiceStop = onVoiceStop,
         )
         SectionLabel("Command keys")
         CommandKeyGrid(
@@ -361,6 +377,8 @@ private fun ControllerScreen(
             snapshot = snapshot,
             inFlightId = inFlightId,
             onInput = onInput,
+            onVoiceStart = onVoiceStart,
+            onVoiceStop = onVoiceStop,
         )
         if (joystickInputs.isNotEmpty()) {
             SectionLabel("Workflows")
@@ -369,6 +387,8 @@ private fun ControllerScreen(
                 snapshot = snapshot,
                 busy = busy,
                 onRelease = { onInput(it, ControllerGesture.TAP) },
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
             )
         }
         if (dialInputs.isNotEmpty()) {
@@ -379,6 +399,8 @@ private fun ControllerScreen(
                 snapshot = snapshot,
                 inFlightId = inFlightId,
                 onInput = { onInput(it, ControllerGesture.TAP) },
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
             )
         }
         Spacer(Modifier.height(18.dp))
@@ -415,23 +437,21 @@ private fun TaskStatusStrip(snapshot: PocketSnapshot) {
 
 @Composable
 private fun AgentGrid(
-    agents: List<AgentStatus>,
-    focusedAgentIndex: Int,
     snapshot: PocketSnapshot,
     inFlightId: String?,
-    onAgentClick: (Int) -> Unit,
+    onAgentClick: (String) -> Unit,
 ) {
-    val slots = List<AgentStatus?>(6) { agents.getOrNull(it) }
-    slots.chunked(3).forEachIndexed { rowIndex, row ->
+    val slots = snapshot.agentSlots()
+    slots.chunked(3).forEach { row ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            row.forEachIndexed { columnIndex, agent ->
-                val index = rowIndex * 3 + columnIndex
+            row.forEach { slot ->
+                val agent = slot.agent
                 AgentTile(
                     agent = agent,
-                    focused = index == focusedAgentIndex,
-                    enabled = inFlightId == null && snapshot.agentFocusEnabled(index),
-                    loading = inFlightId == "agent:$index",
-                    onClick = { onAgentClick(index) },
+                    focused = slot.focused,
+                    enabled = inFlightId == null && slot.canFocus,
+                    loading = agent != null && inFlightId == "agent:${agent.id}",
+                    onClick = { agent?.id?.let(onAgentClick) },
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -448,38 +468,45 @@ private fun AgentTile(
     onClick: () -> Unit,
     modifier: Modifier,
 ) {
-    val state = agent?.state ?: TaskState.IDLE
-    val color = stateColor(state)
+    val color = agent?.state?.let(::stateColor) ?: MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         modifier = modifier
             .height(58.dp)
             .clip(RoundedCornerShape(6.dp))
-            .background(if (focused) color.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surface)
+            .background(if (focused && agent != null) color.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surface)
             .border(if (focused) 2.dp else 1.dp, color.copy(alpha = if (agent == null) 0.2f else 0.7f), RoundedCornerShape(6.dp))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 9.dp, vertical = 7.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = if (agent == null) Arrangement.Center else Arrangement.SpaceBetween,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (loading) {
-                CircularProgressIndicator(Modifier.size(15.dp), color = color, strokeWidth = 2.dp)
-            } else {
-                Icon(stateIcon(state), contentDescription = null, tint = color, modifier = Modifier.size(15.dp))
-            }
-            Spacer(Modifier.width(5.dp))
+        if (agent == null) {
             Text(
-                agent?.label ?: "Empty",
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                "Empty",
+                modifier = Modifier.align(Alignment.CenterHorizontally),
                 style = MaterialTheme.typography.labelMedium,
-                color = if (agent == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(15.dp), color = color, strokeWidth = 2.dp)
+                } else {
+                    Icon(stateIcon(agent.state), contentDescription = null, tint = color, modifier = Modifier.size(15.dp))
+                }
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    agent.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            Text(
+                stateLabel(agent.state),
+                style = MaterialTheme.typography.labelSmall,
+                color = color,
             )
         }
-        Text(
-            if (agent == null) "Idle" else stateLabel(state),
-            style = MaterialTheme.typography.labelSmall,
-            color = color.copy(alpha = if (agent == null) 0.55f else 1f),
-        )
     }
 }
 
@@ -524,6 +551,8 @@ private fun ModeAndFocus(
     busy: Boolean,
     inFlightId: String?,
     onInput: (String, ControllerGesture) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -548,6 +577,8 @@ private fun ModeAndFocus(
                 busy = busy,
                 inFlightId = inFlightId,
                 onInput = onInput,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
                 modifier = Modifier.width(142.dp).height(54.dp),
             )
         }
@@ -560,6 +591,8 @@ private fun CommandKeyGrid(
     snapshot: PocketSnapshot,
     inFlightId: String?,
     onInput: (String, ControllerGesture) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
 ) {
     inputs.chunked(3).forEach { rowInputs ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -570,6 +603,8 @@ private fun CommandKeyGrid(
                     busy = inFlightId != null,
                     inFlightId = inFlightId,
                     onInput = onInput,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -585,6 +620,8 @@ private fun CommandKey(
     busy: Boolean,
     inFlightId: String?,
     onInput: (String, ControllerGesture) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     modifier: Modifier,
 ) {
     GestureControl(
@@ -593,6 +630,8 @@ private fun CommandKey(
         busy = busy,
         inFlightId = inFlightId,
         onInput = onInput,
+        onVoiceStart = onVoiceStart,
+        onVoiceStop = onVoiceStop,
         modifier = modifier.height(66.dp),
     )
 }
@@ -604,9 +643,15 @@ private fun GestureControl(
     busy: Boolean,
     inFlightId: String?,
     onInput: (String, ControllerGesture) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     modifier: Modifier,
 ) {
     val enabledGestures = ControllerGesture.entries.filter { snapshot.inputEnabled(input.id, it) }
+    val voiceTap = snapshot.voiceTapEnabled(input.id)
+    val voicePressEnabled = voiceTap && !busy
+    val currentVoiceStart by rememberUpdatedState(onVoiceStart)
+    val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     val loading = inFlightId?.startsWith("input:${input.id}:") == true
     val container = when (input.id) {
         "key_accept" -> MaterialTheme.colorScheme.primaryContainer
@@ -618,10 +663,28 @@ private fun GestureControl(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
             .background(container)
+            .pointerInput(input.id, voicePressEnabled) {
+                if (!voicePressEnabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val started = currentVoiceStart(input.id)
+                    try {
+                        var pressed = true
+                        while (pressed) {
+                            val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                            pressed = change?.pressed == true
+                        }
+                    } finally {
+                        if (started) currentVoiceStop(input.id)
+                    }
+                }
+            }
             .combinedClickable(
-                enabled = enabledGestures.isNotEmpty() && !busy,
+                enabled = enabledGestures.any { it != ControllerGesture.TAP || !voiceTap } && !busy,
                 onClick = {
-                    if (ControllerGesture.TAP in enabledGestures) onInput(input.id, ControllerGesture.TAP)
+                    if (!voiceTap && ControllerGesture.TAP in enabledGestures) {
+                        onInput(input.id, ControllerGesture.TAP)
+                    }
                 },
                 onDoubleClick = {
                     if (ControllerGesture.DOUBLE_TAP in enabledGestures) onInput(input.id, ControllerGesture.DOUBLE_TAP)
@@ -667,11 +730,16 @@ private fun WorkflowJoystick(
     snapshot: PocketSnapshot,
     busy: Boolean,
     onRelease: (String) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
 ) {
     val byDirection = remember(inputs) { inputs.associateBy { it.id.substringAfterLast('_') } }
     val enabledIds = inputs.filter { snapshot.inputEnabled(it.id) && !busy }.mapTo(mutableSetOf(), ControllerInput::id)
+    val voiceIds = inputs.filter { snapshot.voiceTapEnabled(it.id) && !busy }.mapTo(mutableSetOf(), ControllerInput::id)
     var selectedId by remember { mutableStateOf<String?>(null) }
     val currentOnRelease by rememberUpdatedState(onRelease)
+    val currentVoiceStart by rememberUpdatedState(onVoiceStart)
+    val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -684,25 +752,37 @@ private fun WorkflowJoystick(
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surface)
                 .border(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-                .pointerInput(enabledIds, inputs) {
+                .pointerInput(enabledIds, voiceIds, inputs) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         var candidate = joystickInputAt(down.position.x, down.position.y, size, byDirection)
                             ?.takeIf { it.id in enabledIds }
                         selectedId = candidate?.id
-                        var pressed = true
-                        while (pressed) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            candidate = joystickInputAt(change.position.x, change.position.y, size, byDirection)
-                                ?.takeIf { it.id in enabledIds }
-                            selectedId = candidate?.id
-                            pressed = change.pressed
-                            change.consume()
+                        var voiceCandidateId = candidate?.id?.takeIf { it in voiceIds }
+                        var activeVoiceId = voiceCandidateId?.takeIf { currentVoiceStart(it) }
+                        try {
+                            var pressed = true
+                            while (pressed) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                candidate = joystickInputAt(change.position.x, change.position.y, size, byDirection)
+                                    ?.takeIf { it.id in enabledIds }
+                                selectedId = candidate?.id
+                                val nextVoiceId = candidate?.id?.takeIf { it in voiceIds }
+                                if (nextVoiceId != voiceCandidateId) {
+                                    activeVoiceId?.let(currentVoiceStop)
+                                    voiceCandidateId = nextVoiceId
+                                    activeVoiceId = nextVoiceId?.takeIf { currentVoiceStart(it) }
+                                }
+                                pressed = change.pressed
+                                change.consume()
+                            }
+                            val releaseId = selectedId
+                            if (releaseId != null && releaseId !in voiceIds) currentOnRelease(releaseId)
+                        } finally {
+                            activeVoiceId?.let(currentVoiceStop)
+                            selectedId = null
                         }
-                        val releaseId = selectedId
-                        selectedId = null
-                        if (releaseId != null) currentOnRelease(releaseId)
                     }
                 },
         ) {
@@ -760,6 +840,8 @@ private fun ReasoningDial(
     snapshot: PocketSnapshot,
     inFlightId: String?,
     onInput: (String) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
 ) {
     val counterClockwise = inputs.firstOrNull { it.id.endsWith("ccw") }
     val clockwise = inputs.firstOrNull { it.id.endsWith("cw") && !it.id.endsWith("ccw") }
@@ -771,7 +853,15 @@ private fun ReasoningDial(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        DialStepButton(counterClockwise, Icons.Filled.Remove, snapshot, inFlightId, onInput)
+        DialStepButton(
+            counterClockwise,
+            Icons.Filled.Remove,
+            snapshot,
+            inFlightId,
+            onInput,
+            onVoiceStart,
+            onVoiceStop,
+        )
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Box(
                 modifier = Modifier
@@ -791,7 +881,15 @@ private fun ReasoningDial(
                 fontWeight = FontWeight.Medium,
             )
         }
-        DialStepButton(clockwise, Icons.Filled.Add, snapshot, inFlightId, onInput)
+        DialStepButton(
+            clockwise,
+            Icons.Filled.Add,
+            snapshot,
+            inFlightId,
+            onInput,
+            onVoiceStart,
+            onVoiceStop,
+        )
     }
 }
 
@@ -802,9 +900,38 @@ private fun DialStepButton(
     snapshot: PocketSnapshot,
     inFlightId: String?,
     onInput: (String) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
 ) {
     val enabled = input != null && snapshot.inputEnabled(input.id) && inFlightId == null
-    IconButton(onClick = { input?.id?.let(onInput) }, enabled = enabled, modifier = Modifier.size(52.dp)) {
+    val voiceTap = input?.let { snapshot.voiceTapEnabled(it.id) } == true
+    val currentVoiceStart by rememberUpdatedState(onVoiceStart)
+    val currentVoiceStop by rememberUpdatedState(onVoiceStop)
+    val voiceModifier = if (input == null) {
+        Modifier
+    } else {
+        Modifier.pointerInput(input.id, enabled, voiceTap) {
+            if (!enabled || !voiceTap) return@pointerInput
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val started = currentVoiceStart(input.id)
+                try {
+                    var pressed = true
+                    while (pressed) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                        pressed = change?.pressed == true
+                    }
+                } finally {
+                    if (started) currentVoiceStop(input.id)
+                }
+            }
+        }
+    }
+    IconButton(
+        onClick = { if (!voiceTap) input?.id?.let(onInput) },
+        enabled = enabled,
+        modifier = Modifier.size(52.dp).then(voiceModifier),
+    ) {
         if (input != null && inFlightId == "input:${input.id}:${ControllerGesture.TAP.wireValue}") {
             CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
         } else {
@@ -1067,6 +1194,8 @@ private fun joystickInputAt(
 
 private fun stateColor(state: TaskState): Color = when (state) {
     TaskState.IDLE -> IdleColor
+    TaskState.UNREAD -> UnreadColor
+    TaskState.THINKING -> ThinkingColor
     TaskState.EXECUTING -> ExecutingColor
     TaskState.WAITING -> WaitingColor
     TaskState.COMPLETE -> CompleteColor
@@ -1075,6 +1204,8 @@ private fun stateColor(state: TaskState): Color = when (state) {
 
 private fun stateIcon(state: TaskState): ImageVector = when (state) {
     TaskState.IDLE -> Icons.Filled.RadioButtonUnchecked
+    TaskState.UNREAD -> Icons.Filled.MarkChatUnread
+    TaskState.THINKING -> Icons.Filled.Psychology
     TaskState.EXECUTING -> Icons.Filled.PlayArrow
     TaskState.WAITING -> Icons.Filled.HourglassTop
     TaskState.COMPLETE -> Icons.Filled.Done
@@ -1083,6 +1214,8 @@ private fun stateIcon(state: TaskState): ImageVector = when (state) {
 
 private fun stateLabel(state: TaskState): String = when (state) {
     TaskState.IDLE -> "Idle"
+    TaskState.UNREAD -> "Unread"
+    TaskState.THINKING -> "Thinking"
     TaskState.EXECUTING -> "Running"
     TaskState.WAITING -> "Needs input"
     TaskState.COMPLETE -> "Complete"

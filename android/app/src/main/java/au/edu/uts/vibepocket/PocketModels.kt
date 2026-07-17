@@ -36,16 +36,21 @@ data class PocketSnapshot(
         return actionEnabled(action)
     }
 
-    fun agentFocusEnabled(index: Int): Boolean {
+    fun voiceTapEnabled(inputId: String): Boolean {
+        if (!inputEnabled(inputId, ControllerGesture.TAP)) return false
+        return actionFor(inputId, ControllerGesture.TAP)?.type == "voice" ||
+            (controller?.profile == null && inputId == "key_voice")
+    }
+
+    fun agentFocusEnabled(agentId: String): Boolean {
         val state = controller ?: return false
-        if (index !in state.agents.indices || !controls.focusAgent) return false
-        return state.actionCatalog.any { it.id == "focus_agent_${index + 1}" && it.action.type == "focus_agent" }
+        return controls.focusAgent && state.agents.any { it.id == agentId }
     }
 
     private fun actionEnabled(action: ControllerAction): Boolean = when (action.type) {
         "approve" -> controls.approve
         "reject" -> controls.reject
-        "voice" -> controls.voice
+        "voice" -> controller?.voice?.available ?: controls.voice
         "stop" -> controls.stop
         "new_task" -> controls.newTask
         "mode_cycle" -> controls.modeCycle
@@ -100,6 +105,8 @@ data class ControllerState(
     val taskState: TaskState,
     val agents: List<AgentStatus>,
     val focusedAgentIndex: Int,
+    val focusedAgentId: String?,
+    val voice: VoiceStatus?,
     val mode: SelectorStatus,
     val reasoning: SelectorStatus,
 )
@@ -185,9 +192,37 @@ data class ActionCatalogEntry(
 )
 
 data class AgentStatus(
+    val id: String,
     val label: String,
     val state: TaskState,
+    val focused: Boolean,
 )
+
+data class VoiceStatus(
+    val available: Boolean,
+    val active: Boolean,
+)
+
+internal data class AgentSlot(
+    val agent: AgentStatus?,
+    val canFocus: Boolean,
+    val focused: Boolean,
+)
+
+internal val AgentIdPattern = Regex("^agent-[a-f0-9]{24}$")
+
+internal fun PocketSnapshot.agentSlots(slotCount: Int = 6): List<AgentSlot> {
+    require(slotCount >= 0)
+    val agents = controller?.agents.orEmpty()
+    return List(slotCount) { index ->
+        val agent = agents.getOrNull(index)
+        AgentSlot(
+            agent = agent,
+            canFocus = agent?.let { agentFocusEnabled(it.id) } == true,
+            focused = agent?.let { it.focused || it.id == controller?.focusedAgentId } == true,
+        )
+    }
+}
 
 data class SelectorStatus(
     val available: Boolean,
@@ -196,6 +231,8 @@ data class SelectorStatus(
 
 enum class TaskState(val wireValue: String) {
     IDLE("idle"),
+    UNREAD("unread"),
+    THINKING("thinking"),
     EXECUTING("executing"),
     WAITING("waiting"),
     COMPLETE("complete"),
@@ -214,7 +251,11 @@ sealed interface PocketCommand {
     ) : PocketCommand
 
     data class SelectLayer(val layerId: String) : PocketCommand
-    data class FocusAgent(val index: Int) : PocketCommand
+    data class FocusAgent(val agentId: String) : PocketCommand {
+        init {
+            require(AgentIdPattern.matches(agentId))
+        }
+    }
     data class UpdateBinding(
         val layerId: String,
         val inputId: String,
@@ -232,6 +273,8 @@ sealed interface PocketCommand {
     data object ResetProfile : PocketCommand
     data object Attach : PocketCommand
     data object Voice : PocketCommand
+    data object VoiceStart : PocketCommand
+    data object VoiceStop : PocketCommand
     data object Stop : PocketCommand
     data object NewTask : PocketCommand
     data object Approve : PocketCommand

@@ -3,8 +3,10 @@ package au.edu.uts.vibepocket
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -20,12 +22,29 @@ class PocketViewModel(
     private val client: PocketClient = PocketBridgeClient(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
+    private data class VoiceOwner(
+        val inputId: String,
+        val config: ConnectionConfig,
+    )
+
+    private data class VoiceTransition(
+        val active: Boolean,
+        val config: ConnectionConfig,
+    )
+
     private val _state = MutableStateFlow(PocketUiState())
     val state: StateFlow<PocketUiState> = _state.asStateFlow()
     private val _feedback = MutableSharedFlow<PocketFeedback>(extraBufferCapacity = 4)
     val feedback: SharedFlow<PocketFeedback> = _feedback.asSharedFlow()
 
     private val commandGate = AtomicBoolean(false)
+    private val voiceStateLock = Any()
+    private val pendingVoiceStates = ArrayDeque<VoiceTransition>()
+    private val voiceScopeJob = SupervisorJob()
+    private val voiceScope = CoroutineScope(voiceScopeJob + ioDispatcher)
+    private var voiceDrainRunning = false
+    private var voiceOwner: VoiceOwner? = null
+    private var closeVoiceScopeWhenDrained = false
     private val refreshRunning = AtomicBoolean(false)
     private val refreshRequested = AtomicBoolean(false)
     @Volatile private var foreground = false
@@ -55,6 +74,7 @@ class PocketViewModel(
     }
 
     fun disconnect() {
+        stopOwnedVoice()
         stopEvents()
         lastEventId = null
         store.clear()
@@ -62,6 +82,7 @@ class PocketViewModel(
     }
 
     fun setForeground(isForeground: Boolean) {
+        if (!isForeground) stopOwnedVoice()
         if (foreground == isForeground) return
         foreground = isForeground
         if (isForeground) {
@@ -106,13 +127,49 @@ class PocketViewModel(
     ): Boolean {
         val snapshot = _state.value.snapshot ?: return false
         if (!snapshot.inputEnabled(inputId, gesture)) return false
+        if (gesture == ControllerGesture.TAP && snapshot.voiceTapEnabled(inputId)) return false
         return submit(snapshot.commandForInput(inputId, gesture), "input:$inputId:${gesture.wireValue}")
     }
 
-    fun focusAgent(index: Int): Boolean {
+    fun startVoice(inputId: String): Boolean {
+        val current = _state.value
+        val config = current.config ?: return false
+        val snapshot = current.snapshot ?: return false
+        if (!snapshot.voiceTapEnabled(inputId)) return false
+        val shouldLaunch = synchronized(voiceStateLock) {
+            if (voiceOwner != null) return@synchronized null
+            voiceOwner = VoiceOwner(inputId, config)
+            pendingVoiceStates.addLast(VoiceTransition(active = true, config = config))
+            (!voiceDrainRunning).also { launch ->
+                if (launch) voiceDrainRunning = true
+            }
+        } ?: return false
+        if (shouldLaunch) launchVoiceDrain()
+        return true
+    }
+
+    fun stopVoice(inputId: String): Boolean {
+        return stopOwnedVoice(inputId)
+    }
+
+    private fun stopOwnedVoice(inputId: String? = null): Boolean {
+        val shouldLaunch = synchronized(voiceStateLock) {
+            val owner = voiceOwner?.takeIf { inputId == null || it.inputId == inputId }
+                ?: return@synchronized null
+            voiceOwner = null
+            pendingVoiceStates.addLast(VoiceTransition(active = false, config = owner.config))
+            (!voiceDrainRunning).also { launch ->
+                if (launch) voiceDrainRunning = true
+            }
+        } ?: return false
+        if (shouldLaunch) launchVoiceDrain()
+        return true
+    }
+
+    fun focusAgent(agentId: String): Boolean {
         val snapshot = _state.value.snapshot ?: return false
-        if (!snapshot.agentFocusEnabled(index)) return false
-        return submit(PocketCommand.FocusAgent(index), "agent:$index")
+        if (!snapshot.agentFocusEnabled(agentId)) return false
+        return submit(PocketCommand.FocusAgent(agentId), "agent:$agentId")
     }
 
     fun selectLayer(layerId: String): Boolean {
@@ -189,6 +246,41 @@ class PocketViewModel(
         return true
     }
 
+    private fun launchVoiceDrain() {
+        voiceScope.launch {
+            while (true) {
+                var closeScope = false
+                val transition = synchronized(voiceStateLock) {
+                    if (pendingVoiceStates.isEmpty()) {
+                        voiceDrainRunning = false
+                        closeScope = closeVoiceScopeWhenDrained
+                        null
+                    } else {
+                        pendingVoiceStates.removeFirst()
+                    }
+                }
+                if (transition == null) {
+                    if (closeScope) voiceScopeJob.cancel()
+                    return@launch
+                }
+                val command = if (transition.active) PocketCommand.VoiceStart else PocketCommand.VoiceStop
+                runCatching { client.command(transition.config, command) }
+                    .onSuccess {
+                        if (_state.value.config == transition.config) {
+                            _feedback.tryEmit(PocketFeedback.Success)
+                            refresh()
+                        }
+                    }
+                    .onFailure { error ->
+                        if (_state.value.config == transition.config) {
+                            _state.update { it.copy(error = error.message) }
+                            _feedback.tryEmit(PocketFeedback.Error)
+                        }
+                    }
+            }
+        }
+    }
+
     private fun startEvents(config: ConnectionConfig) {
         if (events != null || !foreground || _state.value.config != config) return
         events = PocketEventStream(
@@ -210,7 +302,14 @@ class PocketViewModel(
     }
 
     override fun onCleared() {
+        stopOwnedVoice()
         stopEvents()
+        val closeNow = synchronized(voiceStateLock) {
+            closeVoiceScopeWhenDrained = true
+            !voiceDrainRunning && pendingVoiceStates.isEmpty()
+        }
+        if (closeNow) voiceScopeJob.cancel()
+        super.onCleared()
     }
 }
 

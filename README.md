@@ -6,12 +6,17 @@ same task shown on the Mac rather than starting an invisible CLI session.
 
 ## Controller
 
-The Android 0.4 controller is driven by a versioned profile from the M5:
+The Android 0.4.1 controller uses protocol v3 and a versioned profile from the
+M5:
 
-- Six live Agent Keys show idle, running, needs-input, complete, and error
-  states. A populated key focuses that exact Agent.
+- Six live Agent Keys distinguish idle, unread, thinking, running,
+  needs-input, complete, and error states. A populated key focuses that exact
+  Agent by an opaque stable ID rather than by its current list position.
 - Thirteen command keys cover accept, reject, dictation, new task, stop, access
   mode, clear, focus, navigation, and foreground attachment.
+- A Voice-mapped input is true push-to-talk: pointer down starts Codex
+  dictation and release stops it. Leaving the foreground, disconnecting, or
+  closing the ViewModel also queues a best-effort stop.
 - A four-way joystick starts the built-in review, debug, refactor, and test
   workflows on release.
 - A stepped dial changes reasoning depth when the visible Codex composer allows
@@ -52,9 +57,19 @@ add this stable helper binary:
 ~/Library/Application Support/Vibe Pocket/runtime/bin/vibe-pocket-codex-helper
 ```
 
+The helper can also open the same macOS permission prompt for itself:
+
+```sh
+"$HOME/Library/Application Support/Vibe Pocket/runtime/bin/vibe-pocket-codex-helper" \
+  request-accessibility
+```
+
 This permission lets the helper click and navigate only the filtered visible
 Codex controls implemented by Vibe Pocket. The installer does not modify the
 macOS privacy database or accept the permission for you.
+
+The bridge refuses desktop actions while the M5 is locked and resumes
+automatically after the next successful poll once it is unlocked.
 
 It stores the token in a mode-`0600` user config file and starts
 `au.edu.uts.vibepocket.bridge` with launchd. Re-running the installer upgrades
@@ -121,6 +136,8 @@ connection is active only while Vibe Pocket is in the foreground.
 
 - The bridge binds to `127.0.0.1`; Tailscale supplies tailnet-only HTTPS.
 - Commands and configurable mappings use a strict semantic action whitelist.
+- Protocol v3 binds Agent focus to a stable opaque ID and models dictation as
+  idempotent start/stop target states.
 - Workflow text exists only on the M5 and cannot be supplied by the phone.
 - Desktop actions target filtered controls in the visible Codex Accessibility
   tree and use a serialized, timeout-bounded helper.
@@ -128,14 +145,18 @@ connection is active only while Vibe Pocket is in the foreground.
   credentials, arbitrary prompts, raw keyboard sequences, or shell execution.
 - Idempotency keys are request-bound and bounded; rapid Android actions are
   additionally protected by a single-flight gate.
+- The LaunchAgent starts Node with a minimal environment so unrelated user
+  session credentials are not inherited by the bridge process.
 
 ## Verification
 
-- Bridge: 31 Node tests cover profile migration and persistence, all three
+- Bridge: 33 Node tests cover profile migration and persistence, all three
   gestures, action validation, layer editing, Agent focus, polling,
-  idempotency, authentication, and HTTP health behavior.
-- Android: 7 JVM tests cover v1/v2 parsing, structured command serialization,
-  capability gating, and rapid-tap single-flight behavior.
+  single-flight slow status reads, PTT target states, idempotency,
+  authentication, and HTTP health behavior.
+- Android: 12 JVM tests cover v1/v2 profile parsing, protocol v3 Agent and
+  voice data, structured command serialization, capability gating, rapid-tap
+  single-flight behavior, quick PTT release, and lifecycle/disconnect cleanup.
 - Android `lintDebug` and `assembleDebug` pass under Java 17.
 - The M5 LaunchAgent, local health endpoint, and Tailnet HTTPS health endpoint
   are verified live.
