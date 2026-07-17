@@ -55,22 +55,24 @@ The installer copies the runtime to:
 ```
 
 Open **System Settings → Privacy & Security → Accessibility**, press `+`, and
-add this stable helper binary:
+add this signed background app:
 
 ```text
-~/Library/Application Support/Vibe Pocket/runtime/bin/vibe-pocket-codex-helper
+~/Library/Application Support/Vibe Pocket/runtime/Vibe Pocket Bridge Host.app
 ```
 
-The helper can also open the same macOS permission prompt for itself:
+The host can also open the same macOS permission prompt for itself:
 
 ```sh
-"$HOME/Library/Application Support/Vibe Pocket/runtime/bin/vibe-pocket-codex-helper" \
-  request-accessibility
+open -n -W -a \
+  "$HOME/Library/Application Support/Vibe Pocket/runtime/Vibe Pocket Bridge Host.app" \
+  --args request-accessibility
 ```
 
-This permission lets the helper click and navigate only the filtered visible
-Codex controls implemented by Vibe Pocket. The installer does not modify the
-macOS privacy database or accept the permission for you.
+This permission stays attached to the LaunchAgent's background host while its
+child helper clicks and navigates only the filtered visible Codex controls
+implemented by Vibe Pocket. The installer does not modify the macOS privacy
+database or accept the permission for you.
 
 The bridge refuses desktop actions while the M5 is locked and resumes
 automatically after the next successful poll once it is unlocked.
@@ -135,6 +137,21 @@ http://192.168.31.250:4319/app-debug.apk
 The app requires an HTTPS bridge URL and stores its token with an Android
 Keystore AES-GCM key. On MIUI, unrestricted battery use is optional; the SSE
 connection is active only while Vibe Pocket is in the foreground.
+
+## First Controller Test
+
+1. Keep the M5 unlocked with a Codex task visible in the ChatGPT desktop app.
+2. Open Vibe Pocket and tap Refresh. The status card should turn green and say
+   `Ready`.
+3. Tap Focus to bring that visible Codex task to the foreground.
+4. Press and hold Voice, speak, then release. The dictated text should appear
+   in the desktop composer; use Clear to remove this first test draft.
+5. Test navigation and, while Codex is idle, the access-mode and reasoning
+   controls. Workflow directions deliberately create a new visible task.
+
+Vibe Pocket controls whichever Codex task is currently visible on the M5. It
+does not mirror the task contents onto the phone and it does not attach to a
+hidden terminal session.
 
 ## Security Boundary
 

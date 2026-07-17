@@ -10,6 +10,9 @@ CONFIG_FILE="$CONFIG_DIR/bridge.env"
 PROFILE_FILE="$CONFIG_DIR/controller-profile.json"
 RUNTIME_DIR="$CONFIG_DIR/runtime"
 HELPER_PATH="$RUNTIME_DIR/bin/vibe-pocket-codex-helper"
+HOST_APP="$RUNTIME_DIR/Vibe Pocket Bridge Host.app"
+HOST_CONTENTS="$HOST_APP/Contents"
+HOST_PATH="$HOST_CONTENTS/MacOS/Vibe Pocket Bridge Host"
 LOG_DIR="$HOME/Library/Logs/Vibe Pocket"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NODE_PATH=${VIBE_POCKET_NODE:-$(command -v node)}
@@ -37,6 +40,34 @@ ditto "$BRIDGE_DIR" "$RUNTIME_DIR"
 chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
 "$SWIFTC_PATH" "$RUNTIME_DIR/src/macos-codex-helper.swift" -O -o "$HELPER_PATH"
 codesign --force --sign - --identifier au.edu.uts.vibepocket.helper "$HELPER_PATH" >/dev/null
+mkdir -p "$HOST_CONTENTS/MacOS"
+"$SWIFTC_PATH" "$RUNTIME_DIR/src/macos-bridge-host.swift" -O -o "$HOST_PATH"
+cat > "$HOST_CONTENTS/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>Vibe Pocket Bridge Host</string>
+  <key>CFBundleIdentifier</key>
+  <string>au.edu.uts.vibepocket.bridge-host</string>
+  <key>CFBundleName</key>
+  <string>Vibe Pocket Bridge Host</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+EOF
+plutil -lint "$HOST_CONTENTS/Info.plist" >/dev/null
+codesign --force --deep --sign - --identifier au.edu.uts.vibepocket.bridge-host "$HOST_APP" >/dev/null
 TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
 {
   printf 'VIBE_POCKET_TOKEN=%q\n' "$TOKEN"
@@ -60,6 +91,8 @@ cat > "$PLIST" <<EOF
   <string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
+    <string>$HOST_PATH</string>
+    <string>run</string>
     <string>$RUNTIME_DIR/bin/run-launchd.sh</string>
   </array>
   <key>WorkingDirectory</key>
@@ -86,5 +119,7 @@ launchctl kickstart -k "gui/$UID/$LABEL"
 
 print "Vibe Pocket LaunchAgent installed on 127.0.0.1:$PORT."
 print "Pairing token is stored in $CONFIG_FILE with mode 0600."
-print "Request Accessibility permission with:"
-printf '  %q request-accessibility\n' "$HELPER_PATH"
+print "Grant Accessibility permission to this signed background host:"
+printf '  %q\n' "$HOST_APP"
+print "Request the macOS prompt with:"
+printf '  open -n -W -a %q --args request-accessibility\n' "$HOST_APP"

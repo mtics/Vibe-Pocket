@@ -130,7 +130,13 @@ private func codexArea(for application: NSRunningApplication) throws -> AXUIElem
   guard !areas.isEmpty else {
     throw HelperFailure.message("Open the Codex view in ChatGPT on the M5 before using Vibe Pocket.")
   }
-  return areas.last(where: { attributeBool($0, kAXFocusedAttribute as CFString) }) ?? areas.last!
+  return areas.max(by: { codexAreaScore($0) < codexAreaScore($1) })!
+}
+
+private func codexAreaScore(_ area: AXUIElement) -> Int {
+  let index = AreaIndex(area)
+  let composerWeight = index.textAreas.isEmpty ? 0 : 1_000_000
+  return composerWeight + index.buttons.count * 1_000 + index.elements.count
 }
 
 private func verifyForeground(_ application: NSRunningApplication) throws {
