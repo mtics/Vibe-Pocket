@@ -93,3 +93,25 @@ test("rejects profiles that alter the fixed layer or input topology", () => {
   unknownInput.layers[0].bindings.key_shell = { tap: { type: "attach" } };
   assert.throws(() => normalizeControllerProfile(unknownInput), /input does not exist/);
 });
+
+test("keeps push-to-talk exclusive so release cannot race another gesture", () => {
+  const profile = createDefaultControllerProfile();
+  assert.throws(
+    () => updateControllerBinding(profile, {
+      layerId: "layer-1",
+      inputId: "key_voice",
+      gesture: "hold",
+      action: { type: "workflow", workflowId: "debug" },
+    }),
+    /push-to-talk.*only gesture/i,
+  );
+  assert.throws(
+    () => updateControllerBinding(profile, {
+      layerId: "layer-2",
+      inputId: "key_accept",
+      gesture: "double_tap",
+      action: { type: "voice" },
+    }),
+    /push-to-talk.*tap/i,
+  );
+});

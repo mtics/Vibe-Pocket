@@ -6,14 +6,16 @@ same task shown on the Mac rather than starting an invisible CLI session.
 
 ## Controller
 
-The Android 0.4.1 controller uses protocol v3 and a versioned profile from the
+The Android 0.4.3 controller uses protocol v3 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,
   needs-input, complete, and error states. A populated key focuses that exact
   Agent by an opaque stable ID rather than by its current list position.
-- Thirteen command keys cover accept, reject, dictation, new task, stop, access
-  mode, clear, focus, navigation, and foreground attachment.
+- Thirteen command keys cover accept/submit, reject/dismiss, dictation, new
+  task, stop, access mode, clear, focus, navigation, and foreground attachment.
+  Accept and Reject use a visible approval control when one exists, otherwise
+  they provide the OpenMicro-compatible Return and Escape behavior.
 - A Voice-mapped input is true push-to-talk: pointer down starts Codex
   dictation and release stops it. Leaving the foreground, disconnecting, or
   closing the ViewModel also queues a best-effort stop.
@@ -22,8 +24,10 @@ M5:
 - A stepped dial changes reasoning depth when the visible Codex composer allows
   it.
 - Six programmable layers persist across bridge restarts.
-- Every input has independent tap, double-tap, and hold mappings. The phone's
-  mapping sheet can only select actions advertised by the bridge.
+- Every input has independent tap, double-tap, and hold mappings. Push-to-talk
+  is deliberately exclusive on its input because a held recording gesture
+  cannot also have an unambiguous hold action. The phone's mapping sheet can
+  only select actions advertised by the bridge.
 
 The phone never sends a prompt, transcript, terminal byte, shell command, or
 arbitrary key sequence. A workflow button sends only a fixed workflow ID; the
@@ -150,7 +154,7 @@ connection is active only while Vibe Pocket is in the foreground.
 
 ## Verification
 
-- Bridge: 33 Node tests cover profile migration and persistence, all three
+- Bridge: 34 Node tests cover profile migration and persistence, all three
   gestures, action validation, layer editing, Agent focus, polling,
   single-flight slow status reads, PTT target states, idempotency,
   authentication, and HTTP health behavior.

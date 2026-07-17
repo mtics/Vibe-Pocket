@@ -173,7 +173,7 @@ export function updateControllerBinding(profile, { layerId, inputId, gesture = "
   const layer = next.layers.find((candidate) => candidate.id === layerId);
   layer.bindings[inputId] ??= {};
   layer.bindings[inputId][gesture] = validateControllerAction(action);
-  return next;
+  return normalizeControllerProfile(next);
 }
 
 export function clearControllerBinding(profile, { layerId, inputId, gesture = "tap" }) {
@@ -291,9 +291,22 @@ function normalizeBindings(bindings) {
       validateGesture(gesture);
       gestures[gesture] = validateControllerAction(action);
     }
+    validateVoiceGestureBinding(gestures);
     if (Object.keys(gestures).length > 0) normalized[inputId] = gestures;
   }
   return normalized;
+}
+
+function validateVoiceGestureBinding(gestures) {
+  const voiceGestures = Object.entries(gestures)
+    .filter(([, action]) => action.type === "voice")
+    .map(([gesture]) => gesture);
+  if (voiceGestures.length === 0) return;
+  if (voiceGestures.length !== 1 || voiceGestures[0] !== "tap" || Object.keys(gestures).length !== 1) {
+    throw new ControllerProfileValidationError(
+      "Push-to-talk must be the only gesture on its input and must use tap.",
+    );
+  }
 }
 
 function validateLayerName(name) {

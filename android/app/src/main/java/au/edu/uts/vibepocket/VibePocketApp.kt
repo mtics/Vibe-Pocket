@@ -81,6 +81,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -92,6 +93,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -103,6 +105,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -386,7 +391,7 @@ private fun ControllerScreen(
                 inputs = joystickInputs,
                 snapshot = snapshot,
                 busy = busy,
-                onRelease = { onInput(it, ControllerGesture.TAP) },
+                onGesture = onInput,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
             )
@@ -398,7 +403,7 @@ private fun ControllerScreen(
                 reasoning = controller?.reasoning ?: SelectorStatus(false, "Unavailable"),
                 snapshot = snapshot,
                 inFlightId = inFlightId,
-                onInput = { onInput(it, ControllerGesture.TAP) },
+                onInput = onInput,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
             )
@@ -680,7 +685,7 @@ private fun GestureControl(
                 }
             }
             .combinedClickable(
-                enabled = enabledGestures.any { it != ControllerGesture.TAP || !voiceTap } && !busy,
+                enabled = !voiceTap && enabledGestures.isNotEmpty() && !busy,
                 onClick = {
                     if (!voiceTap && ControllerGesture.TAP in enabledGestures) {
                         onInput(input.id, ControllerGesture.TAP)
@@ -729,17 +734,61 @@ private fun WorkflowJoystick(
     inputs: List<ControllerInput>,
     snapshot: PocketSnapshot,
     busy: Boolean,
-    onRelease: (String) -> Unit,
+    onGesture: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
 ) {
     val byDirection = remember(inputs) { inputs.associateBy { it.id.substringAfterLast('_') } }
-    val enabledIds = inputs.filter { snapshot.inputEnabled(it.id) && !busy }.mapTo(mutableSetOf(), ControllerInput::id)
+    val enabledIds = inputs.filter { input ->
+        !busy && ControllerGesture.entries.any { snapshot.inputEnabled(input.id, it) }
+    }.mapTo(mutableSetOf(), ControllerInput::id)
     val voiceIds = inputs.filter { snapshot.voiceTapEnabled(it.id) && !busy }.mapTo(mutableSetOf(), ControllerInput::id)
     var selectedId by remember { mutableStateOf<String?>(null) }
-    val currentOnRelease by rememberUpdatedState(onRelease)
+    val currentOnGesture by rememberUpdatedState(onGesture)
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
+    val gestureScope = rememberCoroutineScope()
+    val viewConfiguration = LocalViewConfiguration.current
+    val pendingTapJobs = remember { mutableMapOf<String, Job>() }
+    val pendingTapTimes = remember { mutableMapOf<String, Long>() }
+
+    fun dispatchRelease(inputId: String, downAt: Long, releasedAt: Long) {
+        val holdEnabled = snapshot.inputEnabled(inputId, ControllerGesture.HOLD)
+        if (holdEnabled && releasedAt - downAt >= viewConfiguration.longPressTimeoutMillis) {
+            pendingTapJobs.remove(inputId)?.cancel()
+            pendingTapTimes.remove(inputId)
+            currentOnGesture(inputId, ControllerGesture.HOLD)
+            return
+        }
+
+        val tapEnabled = snapshot.inputEnabled(inputId, ControllerGesture.TAP)
+        val doubleTapEnabled = snapshot.inputEnabled(inputId, ControllerGesture.DOUBLE_TAP)
+        if (!doubleTapEnabled) {
+            if (tapEnabled) currentOnGesture(inputId, ControllerGesture.TAP)
+            return
+        }
+
+        val previousAt = pendingTapTimes[inputId]
+        val pendingJob = pendingTapJobs[inputId]
+        if (previousAt != null && pendingJob?.isActive == true &&
+            releasedAt - previousAt <= viewConfiguration.doubleTapTimeoutMillis
+        ) {
+            pendingJob.cancel()
+            pendingTapJobs.remove(inputId)
+            pendingTapTimes.remove(inputId)
+            currentOnGesture(inputId, ControllerGesture.DOUBLE_TAP)
+            return
+        }
+
+        pendingJob?.cancel()
+        pendingTapTimes[inputId] = releasedAt
+        pendingTapJobs[inputId] = gestureScope.launch {
+            delay(viewConfiguration.doubleTapTimeoutMillis)
+            pendingTapJobs.remove(inputId)
+            pendingTapTimes.remove(inputId)
+            if (tapEnabled) currentOnGesture(inputId, ControllerGesture.TAP)
+        }
+    }
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -755,18 +804,24 @@ private fun WorkflowJoystick(
                 .pointerInput(enabledIds, voiceIds, inputs) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        val downAt = down.uptimeMillis
                         var candidate = joystickInputAt(down.position.x, down.position.y, size, byDirection)
                             ?.takeIf { it.id in enabledIds }
+                        var candidateStartedAt = downAt
                         selectedId = candidate?.id
                         var voiceCandidateId = candidate?.id?.takeIf { it in voiceIds }
                         var activeVoiceId = voiceCandidateId?.takeIf { currentVoiceStart(it) }
+                        var releasedAt = downAt
                         try {
                             var pressed = true
                             while (pressed) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                candidate = joystickInputAt(change.position.x, change.position.y, size, byDirection)
+                                releasedAt = change.uptimeMillis
+                                val nextCandidate = joystickInputAt(change.position.x, change.position.y, size, byDirection)
                                     ?.takeIf { it.id in enabledIds }
+                                if (nextCandidate?.id != candidate?.id) candidateStartedAt = change.uptimeMillis
+                                candidate = nextCandidate
                                 selectedId = candidate?.id
                                 val nextVoiceId = candidate?.id?.takeIf { it in voiceIds }
                                 if (nextVoiceId != voiceCandidateId) {
@@ -778,7 +833,9 @@ private fun WorkflowJoystick(
                                 change.consume()
                             }
                             val releaseId = selectedId
-                            if (releaseId != null && releaseId !in voiceIds) currentOnRelease(releaseId)
+                            if (releaseId != null && releaseId !in voiceIds) {
+                                dispatchRelease(releaseId, candidateStartedAt, releasedAt)
+                            }
                         } finally {
                             activeVoiceId?.let(currentVoiceStop)
                             selectedId = null
@@ -839,7 +896,7 @@ private fun ReasoningDial(
     reasoning: SelectorStatus,
     snapshot: PocketSnapshot,
     inFlightId: String?,
-    onInput: (String) -> Unit,
+    onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
 ) {
@@ -899,11 +956,14 @@ private fun DialStepButton(
     icon: ImageVector,
     snapshot: PocketSnapshot,
     inFlightId: String?,
-    onInput: (String) -> Unit,
+    onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
 ) {
-    val enabled = input != null && snapshot.inputEnabled(input.id) && inFlightId == null
+    val enabledGestures = if (input == null) emptyList() else {
+        ControllerGesture.entries.filter { snapshot.inputEnabled(input.id, it) }
+    }
+    val enabled = input != null && enabledGestures.isNotEmpty() && inFlightId == null
     val voiceTap = input?.let { snapshot.voiceTapEnabled(it.id) } == true
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
@@ -927,10 +987,33 @@ private fun DialStepButton(
             }
         }
     }
-    IconButton(
-        onClick = { if (!voiceTap) input?.id?.let(onInput) },
-        enabled = enabled,
-        modifier = Modifier.size(52.dp).then(voiceModifier),
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(52.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(voiceModifier)
+            .combinedClickable(
+                enabled = enabled && !voiceTap,
+                onClick = {
+                    if (ControllerGesture.TAP in enabledGestures) {
+                        input?.id?.let { onInput(it, ControllerGesture.TAP) }
+                    }
+                },
+                onDoubleClick = {
+                    if (ControllerGesture.DOUBLE_TAP in enabledGestures) {
+                        input?.id?.let { onInput(it, ControllerGesture.DOUBLE_TAP) }
+                    }
+                },
+                onLongClick = {
+                    if (ControllerGesture.HOLD in enabledGestures) {
+                        input?.id?.let { onInput(it, ControllerGesture.HOLD) }
+                    }
+                },
+                onLongClickLabel = "Run hold binding",
+            )
+            .alpha(if (enabled) 1f else 0.38f),
     ) {
         if (input != null && inFlightId == "input:${input.id}:${ControllerGesture.TAP.wireValue}") {
             CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -1057,6 +1140,7 @@ private fun MappingInputRow(
     enabled: Boolean,
     onSelect: (ControllerGesture) -> Unit,
 ) {
+    val pushToTalk = binding?.actions?.get(ControllerGesture.TAP)?.type == "voice"
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1070,6 +1154,7 @@ private fun MappingInputRow(
         ControllerGesture.entries.forEach { gesture ->
             val action = binding?.actions?.get(gesture)
             val label = catalog.firstOrNull { it.action == action }?.label ?: action?.type ?: "Unmapped"
+            val gestureEnabled = enabled && (!pushToTalk || gesture == ControllerGesture.TAP)
             Column(
                 modifier = Modifier
                     .width(61.dp)
@@ -1078,7 +1163,8 @@ private fun MappingInputRow(
                         if (action == null) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                         else MaterialTheme.colorScheme.primaryContainer,
                     )
-                    .clickable(enabled = enabled, onClick = { onSelect(gesture) })
+                    .clickable(enabled = gestureEnabled, onClick = { onSelect(gesture) })
+                    .alpha(if (gestureEnabled) 1f else 0.38f)
                     .padding(horizontal = 4.dp, vertical = 5.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -1115,7 +1201,9 @@ private fun ActionPickerDialog(
                     }
                     HorizontalDivider()
                 }
-                catalog.forEach { entry ->
+                catalog.filter { entry ->
+                    target.gesture == ControllerGesture.TAP || entry.action.type != "voice"
+                }.forEach { entry ->
                     val selected = entry.action == currentAction
                     Row(
                         modifier = Modifier

@@ -197,6 +197,7 @@ private struct AreaIndex {
   let elements: [AXUIElement]
   let roles: [String]
   let buttons: [AXUIElement]
+  let buttonPaths: [String]
   let textAreas: [AXUIElement]
 
   init(_ area: AXUIElement) {
@@ -207,22 +208,29 @@ private struct AreaIndex {
     var collectedElements = [AXUIElement]()
     var collectedRoles = [String]()
     var collectedButtons = [AXUIElement]()
+    var collectedButtonPaths = [String]()
     var collectedTextAreas = [AXUIElement]()
 
-    func visit(_ candidate: AXUIElement, depth: Int) {
+    func visit(_ candidate: AXUIElement, depth: Int, path: String) {
       let role = attributeString(candidate, kAXRoleAttribute as CFString)
       collectedElements.append(candidate)
       collectedRoles.append(role)
-      if role == "AXButton" { collectedButtons.append(candidate) }
+      if role == "AXButton" {
+        collectedButtons.append(candidate)
+        collectedButtonPaths.append(path)
+      }
       if role == "AXTextArea" { collectedTextAreas.append(candidate) }
       guard depth < 28, !leafRoles.contains(role) else { return }
-      visibleChildren(of: candidate).forEach { visit($0, depth: depth + 1) }
+      for (childIndex, child) in visibleChildren(of: candidate).enumerated() {
+        visit(child, depth: depth + 1, path: "\(path).\(childIndex)")
+      }
     }
 
-    visit(area, depth: 0)
+    visit(area, depth: 0, path: "root")
     elements = collectedElements
     roles = collectedRoles
     buttons = collectedButtons
+    buttonPaths = collectedButtonPaths
     textAreas = collectedTextAreas
   }
 }
@@ -335,7 +343,7 @@ private func agentTargets(in index: AreaIndex) -> [AgentTarget] {
   ]
   var seen = Set<String>()
   var result = [AgentTarget]()
-  for element in index.buttons {
+  for (buttonIndex, element) in index.buttons.enumerated() {
     let title = attributeString(element, kAXTitleAttribute as CFString)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let lowercased = title.lowercased()
@@ -343,7 +351,7 @@ private func agentTargets(in index: AreaIndex) -> [AgentTarget] {
     let label = String(title.dropLast(match.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !label.isEmpty, label.count <= 64,
           label.rangeOfCharacter(from: .controlCharacters) == nil else { continue }
-    let id = stableAgentID(for: element, label: label)
+    let id = stableAgentID(for: element, fallbackPath: index.buttonPaths[buttonIndex])
     guard !seen.contains(id) else { continue }
     seen.insert(id)
     result.append(AgentTarget(
@@ -358,10 +366,10 @@ private func agentTargets(in index: AreaIndex) -> [AgentTarget] {
   return result
 }
 
-private func stableAgentID(for element: AXUIElement, label: String) -> String {
+private func stableAgentID(for element: AXUIElement, fallbackPath: String) -> String {
   let identifier = attributeString(element, kAXIdentifierAttribute as CFString)
     .trimmingCharacters(in: .whitespacesAndNewlines)
-  let source = "\(identifier.isEmpty ? "label" : identifier)\u{0}\(label)"
+  let source = identifier.isEmpty ? "path\u{0}\(fallbackPath)" : "identifier\u{0}\(identifier)"
   let digest = SHA256.hash(data: Data(source.utf8))
   let hex = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
   return "agent-\(hex)"
