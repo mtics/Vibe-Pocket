@@ -6,7 +6,7 @@ same task shown on the Mac rather than starting an invisible CLI session.
 
 ## Controller
 
-The Android 0.4.3 controller uses protocol v3 and a versioned profile from the
+The Android 0.4.4 controller uses protocol v3 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,

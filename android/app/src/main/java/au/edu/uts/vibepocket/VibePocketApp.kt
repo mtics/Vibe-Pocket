@@ -654,7 +654,11 @@ private fun GestureControl(
 ) {
     val enabledGestures = ControllerGesture.entries.filter { snapshot.inputEnabled(input.id, it) }
     val voiceTap = snapshot.voiceTapEnabled(input.id)
+    val tapEnabled = ControllerGesture.TAP in enabledGestures
+    val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
+    val holdEnabled = ControllerGesture.HOLD in enabledGestures
     val voicePressEnabled = voiceTap && !busy
+    val interactive = !busy && (voiceTap || enabledGestures.isNotEmpty())
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     val loading = inFlightId?.startsWith("input:${input.id}:") == true
@@ -687,19 +691,19 @@ private fun GestureControl(
             .combinedClickable(
                 enabled = !voiceTap && enabledGestures.isNotEmpty() && !busy,
                 onClick = {
-                    if (!voiceTap && ControllerGesture.TAP in enabledGestures) {
+                    if (!voiceTap && tapEnabled) {
                         onInput(input.id, ControllerGesture.TAP)
                     }
                 },
-                onDoubleClick = {
-                    if (ControllerGesture.DOUBLE_TAP in enabledGestures) onInput(input.id, ControllerGesture.DOUBLE_TAP)
-                },
-                onLongClick = {
-                    if (ControllerGesture.HOLD in enabledGestures) onInput(input.id, ControllerGesture.HOLD)
-                },
-                onLongClickLabel = "Run hold binding",
+                onDoubleClick = if (doubleTapEnabled) {
+                    { onInput(input.id, ControllerGesture.DOUBLE_TAP) }
+                } else null,
+                onLongClick = if (holdEnabled) {
+                    { onInput(input.id, ControllerGesture.HOLD) }
+                } else null,
+                onLongClickLabel = if (holdEnabled) "Run hold binding" else null,
             )
-            .alpha(if (enabledGestures.isNotEmpty()) 1f else 0.38f)
+            .alpha(if (interactive) 1f else 0.38f)
             .padding(horizontal = 7.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween,
@@ -965,6 +969,9 @@ private fun DialStepButton(
     }
     val enabled = input != null && enabledGestures.isNotEmpty() && inFlightId == null
     val voiceTap = input?.let { snapshot.voiceTapEnabled(it.id) } == true
+    val tapEnabled = ControllerGesture.TAP in enabledGestures
+    val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
+    val holdEnabled = ControllerGesture.HOLD in enabledGestures
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     val voiceModifier = if (input == null) {
@@ -997,21 +1004,21 @@ private fun DialStepButton(
             .combinedClickable(
                 enabled = enabled && !voiceTap,
                 onClick = {
-                    if (ControllerGesture.TAP in enabledGestures) {
+                    if (tapEnabled) {
                         input?.id?.let { onInput(it, ControllerGesture.TAP) }
                     }
                 },
-                onDoubleClick = {
-                    if (ControllerGesture.DOUBLE_TAP in enabledGestures) {
+                onDoubleClick = if (doubleTapEnabled) {
+                    {
                         input?.id?.let { onInput(it, ControllerGesture.DOUBLE_TAP) }
                     }
-                },
-                onLongClick = {
-                    if (ControllerGesture.HOLD in enabledGestures) {
+                } else null,
+                onLongClick = if (holdEnabled) {
+                    {
                         input?.id?.let { onInput(it, ControllerGesture.HOLD) }
                     }
-                },
-                onLongClickLabel = "Run hold binding",
+                } else null,
+                onLongClickLabel = if (holdEnabled) "Run hold binding" else null,
             )
             .alpha(if (enabled) 1f else 0.38f),
     ) {
