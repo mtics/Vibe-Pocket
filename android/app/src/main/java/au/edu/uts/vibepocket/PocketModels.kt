@@ -1,5 +1,6 @@
 package au.edu.uts.vibepocket
 
+import org.json.JSONObject
 import java.net.URI
 
 data class ConnectionConfig(
@@ -21,7 +22,56 @@ data class PocketSnapshot(
     val revision: String,
     val status: BridgeStatus,
     val controls: DesktopControls,
-)
+    val controller: ControllerState? = null,
+) {
+    val activeLayer: ControllerLayer?
+        get() = controller?.profile?.layers?.firstOrNull { it.id == controller.activeLayerId }
+
+    fun actionFor(inputId: String, gesture: ControllerGesture = ControllerGesture.TAP): ControllerAction? =
+        activeLayer?.bindings?.get(inputId)?.actions?.get(gesture)
+
+    fun inputEnabled(inputId: String, gesture: ControllerGesture = ControllerGesture.TAP): Boolean {
+        val action = actionFor(inputId, gesture)
+        if (action == null) return legacyInputEnabled(inputId, gesture)
+        return actionEnabled(action)
+    }
+
+    fun agentFocusEnabled(index: Int): Boolean {
+        val state = controller ?: return false
+        if (index !in state.agents.indices || !controls.focusAgent) return false
+        return state.actionCatalog.any { it.id == "focus_agent_${index + 1}" && it.action.type == "focus_agent" }
+    }
+
+    private fun actionEnabled(action: ControllerAction): Boolean = when (action.type) {
+        "approve" -> controls.approve
+        "reject" -> controls.reject
+        "voice" -> controls.voice
+        "stop" -> controls.stop
+        "new_task" -> controls.newTask
+        "mode_cycle" -> controls.modeCycle
+        "clear_input" -> controls.clearInput
+        "focus_next" -> controls.focusAgent || status.state == "ready"
+        "focus_agent" -> controls.focusAgent
+        "navigate" -> controls.navigate
+        "reasoning_depth" -> controls.reasoning
+        "workflow" -> controls.workflow
+        "attach" -> status.state == "ready"
+        else -> false
+    }
+
+    private fun legacyInputEnabled(inputId: String, gesture: ControllerGesture): Boolean {
+        if (controller?.profile != null || gesture != ControllerGesture.TAP) return false
+        return when (inputId) {
+            "key_accept" -> controls.approve
+            "key_reject" -> controls.reject
+            "key_voice" -> controls.voice
+            "key_stop" -> controls.stop
+            "key_new_task" -> controls.newTask
+            "key_attach" -> status.state == "ready"
+            else -> false
+        }
+    }
+}
 
 data class BridgeStatus(
     val state: String,
@@ -29,14 +79,157 @@ data class BridgeStatus(
 )
 
 data class DesktopControls(
-    val voice: Boolean,
-    val stop: Boolean,
-    val newTask: Boolean,
-    val approve: Boolean,
-    val reject: Boolean,
+    val voice: Boolean = false,
+    val stop: Boolean = false,
+    val newTask: Boolean = false,
+    val approve: Boolean = false,
+    val reject: Boolean = false,
+    val clearInput: Boolean = false,
+    val focusAgent: Boolean = false,
+    val modeCycle: Boolean = false,
+    val navigate: Boolean = false,
+    val reasoning: Boolean = false,
+    val workflow: Boolean = false,
 )
 
+data class ControllerState(
+    val profile: ControllerProfile?,
+    val gestures: List<GestureOption>,
+    val actionCatalog: List<ActionCatalogEntry>,
+    val activeLayerId: String?,
+    val taskState: TaskState,
+    val agents: List<AgentStatus>,
+    val focusedAgentIndex: Int,
+    val mode: SelectorStatus,
+    val reasoning: SelectorStatus,
+)
+
+data class ControllerProfile(
+    val version: Int,
+    val inputs: List<ControllerInput>,
+    val workflows: List<ControllerWorkflow>,
+    val layers: List<ControllerLayer>,
+)
+
+data class ControllerInput(
+    val id: String,
+    val kind: InputKind,
+    val label: String,
+    val icon: String,
+)
+
+enum class InputKind(val wireValue: String) {
+    KEY("key"),
+    TOUCH("touch"),
+    JOYSTICK("joystick"),
+    DIAL("dial"),
+    UNKNOWN("unknown"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): InputKind = entries.firstOrNull { it.wireValue == value } ?: UNKNOWN
+    }
+}
+
+enum class ControllerGesture(val wireValue: String, val shortLabel: String) {
+    TAP("tap", "T"),
+    DOUBLE_TAP("double_tap", "2x"),
+    HOLD("hold", "H"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): ControllerGesture? = entries.firstOrNull { it.wireValue == value }
+    }
+}
+
+data class GestureOption(
+    val gesture: ControllerGesture,
+    val label: String,
+)
+
+data class ControllerWorkflow(
+    val id: String,
+    val label: String,
+)
+
+data class ControllerLayer(
+    val id: String,
+    val name: String,
+    val color: String?,
+    val bindings: Map<String, BindingDescriptor>,
+)
+
+data class BindingDescriptor(
+    val actions: Map<ControllerGesture, ControllerAction>,
+)
+
+data class ControllerAction(
+    val type: String,
+    val direction: String? = null,
+    val delta: Int? = null,
+    val index: Int? = null,
+    val workflowId: String? = null,
+) {
+    fun toJson(): JSONObject = JSONObject().put("type", type).also { root ->
+        direction?.let { root.put("direction", it) }
+        delta?.let { root.put("delta", it) }
+        index?.let { root.put("index", it) }
+        workflowId?.let { root.put("workflowId", it) }
+    }
+}
+
+data class ActionCatalogEntry(
+    val id: String,
+    val label: String,
+    val action: ControllerAction,
+)
+
+data class AgentStatus(
+    val label: String,
+    val state: TaskState,
+)
+
+data class SelectorStatus(
+    val available: Boolean,
+    val label: String,
+)
+
+enum class TaskState(val wireValue: String) {
+    IDLE("idle"),
+    EXECUTING("executing"),
+    WAITING("waiting"),
+    COMPLETE("complete"),
+    ERROR("error"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): TaskState = entries.firstOrNull { it.wireValue == value } ?: IDLE
+    }
+}
+
 sealed interface PocketCommand {
+    data class Binding(
+        val inputId: String,
+        val gesture: ControllerGesture = ControllerGesture.TAP,
+    ) : PocketCommand
+
+    data class SelectLayer(val layerId: String) : PocketCommand
+    data class FocusAgent(val index: Int) : PocketCommand
+    data class UpdateBinding(
+        val layerId: String,
+        val inputId: String,
+        val gesture: ControllerGesture,
+        val action: ControllerAction,
+    ) : PocketCommand
+
+    data class ClearBinding(
+        val layerId: String,
+        val inputId: String,
+        val gesture: ControllerGesture,
+    ) : PocketCommand
+
+    data class RenameLayer(val layerId: String, val name: String) : PocketCommand
+    data object ResetProfile : PocketCommand
     data object Attach : PocketCommand
     data object Voice : PocketCommand
     data object Stop : PocketCommand
@@ -49,7 +242,46 @@ data class PocketUiState(
     val config: ConnectionConfig? = null,
     val snapshot: PocketSnapshot? = null,
     val isRefreshing: Boolean = false,
+    val inFlightId: String? = null,
     val error: String? = null,
 )
 
+sealed interface PocketFeedback {
+    data object Success : PocketFeedback
+    data object Error : PocketFeedback
+}
+
 class BridgeException(message: String) : IllegalStateException(message)
+
+internal val FallbackKeyInputs = listOf(
+    ControllerInput("key_accept", InputKind.KEY, "Accept", "check"),
+    ControllerInput("key_reject", InputKind.KEY, "Reject", "close"),
+    ControllerInput("key_voice", InputKind.KEY, "Voice", "mic"),
+    ControllerInput("key_new_task", InputKind.KEY, "New task", "add"),
+    ControllerInput("key_stop", InputKind.KEY, "Stop", "stop"),
+    ControllerInput("key_mode", InputKind.KEY, "Mode", "cycle"),
+    ControllerInput("key_clear", InputKind.KEY, "Clear", "clear"),
+    ControllerInput("key_focus", InputKind.KEY, "Next agent", "agent"),
+    ControllerInput("key_up", InputKind.KEY, "Up", "up"),
+    ControllerInput("key_down", InputKind.KEY, "Down", "down"),
+    ControllerInput("key_left", InputKind.KEY, "Left", "left"),
+    ControllerInput("key_right", InputKind.KEY, "Right", "right"),
+    ControllerInput("key_attach", InputKind.KEY, "Focus Codex", "focus"),
+)
+
+internal fun PocketSnapshot.commandForInput(
+    inputId: String,
+    gesture: ControllerGesture,
+): PocketCommand {
+    if (controller?.profile != null) return PocketCommand.Binding(inputId, gesture)
+    if (gesture != ControllerGesture.TAP) return PocketCommand.Binding(inputId, gesture)
+    return when (inputId) {
+        "key_accept" -> PocketCommand.Approve
+        "key_reject" -> PocketCommand.Reject
+        "key_voice" -> PocketCommand.Voice
+        "key_stop" -> PocketCommand.Stop
+        "key_new_task" -> PocketCommand.NewTask
+        "key_attach" -> PocketCommand.Attach
+        else -> PocketCommand.Binding(inputId, gesture)
+    }
+}

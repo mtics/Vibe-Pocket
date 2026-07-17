@@ -11,10 +11,16 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class SecureConfigStore(context: Context) {
+interface ConfigStore {
+    fun save(config: ConnectionConfig)
+    fun load(): ConnectionConfig?
+    fun clear()
+}
+
+class SecureConfigStore(context: Context) : ConfigStore {
     private val preferences = context.getSharedPreferences("vibe_pocket", Context.MODE_PRIVATE)
 
-    fun save(config: ConnectionConfig) {
+    override fun save(config: ConnectionConfig) {
         val payload = JSONObject()
             .put("baseUrl", config.normalizedUrl)
             .put("token", config.token)
@@ -22,7 +28,7 @@ class SecureConfigStore(context: Context) {
         preferences.edit().putString(CONFIG_KEY, encrypt(payload)).apply()
     }
 
-    fun load(): ConnectionConfig? {
+    override fun load(): ConnectionConfig? {
         val encrypted = preferences.getString(CONFIG_KEY, null) ?: return null
         return runCatching {
             val payload = JSONObject(decrypt(encrypted))
@@ -33,7 +39,7 @@ class SecureConfigStore(context: Context) {
         }.getOrNull()
     }
 
-    fun clear() {
+    override fun clear() {
         preferences.edit().remove(CONFIG_KEY).apply()
     }
 
