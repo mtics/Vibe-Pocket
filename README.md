@@ -1,43 +1,50 @@
 # Vibe Pocket
 
 Vibe Pocket turns an Android phone into a private Codex Micro-style controller
-for the visible Codex task in the ChatGPT desktop app on the M5. It controls the
-same task shown on the Mac rather than starting an invisible CLI session.
+for Codex tasks owned through the local `codex app-server` protocol on the M5.
+It controls Codex threads and turns directly rather than simulating desktop UI.
 
 ## Controller
 
-The Android 0.4.4 controller uses protocol v3 and a versioned profile from the
+The Android 0.5.0 controller uses protocol v4 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,
   needs-input, complete, and error states. A populated key focuses that exact
   Agent by an opaque stable ID rather than by its current list position.
-- Thirteen command keys cover accept/submit, reject/dismiss, dictation, new
-  task, stop, access mode, clear, focus, navigation, and foreground attachment.
-  Accept and Reject use a visible approval control when one exists, otherwise
-  they provide the OpenMicro-compatible Return and Escape behavior.
-- A Voice-mapped input is true push-to-talk: pointer down starts Codex
-  dictation and release stops it. Leaving the foreground, disconnecting, or
-  closing the ViewModel also queues a best-effort stop.
+- Thirteen command keys cover accept/submit, reject/dismiss, phone dictation,
+  new task, stop, access mode, clear, Agent focus, navigation, and task resume.
+  Accept resolves a pending Codex approval first and otherwise submits the
+  focused task's dictation draft. Reject declines or discards the same intent.
+- A Voice-mapped input is true push-to-talk: pointer down starts phone speech
+  recognition and release finalizes an in-memory draft. Leaving the foreground,
+  disconnecting, or closing the ViewModel cancels recognition and queues a
+  best-effort Voice Stop state.
 - A four-way joystick starts the built-in review, debug, refactor, and test
   workflows on release.
-- A stepped dial changes reasoning depth when the visible Codex composer allows
-  it.
+- A stepped dial writes the focused thread's reasoning effort through
+  `thread/settings/update`.
 - Six programmable layers persist across bridge restarts.
 - Every input has independent tap, double-tap, and hold mappings. Push-to-talk
   is deliberately exclusive on its input because a held recording gesture
   cannot also have an unambiguous hold action. The phone's mapping sheet can
   only select actions advertised by the bridge.
 
-The phone never sends a prompt, transcript, terminal byte, shell command, or
-arbitrary key sequence. A workflow button sends only a fixed workflow ID; the
-M5 expands it into a built-in, reviewed prompt and starts it in a new visible
-Codex task.
+The phone sends only whitelisted controller actions and a final system speech
+recognition result. Dictation remains an in-memory draft until Accept submits
+it or Clear/Reject discards it. A workflow button sends only a fixed workflow
+ID; the M5 expands it into a built-in, reviewed prompt and starts a new Codex
+app-server task.
+
+Vibe Pocket owns its Codex tasks through a private local registry. It does not
+attach to or manipulate whichever ChatGPT task happens to be visible on the
+desktop. Codex can still use its normal tools inside the selected workspace and
+access mode.
 
 ## Install The M5 Bridge
 
-The M5 needs ChatGPT with Codex open, macOS Accessibility permission, Node.js
-22 or newer, and the Swift toolchain supplied by Xcode. Install dependencies
+The M5 needs the Codex CLI, Node.js 22 or newer, and a signed-in Codex account.
+ChatGPT does not need to remain open or in the foreground. Install dependencies
 once, then install the user LaunchAgent:
 
 ```sh
@@ -54,28 +61,10 @@ The installer copies the runtime to:
 ~/Library/Application Support/Vibe Pocket/runtime
 ```
 
-Open **System Settings → Privacy & Security → Accessibility**, press `+`, and
-add this signed background app:
-
-```text
-~/Library/Application Support/Vibe Pocket/runtime/Vibe Pocket Bridge Host.app
-```
-
-The host can also open the same macOS permission prompt for itself:
-
-```sh
-open -n -W -a \
-  "$HOME/Library/Application Support/Vibe Pocket/runtime/Vibe Pocket Bridge Host.app" \
-  --args request-accessibility
-```
-
-This permission stays attached to the LaunchAgent's background host while its
-child helper clicks and navigates only the filtered visible Codex controls
-implemented by Vibe Pocket. The installer does not modify the macOS privacy
-database or accept the permission for you.
-
-The bridge refuses desktop actions while the M5 is locked and resumes
-automatically after the next successful poll once it is unlocked.
+The default `app-server` engine does not request macOS Accessibility permission
+and remains available while the M5 is locked. The former UI-control engine is
+kept only as an explicit compatibility option via
+`VIBE_POCKET_ENGINE=accessibility`.
 
 It stores the token in a mode-`0600` user config file and starts
 `au.edu.uts.vibepocket.bridge` with launchd. Re-running the installer upgrades
@@ -92,6 +81,12 @@ Controller mappings are stored outside the repository at:
 
 ```text
 ~/Library/Application Support/Vibe Pocket/controller-profile.json
+```
+
+Opaque IDs for tasks created by Vibe Pocket are stored separately at:
+
+```text
+~/Library/Application Support/Vibe Pocket/owned-threads.json
 ```
 
 ## Tailnet Access
@@ -136,34 +131,38 @@ http://192.168.31.250:4319/app-debug.apk
 
 The app requires an HTTPS bridge URL and stores its token with an Android
 Keystore AES-GCM key. On MIUI, unrestricted battery use is optional; the SSE
-connection is active only while Vibe Pocket is in the foreground.
+connection is active only while Vibe Pocket is in the foreground. Android 12+
+prefers on-device speech recognition when available; otherwise the configured
+system recognition service may process audio remotely.
 
 ## First Controller Test
 
-1. Keep the M5 unlocked with a Codex task visible in the ChatGPT desktop app.
+1. Keep the M5 online; ChatGPT may remain closed or in the background.
 2. Open Vibe Pocket and tap Refresh. The status card should turn green and say
    `Ready`.
-3. Tap Focus to bring that visible Codex task to the foreground.
-4. Press and hold Voice, speak, then release. The dictated text should appear
-   in the desktop composer; use Clear to remove this first test draft.
-5. Test navigation and, while Codex is idle, the access-mode and reasoning
-   controls. Workflow directions deliberately create a new visible task.
+3. Tap New task or select one of the six live Agent keys.
+4. Press and hold Voice, speak, then release. Accept submits the in-memory
+   dictation to the focused Codex task; Clear discards it.
+5. Test Agent navigation, access mode, reasoning, and workflows. Workflow
+   directions deliberately create a new app-server task.
 
-Vibe Pocket controls whichever Codex task is currently visible on the M5. It
-does not mirror the task contents onto the phone and it does not attach to a
-hidden terminal session.
+Vibe Pocket does not mirror task contents onto the phone. Agent keys expose
+only a bounded task label and state; task execution remains inside Codex.
 
 ## Security Boundary
 
 - The bridge binds to `127.0.0.1`; Tailscale supplies tailnet-only HTTPS.
 - Commands and configurable mappings use a strict semantic action whitelist.
-- Protocol v3 binds Agent focus to a stable opaque ID and models dictation as
-  idempotent start/stop target states.
+- Protocol v4 binds Agent focus to a stable opaque ID, models dictation as
+  idempotent start/stop target states, and accepts one bounded final transcript.
 - Workflow text exists only on the M5 and cannot be supplied by the phone.
-- Desktop actions target filtered controls in the visible Codex Accessibility
-  tree and use a serialized, timeout-bounded helper.
+- The default path uses Codex app-server JSON-RPC and requires no macOS
+  Accessibility permission or foreground ChatGPT window.
 - The bridge does not expose task text, historical conversations, OpenAI
-  credentials, arbitrary prompts, raw keyboard sequences, or shell execution.
+  credentials, raw keyboard sequences, or direct shell execution endpoints.
+- Phone transcripts are bounded, held only in memory, bound to one owned task,
+  hashed in the idempotency cache, and submitted only after explicit Accept.
+- The owned-task registry contains only opaque thread IDs and is mode `0600`.
 - Idempotency keys are request-bound and bounded; rapid Android actions are
   additionally protected by a single-flight gate.
 - The LaunchAgent starts Node with a minimal environment so unrelated user
@@ -171,17 +170,17 @@ hidden terminal session.
 
 ## Verification
 
-- Bridge: 34 Node tests cover profile migration and persistence, all three
-  gestures, action validation, layer editing, Agent focus, polling,
-  single-flight slow status reads, PTT target states, idempotency,
-  authentication, and HTTP health behavior.
-- Android: 12 JVM tests cover v1/v2 profile parsing, protocol v3 Agent and
-  voice data, structured command serialization, capability gating, rapid-tap
-  single-flight behavior, quick PTT release, and lifecycle/disconnect cleanup.
+- Bridge: 47 Node tests cover profile and owned-task persistence, app-server
+  lifecycle races, permission schemas, modes, reasoning, stop, workflows,
+  gestures, Agent focus, polling, idempotency, authentication, and HTTP health.
+- Android: 18 JVM tests cover profile parsing, protocol v4 data, structured
+  command serialization, capability gating, ordered PTT delivery, both speech
+  callback orders, stale callbacks, and lifecycle/disconnect cleanup.
 - Android `lintDebug` and `assembleDebug` pass under Java 17.
 - The M5 LaunchAgent, local health endpoint, and Tailnet HTTPS health endpoint
   are verified live.
 
-On-device Xiaomi 13 layout, haptics, and each desktop HID action must still be
-verified after installing the current APK and resolving any macOS permission
-prompt shown by the M5.
+Direct app-server task creation, dictation submission, natural completion,
+mode/reasoning updates, and interruption are verified live on the M5. Xiaomi 13
+speech-provider behavior and every physical gesture still require an on-device
+pass after installing the current APK.

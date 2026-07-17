@@ -49,6 +49,7 @@ class FakeDesktop {
     this.calls.push(["setVoice", active]);
     this.voice = { available: true, active };
   }
+  async setDictationDraft(text) { this.calls.push(["setDictationDraft", text]); }
   async navigate(direction) { this.calls.push(["navigate", direction]); }
   async cycleMode() { this.calls.push(["cycleMode"]); }
   async clearInput() { this.calls.push(["clearInput"]); }
@@ -86,7 +87,7 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   await service.start();
 
   const snapshot = await service.snapshot();
-  assert.equal(snapshot.focusSessionId, "desktop-codex");
+  assert.equal(snapshot.focusSessionId, "vibe-pocket-codex");
   assert.equal(snapshot.controller.profile.layers.length, 6);
   assert.equal(snapshot.controller.profile.inputs.length, 20);
   assert.deepEqual(snapshot.controller.gestures.map(({ id }) => id), ["tap", "double_tap", "hold"]);
@@ -166,6 +167,20 @@ test("serializes push-to-talk target states without losing release", async () =>
 
   assert.deepEqual(desktop.calls, [["setVoice", true], ["setVoice", false]]);
   assert.equal((await service.snapshot()).controller.voice.active, false);
+});
+
+test("routes a bounded phone dictation result into the controller draft", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await service.command({ kind: "dictation_result", text: "Review the current change." }, "dictation-1");
+
+  assert.deepEqual(desktop.calls, [["setDictationDraft", "Review the current change."]]);
+  await assert.rejects(
+    () => service.command({ kind: "dictation_result", text: "" }, "dictation-empty"),
+    (error) => error.status === 400,
+  );
 });
 
 test("switches layers and rejects inputs that are not mapped on that layer", async () => {

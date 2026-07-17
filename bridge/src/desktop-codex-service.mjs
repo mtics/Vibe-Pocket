@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 import {
@@ -20,7 +20,7 @@ import {
 import { MacCodexDesktopController } from "./macos-codex-desktop.mjs";
 import { PocketError } from "./pocket-controller-service.mjs";
 
-const DESKTOP_SESSION_ID = "desktop-codex";
+const DESKTOP_SESSION_ID = "vibe-pocket-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
 const TASK_STATES = new Set(["idle", "unread", "thinking", "executing", "waiting", "complete", "error"]);
 
@@ -59,9 +59,9 @@ export class DesktopCodexService extends EventEmitter {
     this.#pollIntervalMs = pollIntervalMs;
     this.#session = {
       id: DESKTOP_SESSION_ID,
-      workspaceId: "current desktop task",
+      workspaceId: "Vibe Pocket Codex",
       state: "starting",
-      terminalTail: "Checking the visible ChatGPT Codex task...",
+      terminalTail: "Checking the direct Codex app-server connection...",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       canInterrupt: false,
@@ -88,6 +88,7 @@ export class DesktopCodexService extends EventEmitter {
     this.#pollTimer = null;
     await this.#pollRefresh?.catch(() => {});
     this.#pollRefresh = null;
+    await this.#desktop.dispose?.();
   }
 
   async snapshot() {
@@ -113,7 +114,7 @@ export class DesktopCodexService extends EventEmitter {
       throw new PocketError(400, "idempotency_key_required", "Every controller action needs an Idempotency-Key header.");
     }
 
-    const fingerprint = JSON.stringify(command);
+    const fingerprint = commandFingerprint(command);
     const existing = this.#idempotency.get(idempotencyKey);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
@@ -144,6 +145,25 @@ export class DesktopCodexService extends EventEmitter {
       if (command.kind === "voice_start" || command.kind === "voice_stop") {
         requireCommandKeys(command, ["kind"]);
         await this.#setVoice(command.kind === "voice_start");
+        return;
+      }
+
+      if (command.kind === "dictation_result") {
+        requireCommandKeys(command, ["kind", "text"]);
+        if (
+          typeof command.text !== "string"
+          || command.text.trim().length === 0
+          || command.text.length > 12_000
+          || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(command.text)
+        ) {
+          throw new ControllerProfileValidationError(
+            "Phone dictation must contain printable non-empty text up to 12,000 characters.",
+          );
+        }
+        await this.#perform(
+          () => this.#desktop.setDictationDraft(command.text),
+          "Stored the phone dictation draft.",
+        );
         return;
       }
 
@@ -222,7 +242,7 @@ export class DesktopCodexService extends EventEmitter {
       if (error instanceof ControllerProfileValidationError) {
         throw new PocketError(400, "invalid_controller_configuration", error.message);
       }
-      const message = error.message || "The visible Codex task did not accept this action.";
+      const message = error.message || "Codex did not accept this controller action.";
       await this.#refreshAvailability();
       this.#status = { ...this.#status, message };
       this.#session.terminalTail = message;
@@ -236,22 +256,22 @@ export class DesktopCodexService extends EventEmitter {
     action = validateControllerAction(action);
     switch (action.type) {
       case "attach":
-        await this.#perform(() => this.#desktop.attach(), "Attached to the visible ChatGPT Codex task.");
+        await this.#perform(() => this.#desktop.attach(), "Resumed the focused Vibe Pocket Codex task.");
         return;
       case "voice":
         await this.#setVoice(!this.#controllerState.voice.active);
         return;
       case "stop":
-        await this.#press("stop", "Pressed Stop in the visible ChatGPT Codex task.");
+        await this.#press("stop", "Stopped the focused Codex turn.");
         return;
       case "approve":
-        await this.#press("approve", "Approved the visible ChatGPT Codex request.");
+        await this.#press("approve", "Approved the focused Codex request or submitted its draft.");
         return;
       case "reject":
-        await this.#press("reject", "Rejected the visible ChatGPT Codex request.");
+        await this.#press("reject", "Rejected the focused Codex request or discarded its draft.");
         return;
       case "new_task":
-        await this.#press("new-task", "Created a new visible ChatGPT Codex task.");
+        await this.#press("new-task", "Created a new Vibe Pocket Codex task.");
         return;
       case "navigate":
         if (!["up", "down", "left", "right"].includes(action.direction)) {
@@ -263,12 +283,12 @@ export class DesktopCodexService extends EventEmitter {
         await this.#perform(() => this.#desktop.cycleMode(), "Selected the next Codex mode.");
         return;
       case "clear_input":
-        await this.#perform(() => this.#desktop.clearInput(), "Cleared the visible Codex draft.");
+        await this.#perform(() => this.#desktop.clearInput(), "Cleared the pending phone dictation.");
         return;
       case "focus_next": {
         const agents = this.#controllerState.agents;
         if (agents.length === 0) {
-          await this.#perform(() => this.#desktop.attach(), "Focused the visible ChatGPT Codex task.");
+          await this.#perform(() => this.#desktop.attach(), "Resumed the focused Vibe Pocket Codex task.");
           return;
         }
         const nextIndex = (this.#controllerState.focusedAgentIndex + 1) % agents.length;
@@ -336,7 +356,7 @@ export class DesktopCodexService extends EventEmitter {
       this.#controllerState = normalizeControllerState(result, this.#controllerState.focusedAgentId);
       this.#session.state = this.#controllerState.taskState === "error" ? "error" : "active";
       this.#session.canInterrupt = this.#status.controls.stop;
-      this.#session.terminalTail = result.message ?? "Ready to control the visible ChatGPT Codex task.";
+      this.#session.terminalTail = result.message ?? "Ready to control Vibe Pocket Codex tasks.";
     } catch (error) {
       this.#status = {
         state: "degraded",
@@ -365,7 +385,7 @@ export class DesktopCodexService extends EventEmitter {
   async #setVoice(active) {
     await this.#perform(
       () => this.#desktop.setVoice(active),
-      active ? "Started Codex dictation on the M5." : "Stopped Codex dictation on the M5.",
+      active ? "Started phone dictation." : "Stopped phone dictation.",
     );
   }
 
@@ -415,6 +435,16 @@ export class DesktopCodexService extends EventEmitter {
     this.#revision += 1;
     this.#events.publish(eventType, { revision: `r_${this.#revision}`, ...data });
   }
+}
+
+function commandFingerprint(command) {
+  if (command?.kind !== "dictation_result" || typeof command.text !== "string") {
+    return JSON.stringify(command);
+  }
+  return JSON.stringify({
+    kind: command.kind,
+    textSha256: createHash("sha256").update(command.text).digest("hex"),
+  });
 }
 
 function legacyAction(command) {

@@ -27,8 +27,8 @@ class PocketViewModel(
         val config: ConnectionConfig,
     )
 
-    private data class VoiceTransition(
-        val active: Boolean,
+    private data class VoiceCommand(
+        val command: PocketCommand,
         val config: ConnectionConfig,
     )
 
@@ -39,11 +39,12 @@ class PocketViewModel(
 
     private val commandGate = AtomicBoolean(false)
     private val voiceStateLock = Any()
-    private val pendingVoiceStates = ArrayDeque<VoiceTransition>()
+    private val pendingVoiceCommands = ArrayDeque<VoiceCommand>()
     private val voiceScopeJob = SupervisorJob()
     private val voiceScope = CoroutineScope(voiceScopeJob + ioDispatcher)
     private var voiceDrainRunning = false
     private var voiceOwner: VoiceOwner? = null
+    private var pendingDictationConfig: ConnectionConfig? = null
     private var closeVoiceScopeWhenDrained = false
     private val refreshRunning = AtomicBoolean(false)
     private val refreshRequested = AtomicBoolean(false)
@@ -139,7 +140,8 @@ class PocketViewModel(
         val shouldLaunch = synchronized(voiceStateLock) {
             if (voiceOwner != null) return@synchronized null
             voiceOwner = VoiceOwner(inputId, config)
-            pendingVoiceStates.addLast(VoiceTransition(active = true, config = config))
+            pendingDictationConfig = null
+            pendingVoiceCommands.addLast(VoiceCommand(PocketCommand.VoiceStart, config))
             (!voiceDrainRunning).also { launch ->
                 if (launch) voiceDrainRunning = true
             }
@@ -149,15 +151,46 @@ class PocketViewModel(
     }
 
     fun stopVoice(inputId: String): Boolean {
-        return stopOwnedVoice(inputId)
+        return stopOwnedVoice(inputId, acceptDictation = true)
     }
 
-    private fun stopOwnedVoice(inputId: String? = null): Boolean {
+    fun submitDictation(text: String): Boolean {
+        val normalized = text.trim()
+        if (
+            normalized.isEmpty() ||
+            normalized.length > 12_000 ||
+            normalized.any { it.isISOControl() && it != '\n' && it != '\r' && it != '\t' }
+        ) return false
+        val shouldLaunch = synchronized(voiceStateLock) {
+            val config = pendingDictationConfig ?: return@synchronized null
+            pendingDictationConfig = null
+            if (_state.value.config != config) return@synchronized null
+            pendingVoiceCommands.addLast(VoiceCommand(PocketCommand.DictationResult(normalized), config))
+            (!voiceDrainRunning).also { launch ->
+                if (launch) voiceDrainRunning = true
+            }
+        } ?: return false
+        if (shouldLaunch) launchVoiceDrain()
+        return true
+    }
+
+    fun reportDictationError(message: String) {
+        synchronized(voiceStateLock) { pendingDictationConfig = null }
+        reportLocalError(message)
+    }
+
+    fun reportLocalError(message: String) {
+        _state.update { it.copy(error = message) }
+        _feedback.tryEmit(PocketFeedback.Error)
+    }
+
+    private fun stopOwnedVoice(inputId: String? = null, acceptDictation: Boolean = false): Boolean {
         val shouldLaunch = synchronized(voiceStateLock) {
             val owner = voiceOwner?.takeIf { inputId == null || it.inputId == inputId }
                 ?: return@synchronized null
             voiceOwner = null
-            pendingVoiceStates.addLast(VoiceTransition(active = false, config = owner.config))
+            pendingDictationConfig = owner.config.takeIf { acceptDictation }
+            pendingVoiceCommands.addLast(VoiceCommand(PocketCommand.VoiceStop, owner.config))
             (!voiceDrainRunning).also { launch ->
                 if (launch) voiceDrainRunning = true
             }
@@ -251,20 +284,19 @@ class PocketViewModel(
             while (true) {
                 var closeScope = false
                 val transition = synchronized(voiceStateLock) {
-                    if (pendingVoiceStates.isEmpty()) {
+                    if (pendingVoiceCommands.isEmpty()) {
                         voiceDrainRunning = false
                         closeScope = closeVoiceScopeWhenDrained
                         null
                     } else {
-                        pendingVoiceStates.removeFirst()
+                        pendingVoiceCommands.removeFirst()
                     }
                 }
                 if (transition == null) {
                     if (closeScope) voiceScopeJob.cancel()
                     return@launch
                 }
-                val command = if (transition.active) PocketCommand.VoiceStart else PocketCommand.VoiceStop
-                runCatching { client.command(transition.config, command) }
+                runCatching { client.command(transition.config, transition.command) }
                     .onSuccess {
                         if (_state.value.config == transition.config) {
                             _feedback.tryEmit(PocketFeedback.Success)
@@ -306,7 +338,7 @@ class PocketViewModel(
         stopEvents()
         val closeNow = synchronized(voiceStateLock) {
             closeVoiceScopeWhenDrained = true
-            !voiceDrainRunning && pendingVoiceStates.isEmpty()
+            !voiceDrainRunning && pendingVoiceCommands.isEmpty()
         }
         if (closeNow) voiceScopeJob.cancel()
         super.onCleared()

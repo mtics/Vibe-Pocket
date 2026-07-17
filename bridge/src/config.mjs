@@ -25,7 +25,15 @@ export function loadConfig(environment = process.env, cwd = process.cwd()) {
   const workspaces = parseWorkspaces(environment.VIBE_POCKET_WORKSPACES, environment.VIBE_POCKET_WORKSPACE, cwd);
   const codexCommand = environment.VIBE_POCKET_CODEX_COMMAND ?? "codex";
   const profilePath = parseProfilePath(environment.VIBE_POCKET_PROFILE_PATH, environment);
-  return { host, port, token, workspaces, codexCommand, profilePath };
+  const ownedThreadsPath = parseProfilePath(
+    environment.VIBE_POCKET_OWNED_THREADS_PATH ?? join(dirname(profilePath), "owned-threads.json"),
+    environment,
+  );
+  const engine = environment.VIBE_POCKET_ENGINE ?? "app-server";
+  if (engine !== "app-server" && engine !== "accessibility") {
+    throw new Error("VIBE_POCKET_ENGINE must be app-server or accessibility.");
+  }
+  return { host, port, token, workspaces, codexCommand, profilePath, ownedThreadsPath, engine };
 }
 
 function parseProfilePath(value, environment) {

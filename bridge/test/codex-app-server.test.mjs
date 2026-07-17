@@ -29,11 +29,12 @@ test("initializes and routes JSON-RPC responses", async () => {
   assert.equal(sent[0].method, "initialize");
   child.stdout.write(`${JSON.stringify({ id: sent[0].id, result: { serverInfo: {} } })}\n`);
   await started;
+  assert.deepEqual(sent[1], { method: "initialized", params: {} });
 
   const listed = appServer.request("thread/list", { limit: 3 });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(sent[1].method, "thread/list");
-  child.stdout.write(`${JSON.stringify({ id: sent[1].id, result: { data: [] } })}\n`);
+  assert.equal(sent[2].method, "thread/list");
+  child.stdout.write(`${JSON.stringify({ id: sent[2].id, result: { data: [] } })}\n`);
   assert.deepEqual(await listed, { data: [] });
 });
 

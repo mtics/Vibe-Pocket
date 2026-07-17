@@ -68,6 +68,7 @@ export class CodexAppServer extends EventEmitter {
         experimentalApi: true,
       },
     });
+    this.notify("initialized");
   }
 
   async stop() {
@@ -94,6 +95,10 @@ export class CodexAppServer extends EventEmitter {
 
   respond(id, result) {
     this.#write({ id, result });
+  }
+
+  notify(method, params = {}) {
+    this.#write({ method, params });
   }
 
   respondWithError(id, code, message) {

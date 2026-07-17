@@ -275,6 +275,11 @@ sealed interface PocketCommand {
     data object Voice : PocketCommand
     data object VoiceStart : PocketCommand
     data object VoiceStop : PocketCommand
+    data class DictationResult(val text: String) : PocketCommand {
+        init {
+            require(text.isNotBlank() && text.length <= 12_000)
+        }
+    }
     data object Stop : PocketCommand
     data object NewTask : PocketCommand
     data object Approve : PocketCommand

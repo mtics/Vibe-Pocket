@@ -97,3 +97,13 @@ test("loads an environment-configured profile path only outside the repository",
     /outside the Vibe Pocket repository/,
   );
 });
+
+test("uses direct app-server control by default and validates compatibility mode", () => {
+  const environment = { VIBE_POCKET_TOKEN: "x".repeat(24) };
+  assert.equal(loadConfig(environment).engine, "app-server");
+  assert.equal(loadConfig({ ...environment, VIBE_POCKET_ENGINE: "accessibility" }).engine, "accessibility");
+  assert.throws(
+    () => loadConfig({ ...environment, VIBE_POCKET_ENGINE: "screen-scrape" }),
+    /app-server or accessibility/,
+  );
+});
