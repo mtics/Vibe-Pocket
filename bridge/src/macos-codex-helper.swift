@@ -121,7 +121,7 @@ private func verifyForeground(_ application: NSRunningApplication) throws {
 }
 
 private func activate(_ application: NSRunningApplication) throws {
-  guard application.activate(options: [.activateIgnoringOtherApps]) else {
+  guard application.activate(options: []) else {
     throw HelperFailure.message("ChatGPT could not be activated on the M5.")
   }
   usleep(350_000)
@@ -166,46 +166,142 @@ private func controlButton(_ control: DesktopControl, in area: AXUIElement) -> A
   descendant(of: area, where: {
     guard attributeString($0, kAXRoleAttribute as CFString) == "AXButton" else { return false }
     guard attributeBool($0, kAXEnabledAttribute as CFString) else { return false }
-    let title = attributeString($0, kAXTitleAttribute as CFString).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let description = attributeString($0, kAXDescriptionAttribute as CFString).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let title = attributeString($0, kAXTitleAttribute as CFString)
+      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let description = attributeString($0, kAXDescriptionAttribute as CFString)
+      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     return control.labels.contains(title) || control.labels.contains(description)
   })
 }
 
-private func controls(in area: AXUIElement) -> [String: Bool] {
-  Dictionary(uniqueKeysWithValues: DesktopControl.allCases.map { control in
-    (control.rawValue, controlButton(control, in: area) != nil)
+private func prompt(in area: AXUIElement) -> AXUIElement? {
+  let inputs = descendants(of: area, where: {
+    attributeString($0, kAXRoleAttribute as CFString) == "AXTextArea"
+  })
+  return inputs.first(where: { attributeBool($0, kAXFocusedAttribute as CFString) }) ?? inputs.last
+}
+
+private func modePopup(in area: AXUIElement) -> AXUIElement? {
+  descendant(of: area, where: {
+    guard attributeString($0, kAXRoleAttribute as CFString) == "AXPopUpButton",
+          attributeBool($0, kAXEnabledAttribute as CFString) else { return false }
+    let description = attributeString($0, kAXDescriptionAttribute as CFString).lowercased()
+    return description.contains("切换模式") || description.contains("switch mode")
   })
 }
 
-private func interactiveControls(in area: AXUIElement) -> [[String: Any]] {
-  let roles: Set<String> = [
-    "AXButton",
-    "AXCheckBox",
-    "AXIncrementor",
-    "AXMenuButton",
-    "AXPopUpButton",
-    "AXRadioButton",
-    "AXSlider",
-    "AXTextArea",
+private func reasoningPopup(in area: AXUIElement) -> AXUIElement? {
+  let elements = descendants(of: area, where: { _ in true })
+  guard let inputIndex = elements.lastIndex(where: {
+    attributeString($0, kAXRoleAttribute as CFString) == "AXTextArea"
+  }) else { return nil }
+  let end = min(elements.count, inputIndex + 24)
+  guard inputIndex + 1 < end else { return nil }
+  return elements[(inputIndex + 1)..<end].first(where: {
+    attributeString($0, kAXRoleAttribute as CFString) == "AXPopUpButton"
+      && attributeBool($0, kAXEnabledAttribute as CFString)
+      && !attributeString($0, kAXTitleAttribute as CFString).isEmpty
+  })
+}
+
+private struct AgentTarget {
+  let element: AXUIElement
+  let label: String
+  let state: String
+  let focused: Bool
+}
+
+private func agentTargets(in area: AXUIElement) -> [AgentTarget] {
+  let suffixes = [
+    (" 运行中", "executing"),
+    (" running", "executing"),
+    (" executing", "executing"),
+    (" 等待中", "waiting"),
+    (" waiting", "waiting"),
+    (" 已完成", "complete"),
+    (" complete", "complete"),
+    (" done", "complete"),
+    (" 错误", "error"),
+    (" error", "error"),
   ]
-  return descendants(of: area, where: {
-    roles.contains(attributeString($0, kAXRoleAttribute as CFString))
-  }).compactMap { element in
-    let role = attributeString(element, kAXRoleAttribute as CFString)
+  let forbidden = CharacterSet(charactersIn: "=/$\\\"'")
+  var seen = Set<String>()
+  var result = [AgentTarget]()
+  for element in descendants(of: area, where: {
+    attributeString($0, kAXRoleAttribute as CFString) == "AXButton"
+  }) {
     let title = attributeString(element, kAXTitleAttribute as CFString)
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    let description = attributeString(element, kAXDescriptionAttribute as CFString)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard role == "AXTextArea" || !title.isEmpty || !description.isEmpty else { return nil }
-    return [
-      "role": role,
-      "title": title,
-      "description": description,
-      "enabled": attributeBool(element, kAXEnabledAttribute as CFString),
-      "focused": attributeBool(element, kAXFocusedAttribute as CFString),
-    ]
+    let lowercased = title.lowercased()
+    guard let match = suffixes.first(where: { lowercased.hasSuffix($0.0) }) else { continue }
+    let label = String(title.dropLast(match.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !label.isEmpty, label.count <= 64,
+          label.rangeOfCharacter(from: forbidden) == nil,
+          !seen.contains(label) else { continue }
+    seen.insert(label)
+    result.append(AgentTarget(
+      element: element,
+      label: label,
+      state: match.1,
+      focused: attributeBool(element, kAXSelectedAttribute as CFString)
+        || attributeBool(element, kAXFocusedAttribute as CFString)
+    ))
   }
+  return result
+}
+
+private func controlAvailability(in area: AXUIElement) -> [String: Bool] {
+  let direct = Dictionary(uniqueKeysWithValues: DesktopControl.allCases.map { control in
+    (control.rawValue, controlButton(control, in: area) != nil)
+  })
+  let agents = agentTargets(in: area)
+  return direct.merging([
+    "clear-input": prompt(in: area) != nil,
+    "focus-agent": !agents.isEmpty,
+    "mode-cycle": modePopup(in: area) != nil,
+    "navigate": true,
+    "reasoning": reasoningPopup(in: area) != nil,
+    "workflow": prompt(in: area) != nil && controlButton(.stop, in: area) == nil,
+  ]) { _, new in new }
+}
+
+private func modeLabel(in area: AXUIElement) -> String? {
+  guard let popup = modePopup(in: area) else { return nil }
+  let description = attributeString(popup, kAXDescriptionAttribute as CFString)
+  for separator in ["：", ":"] {
+    if let range = description.range(of: separator) {
+      return String(description[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+  }
+  return description
+}
+
+private func taskState(in area: AXUIElement, agents: [AgentTarget]) -> String {
+  if agents.contains(where: { $0.state == "error" }) { return "error" }
+  if controlButton(.approve, in: area) != nil || controlButton(.reject, in: area) != nil { return "waiting" }
+  if controlButton(.stop, in: area) != nil || agents.contains(where: { $0.state == "executing" }) { return "executing" }
+  if !agents.isEmpty && agents.allSatisfy({ $0.state == "complete" }) { return "complete" }
+  return "idle"
+}
+
+private func statusReply(in area: AXUIElement) -> [String: Any] {
+  let agents = agentTargets(in: area)
+  let reasoning = reasoningPopup(in: area)
+  return [
+    "ok": true,
+    "available": true,
+    "message": "Ready to control the visible ChatGPT Codex task.",
+    "taskState": taskState(in: area, agents: agents),
+    "controls": controlAvailability(in: area),
+    "mode": ["available": modePopup(in: area) != nil, "label": modeLabel(in: area) ?? ""],
+    "reasoning": [
+      "available": reasoning != nil,
+      "label": reasoning.map { attributeString($0, kAXTitleAttribute as CFString) } ?? "",
+    ],
+    "agents": agents.enumerated().map { index, agent in
+      ["id": "agent-\(index)", "label": agent.label, "state": agent.state, "focused": agent.focused]
+    },
+  ]
 }
 
 private func press(_ control: DesktopControl, in area: AXUIElement) throws {
@@ -215,6 +311,71 @@ private func press(_ control: DesktopControl, in area: AXUIElement) throws {
   guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
     throw HelperFailure.message("ChatGPT did not accept the requested Codex control.")
   }
+}
+
+private func postKey(_ code: CGKeyCode) throws {
+  guard let source = CGEventSource(stateID: .hidSystemState),
+        let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+        let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
+    throw HelperFailure.message("macOS could not create the requested keyboard event.")
+  }
+  down.post(tap: .cghidEventTap)
+  up.post(tap: .cghidEventTap)
+}
+
+private func keyCode(for direction: String) throws -> CGKeyCode {
+  switch direction {
+  case "up": return 126
+  case "down": return 125
+  case "left": return 123
+  case "right": return 124
+  default: throw HelperFailure.message("Unsupported navigation direction.")
+  }
+}
+
+private func stepPopup(_ popup: AXUIElement, direction: String) throws {
+  guard AXUIElementPerformAction(popup, kAXPressAction as CFString) == .success else {
+    throw HelperFailure.message("ChatGPT did not open the requested selector.")
+  }
+  usleep(150_000)
+  try postKey(try keyCode(for: direction))
+  usleep(60_000)
+  try postKey(36)
+  usleep(180_000)
+}
+
+private func clearInput(in area: AXUIElement) throws {
+  guard let input = prompt(in: area) else {
+    throw HelperFailure.message("The current Codex task has no accessible message input.")
+  }
+  guard AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, "" as CFTypeRef) == .success else {
+    throw HelperFailure.message("ChatGPT did not clear the current input line.")
+  }
+}
+
+private func launchWorkflow(_ text: String) throws {
+  guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 4_000 else {
+    throw HelperFailure.message("The configured Vibe Pocket workflow is invalid.")
+  }
+  let (application, area) = try desktop(activateDesktop: true)
+  try press(.newTask, in: area)
+  usleep(500_000)
+  let nextArea = try codexArea(for: application)
+  guard let input = prompt(in: nextArea) else {
+    throw HelperFailure.message("The new Codex task did not expose a message input.")
+  }
+  guard AXUIElementSetAttributeValue(input, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
+        AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, text as CFTypeRef) == .success else {
+    throw HelperFailure.message("ChatGPT did not accept the configured workflow.")
+  }
+  usleep(150_000)
+  try verifyForeground(application)
+  try postKey(36)
+}
+
+private func readStandardInput() -> String {
+  let data = try? FileHandle.standardInput.readToEnd()
+  return data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
 }
 
 private func reply(_ body: [String: Any]) {
@@ -228,18 +389,10 @@ do {
   switch action {
   case "status":
     let (_, area) = try desktop(activateDesktop: false)
-    reply([
-      "ok": true,
-      "available": true,
-      "message": "Ready to control the visible ChatGPT Codex task.",
-      "controls": controls(in: area),
-    ])
+    reply(statusReply(in: area))
   case "attach":
     _ = try desktop(activateDesktop: true)
-    reply(["ok": true, "message": "Attached to the visible ChatGPT Codex task."])
-  case "inspect":
-    let (_, area) = try desktop(activateDesktop: false)
-    reply(["ok": true, "controls": interactiveControls(in: area)])
+    reply(["ok": true, "message": "Focused the visible ChatGPT Codex task."])
   case "control":
     guard let rawControl = CommandLine.arguments.dropFirst(2).first,
           let control = DesktopControl(rawValue: rawControl) else {
@@ -249,6 +402,52 @@ do {
     try press(control, in: area)
     usleep(120_000)
     reply(["ok": true, "message": "Pressed the ChatGPT Codex \(control.rawValue) control."])
+  case "navigate":
+    guard let direction = CommandLine.arguments.dropFirst(2).first else {
+      throw HelperFailure.message("A navigation direction is required.")
+    }
+    _ = try desktop(activateDesktop: true)
+    try postKey(try keyCode(for: direction))
+    reply(["ok": true, "message": "Navigated \(direction) in ChatGPT Codex."])
+  case "mode-cycle":
+    let (_, area) = try desktop(activateDesktop: true)
+    guard let popup = modePopup(in: area) else {
+      throw HelperFailure.message("The ChatGPT Codex mode selector is not currently visible.")
+    }
+    try stepPopup(popup, direction: "down")
+    reply(["ok": true, "message": "Cycled the ChatGPT Codex mode."])
+  case "reasoning":
+    guard let rawDelta = CommandLine.arguments.dropFirst(2).first,
+          let delta = Int(rawDelta), delta == -1 || delta == 1 else {
+      throw HelperFailure.message("Reasoning depth must move by one step.")
+    }
+    let (_, area) = try desktop(activateDesktop: true)
+    guard let popup = reasoningPopup(in: area) else {
+      throw HelperFailure.message("The ChatGPT Codex reasoning selector is not currently visible.")
+    }
+    try stepPopup(popup, direction: delta > 0 ? "down" : "up")
+    reply(["ok": true, "message": "Adjusted the ChatGPT Codex reasoning level."])
+  case "clear-input":
+    let (_, area) = try desktop(activateDesktop: true)
+    try clearInput(in: area)
+    reply(["ok": true, "message": "Cleared the ChatGPT Codex input line."])
+  case "focus-agent":
+    guard let rawIndex = CommandLine.arguments.dropFirst(2).first,
+          let index = Int(rawIndex), index >= 0 else {
+      throw HelperFailure.message("A valid Codex agent slot is required.")
+    }
+    let (_, area) = try desktop(activateDesktop: true)
+    let agents = agentTargets(in: area)
+    guard agents.indices.contains(index) else {
+      throw HelperFailure.message("That Codex agent slot is not currently visible.")
+    }
+    guard AXUIElementPerformAction(agents[index].element, kAXPressAction as CFString) == .success else {
+      throw HelperFailure.message("ChatGPT did not focus the requested Codex agent.")
+    }
+    reply(["ok": true, "message": "Focused Codex agent \(agents[index].label)."])
+  case "workflow":
+    try launchWorkflow(readStandardInput())
+    reply(["ok": true, "message": "Started the configured workflow in a new Codex task."])
   default:
     throw HelperFailure.message("Unsupported Vibe Pocket desktop action.")
   }

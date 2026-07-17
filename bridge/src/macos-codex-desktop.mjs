@@ -11,6 +11,7 @@ export class MacCodexDesktopController {
   #swiftCompiler;
   #run;
   #compilePromise = null;
+  #operationQueue = Promise.resolve();
 
   constructor({
     binaryPath = join(tmpdir(), `vibe-pocket-codex-desktop-${process.getuid?.() ?? randomUUID()}`),
@@ -34,7 +35,37 @@ export class MacCodexDesktopController {
     return this.#invoke("control", [control]);
   }
 
+  async navigate(direction) {
+    return this.#invoke("navigate", [direction]);
+  }
+
+  async cycleMode() {
+    return this.#invoke("mode-cycle");
+  }
+
+  async adjustReasoning(delta) {
+    return this.#invoke("reasoning", [String(delta)]);
+  }
+
+  async clearInput() {
+    return this.#invoke("clear-input");
+  }
+
+  async focusAgent(index) {
+    return this.#invoke("focus-agent", [String(index)]);
+  }
+
+  async workflow(prompt) {
+    return this.#invoke("workflow", [], prompt);
+  }
+
   async #invoke(action, args = [], input = "") {
+    const operation = this.#operationQueue.then(() => this.#invokeNow(action, args, input));
+    this.#operationQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async #invokeNow(action, args, input) {
     await this.#compile();
     const result = await this.#run(this.#binaryPath, [action, ...args], input);
     let body;
@@ -59,17 +90,32 @@ export class MacCodexDesktopController {
   }
 }
 
-function runProgram(command, args, input = "") {
+function runProgram(command, args, input = "", timeoutMs = command === "swiftc" ? 30_000 : 8_000) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error(`${command} timed out after ${timeoutMs} ms.`));
+    }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", reject);
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    });
     child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
