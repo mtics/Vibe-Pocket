@@ -1,6 +1,12 @@
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+
+import { defaultControllerProfilePath } from "./controller-profile-store.mjs";
 
 const DEFAULT_PORT = 4318;
+const BRIDGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PROFILE_FORBIDDEN_ROOT = findRepositoryRoot(BRIDGE_ROOT) ?? BRIDGE_ROOT;
 
 export function loadConfig(environment = process.env, cwd = process.cwd()) {
   const token = environment.VIBE_POCKET_TOKEN;
@@ -18,7 +24,30 @@ export function loadConfig(environment = process.env, cwd = process.cwd()) {
 
   const workspaces = parseWorkspaces(environment.VIBE_POCKET_WORKSPACES, environment.VIBE_POCKET_WORKSPACE, cwd);
   const codexCommand = environment.VIBE_POCKET_CODEX_COMMAND ?? "codex";
-  return { host, port, token, workspaces, codexCommand };
+  const profilePath = parseProfilePath(environment.VIBE_POCKET_PROFILE_PATH, environment);
+  return { host, port, token, workspaces, codexCommand, profilePath };
+}
+
+function parseProfilePath(value, environment) {
+  if (!value) return defaultControllerProfilePath({ environment });
+  if (!isAbsolute(value)) {
+    throw new Error("VIBE_POCKET_PROFILE_PATH must be an absolute path outside the repository.");
+  }
+  const repositoryRelativePath = relative(PROFILE_FORBIDDEN_ROOT, value);
+  if (repositoryRelativePath === "" || (!repositoryRelativePath.startsWith("..") && !isAbsolute(repositoryRelativePath))) {
+    throw new Error("VIBE_POCKET_PROFILE_PATH must be outside the Vibe Pocket repository.");
+  }
+  return value;
+}
+
+function findRepositoryRoot(start) {
+  let candidate = start;
+  while (true) {
+    if (existsSync(join(candidate, ".git"))) return candidate;
+    const parent = dirname(candidate);
+    if (parent === candidate) return null;
+    candidate = parent;
+  }
 }
 
 function parseWorkspaces(value, fallback, cwd) {

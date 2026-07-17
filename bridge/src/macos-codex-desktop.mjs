@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,16 +12,20 @@ export class MacCodexDesktopController {
   #binaryPath;
   #swiftCompiler;
   #run;
+  #prebuilt;
   #compilePromise = null;
   #operationQueue = Promise.resolve();
 
   constructor({
-    binaryPath = join(tmpdir(), `vibe-pocket-codex-desktop-${process.getuid?.() ?? randomUUID()}`),
+    binaryPath = process.env.VIBE_POCKET_HELPER_PATH
+      ?? join(tmpdir(), `vibe-pocket-codex-desktop-${process.getuid?.() ?? randomUUID()}`),
     swiftCompiler = process.env.VIBE_POCKET_SWIFTC ?? "swiftc",
+    prebuilt = Boolean(process.env.VIBE_POCKET_HELPER_PATH),
     run = runProgram,
   } = {}) {
     this.#binaryPath = binaryPath;
     this.#swiftCompiler = swiftCompiler;
+    this.#prebuilt = prebuilt;
     this.#run = run;
   }
 
@@ -80,10 +86,14 @@ export class MacCodexDesktopController {
 
   async #compile() {
     if (!this.#compilePromise) {
-      this.#compilePromise = this.#run(this.#swiftCompiler, [helperSource, "-O", "-o", this.#binaryPath])
+      const prepare = this.#prebuilt
+        ? access(this.#binaryPath, fsConstants.X_OK)
+        : this.#run(this.#swiftCompiler, [helperSource, "-O", "-o", this.#binaryPath]);
+      this.#compilePromise = prepare
         .catch((error) => {
           this.#compilePromise = null;
-          throw new Error(`Could not build the macOS desktop controller: ${error.message}`);
+          const verb = this.#prebuilt ? "use" : "build";
+          throw new Error(`Could not ${verb} the macOS desktop controller: ${error.message}`);
         });
     }
     return this.#compilePromise;

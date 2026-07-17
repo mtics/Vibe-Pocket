@@ -1,7 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
-import { DEFAULT_CONTROLLER_PROFILE, bindingFor, workflowPrompt } from "./controller-profile.mjs";
+import {
+  CONTROLLER_ACTION_CATALOG,
+  CONTROLLER_GESTURES,
+  ControllerProfileValidationError,
+  bindingFor,
+  clearControllerBinding,
+  createDefaultControllerProfile,
+  normalizeControllerProfile,
+  renameControllerLayer,
+  updateControllerBinding,
+  validateControllerAction,
+  validateGesture,
+  validateInputId,
+  validateLayerId,
+  workflowPrompt,
+} from "./controller-profile.mjs";
 import { MacCodexDesktopController } from "./macos-codex-desktop.mjs";
 import { PocketError } from "./pocket-controller-service.mjs";
 
@@ -14,6 +29,7 @@ export class DesktopCodexService extends EventEmitter {
   #events;
   #desktop;
   #profile;
+  #profileStore;
   #activeLayerId;
   #idempotency = new Map();
   #revision = 0;
@@ -28,15 +44,17 @@ export class DesktopCodexService extends EventEmitter {
     workspaces,
     events,
     desktop = new MacCodexDesktopController(),
-    profile = DEFAULT_CONTROLLER_PROFILE,
+    profile,
+    profileStore = null,
     pollIntervalMs = 1_000,
   }) {
     super();
     this.#workspaces = workspaces;
     this.#events = events;
     this.#desktop = desktop;
-    this.#profile = profile;
-    this.#activeLayerId = profile.layers[0]?.id ?? null;
+    this.#profile = profile ? normalizeControllerProfile(profile) : createDefaultControllerProfile();
+    this.#profileStore = profileStore;
+    this.#activeLayerId = this.#profile.layers[0].id;
     this.#pollIntervalMs = pollIntervalMs;
     this.#session = {
       id: DESKTOP_SESSION_ID,
@@ -50,6 +68,10 @@ export class DesktopCodexService extends EventEmitter {
   }
 
   async start() {
+    if (this.#profileStore) {
+      this.#profile = await this.#profileStore.load();
+      this.#activeLayerId = this.#profile.layers[0].id;
+    }
     await this.#refreshAvailability();
     this.#touch("snapshot_changed");
     if (this.#pollIntervalMs > 0) {
@@ -74,6 +96,8 @@ export class DesktopCodexService extends EventEmitter {
       controls: this.#status.controls,
       controller: {
         profile: this.#profile,
+        gestures: CONTROLLER_GESTURES,
+        actionCatalog: CONTROLLER_ACTION_CATALOG,
         activeLayerId: this.#activeLayerId,
         ...this.#controllerState,
       },
@@ -115,25 +139,71 @@ export class DesktopCodexService extends EventEmitter {
 
     try {
       if (command.kind === "binding") {
-        const action = bindingFor(this.#profile, this.#activeLayerId, command.inputId);
+        requireCommandKeys(command, ["kind", "inputId"], ["gesture"]);
+        validateInputId(command.inputId);
+        const gesture = validateGesture(command.gesture ?? "tap");
+        const action = bindingFor(this.#profile, this.#activeLayerId, command.inputId, gesture);
         if (!action) {
-          throw new PocketError(409, "unmapped_input", "This controller input has no action on the active layer.");
+          throw new PocketError(409, "unmapped_input", "This controller gesture has no action on the active layer.");
         }
         await this.#executeAction(action);
         return;
       }
 
       if (command.kind === "select_layer") {
+        requireCommandKeys(command, ["kind", "layerId"]);
+        validateLayerId(command.layerId);
         const layer = this.#profile.layers.find((candidate) => candidate.id === command.layerId);
-        if (!layer) throw new PocketError(404, "unknown_layer", "The selected controller layer does not exist.");
         this.#activeLayerId = layer.id;
         this.#recordAction(`Selected ${layer.name}.`);
+        return;
+      }
+
+      if (command.kind === "update_binding") {
+        requireCommandKeys(command, ["kind", "layerId", "inputId", "action"], ["gesture"]);
+        const next = updateControllerBinding(this.#profile, {
+          layerId: command.layerId,
+          inputId: command.inputId,
+          gesture: command.gesture ?? "tap",
+          action: command.action,
+        });
+        await this.#replaceProfile(next, "Updated controller binding.");
+        return;
+      }
+
+      if (command.kind === "clear_binding") {
+        requireCommandKeys(command, ["kind", "layerId", "inputId"], ["gesture"]);
+        const next = clearControllerBinding(this.#profile, {
+          layerId: command.layerId,
+          inputId: command.inputId,
+          gesture: command.gesture ?? "tap",
+        });
+        await this.#replaceProfile(next, "Cleared controller binding.");
+        return;
+      }
+
+      if (command.kind === "rename_layer") {
+        requireCommandKeys(command, ["kind", "layerId", "name"]);
+        const next = renameControllerLayer(this.#profile, {
+          layerId: command.layerId,
+          name: command.name,
+        });
+        await this.#replaceProfile(next, `Renamed ${command.layerId}.`);
+        return;
+      }
+
+      if (command.kind === "reset_profile") {
+        requireCommandKeys(command, ["kind"]);
+        await this.#replaceProfile(createDefaultControllerProfile(), "Reset all controller layers.", { resetLayer: true });
         return;
       }
 
       await this.#executeAction(legacyAction(command));
     } catch (error) {
       if (error instanceof PocketError) throw error;
+      if (error instanceof ControllerProfileValidationError) {
+        throw new PocketError(400, "invalid_controller_configuration", error.message);
+      }
       const message = error.message || "The visible Codex task did not accept this action.";
       await this.#refreshAvailability();
       this.#status = { ...this.#status, message };
@@ -145,6 +215,7 @@ export class DesktopCodexService extends EventEmitter {
   }
 
   async #executeAction(action) {
+    action = validateControllerAction(action);
     switch (action.type) {
       case "attach":
         await this.#perform(() => this.#desktop.attach(), "Attached to the visible ChatGPT Codex task.");
@@ -187,6 +258,15 @@ export class DesktopCodexService extends EventEmitter {
         this.#controllerState.focusedAgentIndex = nextIndex;
         return;
       }
+      case "focus_agent": {
+        const agent = this.#controllerState.agents[action.index];
+        if (!agent) {
+          throw new PocketError(409, "agent_slot_unavailable", "That Codex agent slot is not currently available.");
+        }
+        await this.#perform(() => this.#desktop.focusAgent(action.index), `Focused ${agent.label}.`);
+        this.#controllerState.focusedAgentIndex = action.index;
+        return;
+      }
       case "reasoning_depth":
         if (action.delta !== 1 && action.delta !== -1) {
           throw new PocketError(400, "invalid_reasoning_delta", "Reasoning adjustment must be one step clockwise or counter-clockwise.");
@@ -202,6 +282,22 @@ export class DesktopCodexService extends EventEmitter {
       default:
         throw new PocketError(400, "unsupported_command", "This Vibe Pocket controller action is not supported.");
     }
+  }
+
+  async #replaceProfile(nextProfile, message, { resetLayer = false } = {}) {
+    let persisted = normalizeControllerProfile(nextProfile);
+    if (this.#profileStore) {
+      try {
+        persisted = await this.#profileStore.save(persisted);
+      } catch {
+        throw new PocketError(500, "profile_persistence_failed", "The controller profile could not be saved.");
+      }
+    }
+    this.#profile = persisted;
+    if (resetLayer || !this.#profile.layers.some(({ id }) => id === this.#activeLayerId)) {
+      this.#activeLayerId = this.#profile.layers[0].id;
+    }
+    this.#recordAction(message);
   }
 
   async #refreshAvailability({ publishIfChanged = false } = {}) {
@@ -274,22 +370,63 @@ export class DesktopCodexService extends EventEmitter {
 function legacyAction(command) {
   switch (command.kind) {
     case "start":
+      requireCommandKeys(command, ["kind"], ["workspaceId"]);
+      if (command.workspaceId !== undefined && (typeof command.workspaceId !== "string" || command.workspaceId.length === 0)) {
+        throw new ControllerProfileValidationError("workspaceId must be non-empty text when provided.");
+      }
+      return { type: "attach" };
     case "attach":
+      requireCommandKeys(command, ["kind"]);
+      return { type: "attach" };
     case "focus":
-      if (command.kind === "focus" && command.sessionId !== DESKTOP_SESSION_ID) {
+      requireCommandKeys(command, ["kind", "sessionId"]);
+      if (command.sessionId !== DESKTOP_SESSION_ID) {
         throw new PocketError(404, "unknown_session", "Vibe Pocket is attached only to the current desktop Codex task.");
       }
       return { type: "attach" };
-    case "voice": return { type: "voice" };
+    case "voice":
+      requireCommandKeys(command, ["kind"]);
+      return { type: "voice" };
     case "stop":
-    case "interrupt": return { type: "stop" };
+    case "interrupt":
+      requireCommandKeys(command, ["kind"]);
+      return { type: "stop" };
     case "accept":
-    case "approve": return { type: "approve" };
-    case "reject": return { type: "reject" };
+    case "approve":
+      requireCommandKeys(command, ["kind"]);
+      return { type: "approve" };
+    case "reject":
+      requireCommandKeys(command, ["kind"]);
+      return { type: "reject" };
     case "new_task":
-    case "new_chat": return { type: "new_task" };
-    case "focus_next": return { type: "focus_next" };
-    default: return { type: command.kind, ...command };
+    case "new_chat":
+      requireCommandKeys(command, ["kind"]);
+      return { type: "new_task" };
+    case "focus_next":
+      requireCommandKeys(command, ["kind"]);
+      return { type: "focus_next" };
+    case "focus_agent":
+      requireCommandKeys(command, ["kind", "index"]);
+      return { type: "focus_agent", index: command.index };
+    case "navigate":
+      requireCommandKeys(command, ["kind", "direction"]);
+      return { type: "navigate", direction: command.direction };
+    case "reasoning_depth":
+      requireCommandKeys(command, ["kind", "delta"]);
+      return { type: "reasoning_depth", delta: command.delta };
+    case "workflow":
+      requireCommandKeys(command, ["kind", "workflowId"]);
+      return { type: "workflow", workflowId: command.workflowId };
+    default:
+      throw new PocketError(400, "unsupported_command", "This Vibe Pocket controller action is not supported.");
+  }
+}
+
+function requireCommandKeys(command, required, optional = []) {
+  const allowed = new Set([...required, ...optional]);
+  const actual = Object.keys(command);
+  if (required.some((key) => !Object.hasOwn(command, key)) || actual.some((key) => !allowed.has(key))) {
+    throw new ControllerProfileValidationError("Controller command contains missing or unsupported fields.");
   }
 }
 
@@ -329,6 +466,7 @@ function normalizeControllerState(result, previousFocusedAgentIndex) {
   const agents = Array.isArray(result.agents)
     ? result.agents
       .filter((agent) => agent && typeof agent.label === "string" && typeof agent.state === "string")
+      .slice(0, 6)
       .map((agent) => ({ label: agent.label.slice(0, 64), state: TASK_STATES.has(agent.state) ? agent.state : "idle" }))
     : [];
   return {

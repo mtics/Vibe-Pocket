@@ -2,14 +2,24 @@ import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { PocketError } from "./pocket-controller-service.mjs";
 
+export const POCKET_PROTOCOL_VERSION = 2;
+
 export function createPocketHttpServer({ service, events, token }) {
   return createServer(async (request, response) => {
     try {
+      const url = new URL(request.url, "http://localhost");
+      if (request.method === "GET" && url.pathname === "/healthz") {
+        sendJson(response, 200, {
+          ok: true,
+          service: "vibe-pocket-bridge",
+          protocolVersion: POCKET_PROTOCOL_VERSION,
+        });
+        return;
+      }
       if (!authorized(request, token)) {
         sendJson(response, 401, { error: { code: "unauthorized", message: "Pair Vibe Pocket before connecting." } });
         return;
       }
-      const url = new URL(request.url, "http://localhost");
       if (request.method === "GET" && url.pathname === "/v1/pocket/snapshot") {
         sendJson(response, 200, await service.snapshot());
         return;
@@ -65,6 +75,10 @@ function readJson(request) {
 }
 
 function sendJson(response, status, body) {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+  response.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  });
   response.end(JSON.stringify(body));
 }

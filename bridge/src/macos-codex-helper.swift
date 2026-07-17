@@ -181,12 +181,17 @@ private func prompt(in area: AXUIElement) -> AXUIElement? {
   return inputs.first(where: { attributeBool($0, kAXFocusedAttribute as CFString) }) ?? inputs.last
 }
 
-private func modePopup(in area: AXUIElement) -> AXUIElement? {
+private let accessModeLabels: Set<String> = [
+  "只读", "自动", "完全访问", "read only", "read-only", "auto", "full access",
+]
+
+private func accessModeButton(in area: AXUIElement) -> AXUIElement? {
   descendant(of: area, where: {
-    guard attributeString($0, kAXRoleAttribute as CFString) == "AXPopUpButton",
+    guard attributeString($0, kAXRoleAttribute as CFString) == "AXButton",
           attributeBool($0, kAXEnabledAttribute as CFString) else { return false }
-    let description = attributeString($0, kAXDescriptionAttribute as CFString).lowercased()
-    return description.contains("切换模式") || description.contains("switch mode")
+    let title = attributeString($0, kAXTitleAttribute as CFString)
+      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return accessModeLabels.contains(title)
   })
 }
 
@@ -255,25 +260,21 @@ private func controlAvailability(in area: AXUIElement) -> [String: Bool] {
     (control.rawValue, controlButton(control, in: area) != nil)
   })
   let agents = agentTargets(in: area)
+  let isExecuting = controlButton(.stop, in: area) != nil
   return direct.merging([
     "clear-input": prompt(in: area) != nil,
     "focus-agent": !agents.isEmpty,
-    "mode-cycle": modePopup(in: area) != nil,
+    "mode-cycle": accessModeButton(in: area) != nil && !isExecuting,
     "navigate": true,
-    "reasoning": reasoningPopup(in: area) != nil,
-    "workflow": prompt(in: area) != nil && controlButton(.stop, in: area) == nil,
+    "reasoning": reasoningPopup(in: area) != nil && !isExecuting,
+    "workflow": prompt(in: area) != nil && !isExecuting,
   ]) { _, new in new }
 }
 
 private func modeLabel(in area: AXUIElement) -> String? {
-  guard let popup = modePopup(in: area) else { return nil }
-  let description = attributeString(popup, kAXDescriptionAttribute as CFString)
-  for separator in ["：", ":"] {
-    if let range = description.range(of: separator) {
-      return String(description[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-  }
-  return description
+  guard let button = accessModeButton(in: area) else { return nil }
+  return attributeString(button, kAXTitleAttribute as CFString)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 private func taskState(in area: AXUIElement, agents: [AgentTarget]) -> String {
@@ -287,15 +288,16 @@ private func taskState(in area: AXUIElement, agents: [AgentTarget]) -> String {
 private func statusReply(in area: AXUIElement) -> [String: Any] {
   let agents = agentTargets(in: area)
   let reasoning = reasoningPopup(in: area)
+  let controls = controlAvailability(in: area)
   return [
     "ok": true,
     "available": true,
     "message": "Ready to control the visible ChatGPT Codex task.",
     "taskState": taskState(in: area, agents: agents),
-    "controls": controlAvailability(in: area),
-    "mode": ["available": modePopup(in: area) != nil, "label": modeLabel(in: area) ?? ""],
+    "controls": controls,
+    "mode": ["available": controls["mode-cycle"] == true, "label": modeLabel(in: area) ?? ""],
     "reasoning": [
-      "available": reasoning != nil,
+      "available": controls["reasoning"] == true,
       "label": reasoning.map { attributeString($0, kAXTitleAttribute as CFString) } ?? "",
     ],
     "agents": agents.enumerated().map { index, agent in
@@ -308,9 +310,7 @@ private func press(_ control: DesktopControl, in area: AXUIElement) throws {
   guard let button = controlButton(control, in: area) else {
     throw HelperFailure.message(control.unavailableMessage)
   }
-  guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
-    throw HelperFailure.message("ChatGPT did not accept the requested Codex control.")
-  }
+  try clickElement(button)
 }
 
 private func postKey(_ code: CGKeyCode) throws {
@@ -321,6 +321,47 @@ private func postKey(_ code: CGKeyCode) throws {
   }
   down.post(tap: .cghidEventTap)
   up.post(tap: .cghidEventTap)
+}
+
+private func elementFrame(_ element: AXUIElement) throws -> CGRect {
+  var positionValue: CFTypeRef?
+  var sizeValue: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
+        AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+        let positionValue, let sizeValue,
+        CFGetTypeID(positionValue) == AXValueGetTypeID(),
+        CFGetTypeID(sizeValue) == AXValueGetTypeID() else {
+    throw HelperFailure.message("ChatGPT did not expose the requested control position.")
+  }
+  var position = CGPoint.zero
+  var size = CGSize.zero
+  guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &position),
+        AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
+        size.width > 0, size.height > 0 else {
+    throw HelperFailure.message("ChatGPT exposed an invalid control frame.")
+  }
+  return CGRect(origin: position, size: size)
+}
+
+private func clickElement(_ element: AXUIElement) throws {
+  AXUIElementPerformAction(element, "AXScrollToVisible" as CFString)
+  let frame = try elementFrame(element)
+  let point = CGPoint(x: frame.midX, y: frame.midY)
+  let previousLocation = CGEvent(source: nil)?.location
+  guard let source = CGEventSource(stateID: .hidSystemState),
+        let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left),
+        let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+        let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
+    throw HelperFailure.message("macOS could not create the requested pointer event.")
+  }
+  CGWarpMouseCursorPosition(point)
+  move.post(tap: .cghidEventTap)
+  usleep(100_000)
+  down.post(tap: .cghidEventTap)
+  usleep(80_000)
+  up.post(tap: .cghidEventTap)
+  usleep(180_000)
+  if let previousLocation { CGWarpMouseCursorPosition(previousLocation) }
 }
 
 private func keyCode(for direction: String) throws -> CGKeyCode {
@@ -334,11 +375,22 @@ private func keyCode(for direction: String) throws -> CGKeyCode {
 }
 
 private func stepPopup(_ popup: AXUIElement, direction: String) throws {
-  guard AXUIElementPerformAction(popup, kAXPressAction as CFString) == .success else {
-    throw HelperFailure.message("ChatGPT did not open the requested selector.")
-  }
-  usleep(150_000)
+  try clickElement(popup)
+  try postKey(125)
+  usleep(60_000)
+  try postKey(125)
+  usleep(60_000)
+  try postKey(124)
+  usleep(120_000)
   try postKey(try keyCode(for: direction))
+  usleep(60_000)
+  try postKey(36)
+  usleep(180_000)
+}
+
+private func stepButtonMenu(_ button: AXUIElement) throws {
+  try clickElement(button)
+  try postKey(125)
   usleep(60_000)
   try postKey(36)
   usleep(180_000)
@@ -410,23 +462,38 @@ do {
     try postKey(try keyCode(for: direction))
     reply(["ok": true, "message": "Navigated \(direction) in ChatGPT Codex."])
   case "mode-cycle":
-    let (_, area) = try desktop(activateDesktop: true)
-    guard let popup = modePopup(in: area) else {
-      throw HelperFailure.message("The ChatGPT Codex mode selector is not currently visible.")
+    let (application, area) = try desktop(activateDesktop: true)
+    guard controlButton(.stop, in: area) == nil,
+          let button = accessModeButton(in: area) else {
+      throw HelperFailure.message("The ChatGPT Codex access mode is not currently adjustable.")
     }
-    try stepPopup(popup, direction: "down")
-    reply(["ok": true, "message": "Cycled the ChatGPT Codex mode."])
+    let before = modeLabel(in: area) ?? ""
+    try stepButtonMenu(button)
+    let after = modeLabel(in: try codexArea(for: application)) ?? ""
+    guard !after.isEmpty, after != before else {
+      throw HelperFailure.message("The ChatGPT Codex access mode did not change.")
+    }
+    reply(["ok": true, "message": "Changed the ChatGPT Codex access mode to \(after)."])
   case "reasoning":
     guard let rawDelta = CommandLine.arguments.dropFirst(2).first,
           let delta = Int(rawDelta), delta == -1 || delta == 1 else {
       throw HelperFailure.message("Reasoning depth must move by one step.")
     }
-    let (_, area) = try desktop(activateDesktop: true)
-    guard let popup = reasoningPopup(in: area) else {
-      throw HelperFailure.message("The ChatGPT Codex reasoning selector is not currently visible.")
+    let (application, area) = try desktop(activateDesktop: true)
+    guard controlButton(.stop, in: area) == nil,
+          let popup = reasoningPopup(in: area) else {
+      throw HelperFailure.message("The ChatGPT Codex reasoning level is not currently adjustable.")
     }
+    let before = attributeString(popup, kAXTitleAttribute as CFString)
     try stepPopup(popup, direction: delta > 0 ? "down" : "up")
-    reply(["ok": true, "message": "Adjusted the ChatGPT Codex reasoning level."])
+    let afterArea = try codexArea(for: application)
+    let after = reasoningPopup(in: afterArea).map {
+      attributeString($0, kAXTitleAttribute as CFString)
+    } ?? ""
+    guard !after.isEmpty, after != before else {
+      throw HelperFailure.message("The ChatGPT Codex reasoning level did not change.")
+    }
+    reply(["ok": true, "message": "Changed the ChatGPT Codex reasoning level to \(after)."])
   case "clear-input":
     let (_, area) = try desktop(activateDesktop: true)
     try clearInput(in: area)
@@ -441,9 +508,7 @@ do {
     guard agents.indices.contains(index) else {
       throw HelperFailure.message("That Codex agent slot is not currently visible.")
     }
-    guard AXUIElementPerformAction(agents[index].element, kAXPressAction as CFString) == .success else {
-      throw HelperFailure.message("ChatGPT did not focus the requested Codex agent.")
-    }
+    try clickElement(agents[index].element)
     reply(["ok": true, "message": "Focused Codex agent \(agents[index].label)."])
   case "workflow":
     try launchWorkflow(readStandardInput())
