@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vibe_background">#101512</color>
+    <color name="vibe_surface">#19211B</color>
+    <color name="vibe_primary">#55D6A4</color>
+</resources>

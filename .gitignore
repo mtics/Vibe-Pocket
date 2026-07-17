@@ -1,0 +1,29 @@
+# macOS and editors
+.DS_Store
+.idea/
+.playwright-mcp/
+*.iml
+
+# Local secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+android/local.properties
+
+# Node.js
+bridge/node_modules/
+bridge/npm-debug.log*
+
+# Android and Gradle build output
+android/.gradle/
+android/build/
+android/app/build/
+*.apk
+*.aab
+
+# Local runtime output
+*.log
+*.pid
+tmp/

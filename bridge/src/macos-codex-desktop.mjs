@@ -1,0 +1,81 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const helperSource = fileURLToPath(new URL("./macos-codex-helper.swift", import.meta.url));
+
+export class MacCodexDesktopController {
+  #binaryPath;
+  #swiftCompiler;
+  #run;
+  #compilePromise = null;
+
+  constructor({
+    binaryPath = join(tmpdir(), `vibe-pocket-codex-desktop-${process.getuid?.() ?? randomUUID()}`),
+    swiftCompiler = process.env.VIBE_POCKET_SWIFTC ?? "swiftc",
+    run = runProgram,
+  } = {}) {
+    this.#binaryPath = binaryPath;
+    this.#swiftCompiler = swiftCompiler;
+    this.#run = run;
+  }
+
+  async status() {
+    return this.#invoke("status");
+  }
+
+  async attach() {
+    return this.#invoke("attach");
+  }
+
+  async press(control) {
+    return this.#invoke("control", [control]);
+  }
+
+  async #invoke(action, args = [], input = "") {
+    await this.#compile();
+    const result = await this.#run(this.#binaryPath, [action, ...args], input);
+    let body;
+    try {
+      body = JSON.parse(result.stdout);
+    } catch {
+      throw new Error("The macOS desktop controller returned an invalid response.");
+    }
+    if (!body.ok) throw new Error(body.message ?? "The macOS desktop controller rejected this action.");
+    return body;
+  }
+
+  async #compile() {
+    if (!this.#compilePromise) {
+      this.#compilePromise = this.#run(this.#swiftCompiler, [helperSource, "-O", "-o", this.#binaryPath])
+        .catch((error) => {
+          this.#compilePromise = null;
+          throw new Error(`Could not build the macOS desktop controller: ${error.message}`);
+        });
+    }
+    return this.#compilePromise;
+  }
+}
+
+function runProgram(command, args, input = "") {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(stderr.trim() || `${command} exited with code ${code}.`));
+      }
+    });
+    child.stdin.end(input);
+  });
+}
