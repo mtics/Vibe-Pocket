@@ -3,34 +3,76 @@ import { execFile } from "node:child_process";
 const CODEX_BUNDLE_ID = "com.openai.codex";
 const DEFAULT_ACTIVATION_DELAY_SECONDS = 0.15;
 
-const KEY_STEPS = Object.freeze({
-  approve: ["key code 36"],
-  reject: ["key code 53"],
-  stop: ["key code 53"],
-  voice: ["keystroke \"d\" using {control down, shift down}"],
-  mode: ["key code 48 using shift down"],
-  clear: ["keystroke \"a\" using command down", "key code 51"],
-  up: ["key code 126"],
-  down: ["key code 125"],
-  left: ["key code 123"],
-  right: ["key code 124"],
+const KEY_EVENT_SCRIPT = String.raw`
+ObjC.import("CoreGraphics");
+ObjC.import("Foundation");
+
+const SHIFT = 1 << 17;
+const CONTROL = 1 << 18;
+const COMMAND = 1 << 20;
+const ACTIONS = Object.freeze({
+  approve: [[36, 0]],
+  reject: [[53, 0]],
+  stop: [[53, 0]],
+  voice: [[2, CONTROL | SHIFT]],
+  mode: [[48, SHIFT]],
+  clear: [[0, COMMAND], [51, 0]],
+  up: [[126, 0]],
+  down: [[125, 0]],
+  left: [[123, 0]],
+  right: [[124, 0]],
 });
 
-const PASTE_SCRIPT = `on run argv
-  set incomingText to item 1 of argv
-  set hadClipboard to true
-  try
-    set previousClipboard to the clipboard
-  on error
-    set hadClipboard to false
-  end try
-  set the clipboard to incomingText
-  tell application id "${CODEX_BUNDLE_ID}" to activate
-  delay ${DEFAULT_ACTIVATION_DELAY_SECONDS}
-  tell application "System Events" to keystroke "v" using command down
-  delay 0.1
-  if hadClipboard then set the clipboard to previousClipboard
-end run`;
+function postKey(source, keyCode, flags) {
+  const down = $.CGEventCreateKeyboardEvent(source, keyCode, true);
+  const up = $.CGEventCreateKeyboardEvent(source, keyCode, false);
+  $.CGEventSetFlags(down, flags);
+  $.CGEventSetFlags(up, flags);
+  $.CGEventPost($.kCGHIDEventTap, down);
+  $.NSThread.sleepForTimeInterval(0.024);
+  $.CGEventPost($.kCGHIDEventTap, up);
+  $.NSThread.sleepForTimeInterval(0.012);
+}
+
+function run(argv) {
+  const action = argv[0];
+  const activationDelay = Number(argv[1]);
+  const chords = ACTIONS[action];
+  if (!chords) throw new Error("Unsupported Vibe Pocket key action.");
+  $.NSThread.sleepForTimeInterval(activationDelay);
+  const source = $.CGEventSourceCreate($.kCGEventSourceStateHIDSystemState);
+  for (const [keyCode, flags] of chords) postKey(source, keyCode, flags);
+}`;
+
+const PASTE_SCRIPT = String.raw`
+ObjC.import("AppKit");
+ObjC.import("CoreGraphics");
+ObjC.import("Foundation");
+
+function postPaste() {
+  const source = $.CGEventSourceCreate($.kCGEventSourceStateHIDSystemState);
+  const down = $.CGEventCreateKeyboardEvent(source, 9, true);
+  const up = $.CGEventCreateKeyboardEvent(source, 9, false);
+  $.CGEventSetFlags(down, 1 << 20);
+  $.CGEventSetFlags(up, 1 << 20);
+  $.CGEventPost($.kCGHIDEventTap, down);
+  $.NSThread.sleepForTimeInterval(0.024);
+  $.CGEventPost($.kCGHIDEventTap, up);
+}
+
+function run(argv) {
+  const incomingText = argv[0];
+  const activationDelay = Number(argv[1]);
+  const pasteboard = $.NSPasteboard.generalPasteboard;
+  const previousText = pasteboard.stringForType($.NSPasteboardTypeString);
+  pasteboard.clearContents;
+  pasteboard.setStringForType($(incomingText), $.NSPasteboardTypeString);
+  $.NSThread.sleepForTimeInterval(activationDelay);
+  postPaste();
+  $.NSThread.sleepForTimeInterval(0.12);
+  pasteboard.clearContents;
+  if (previousText) pasteboard.setStringForType(previousText, $.NSPasteboardTypeString);
+}`;
 
 export class CodexAccessibilityController {
   #runCommand;
@@ -54,7 +96,7 @@ export class CodexAccessibilityController {
   }
 
   async activate() {
-    await this.#runAppleScript([]);
+    await this.#activate();
     return { message: "Focused the visible Codex window." };
   }
 
@@ -63,10 +105,10 @@ export class CodexAccessibilityController {
       await this.#run("open", ["-b", CODEX_BUNDLE_ID, "codex://new"]);
       return { message: "Opened a new visible Codex task." };
     }
-    if (!Object.hasOwn(KEY_STEPS, control) || !["approve", "reject", "stop"].includes(control)) {
+    if (!["approve", "reject", "stop"].includes(control)) {
       throw new Error(`Unsupported visible Codex control: ${control}.`);
     }
-    await this.#runAppleScript(KEY_STEPS[control]);
+    await this.#runKeyAction(control);
     return { message: `${control === "approve" ? "Sent Return to" : "Sent Escape to"} the visible Codex window.` };
   }
 
@@ -75,7 +117,7 @@ export class CodexAccessibilityController {
     if (this.#voiceActive === active) {
       return { message: active ? "Visible Codex dictation is already active." : "Visible Codex dictation is already inactive." };
     }
-    await this.#runAppleScript(KEY_STEPS.voice);
+    await this.#runKeyAction("voice");
     this.#voiceActive = active;
     return { message: active ? "Started visible Codex dictation." : "Stopped visible Codex dictation." };
   }
@@ -84,38 +126,45 @@ export class CodexAccessibilityController {
     if (!validDictation(text)) {
       throw new Error("Phone dictation must contain printable non-empty text up to 12,000 characters.");
     }
-    await this.#run("osascript", ["-e", PASTE_SCRIPT, "--", text.trim()]);
+    await this.#activate();
+    await this.#run("osascript", [
+      "-l", "JavaScript",
+      "-e", PASTE_SCRIPT,
+      "--", text.trim(), `${this.#activationDelaySeconds}`,
+    ]);
     this.#voiceActive = false;
     return { message: "Pasted phone dictation into the visible Codex composer." };
   }
 
   async navigate(direction) {
-    if (!Object.hasOwn(KEY_STEPS, direction) || !["up", "down", "left", "right"].includes(direction)) {
+    if (!["up", "down", "left", "right"].includes(direction)) {
       throw new Error("Navigation direction must be up, down, left, or right.");
     }
-    await this.#runAppleScript(KEY_STEPS[direction]);
+    await this.#runKeyAction(direction);
     return { message: `Sent ${direction} to the visible Codex window.` };
   }
 
   async cycleMode() {
-    await this.#runAppleScript(KEY_STEPS.mode);
+    await this.#runKeyAction("mode");
     return { message: "Sent Shift+Tab to the visible Codex composer." };
   }
 
   async clearInput() {
-    await this.#runAppleScript(KEY_STEPS.clear);
+    await this.#runKeyAction("clear");
     return { message: "Cleared the visible Codex composer." };
   }
 
-  async #runAppleScript(steps) {
-    const args = [
-      "-e", `tell application id "${CODEX_BUNDLE_ID}" to activate`,
-      "-e", `delay ${this.#activationDelaySeconds}`,
-    ];
-    for (const step of steps) {
-      args.push("-e", `tell application "System Events" to ${step}`);
-    }
-    await this.#run("osascript", args);
+  async #activate() {
+    await this.#run("open", ["-b", CODEX_BUNDLE_ID]);
+  }
+
+  async #runKeyAction(action) {
+    await this.#activate();
+    await this.#run("osascript", [
+      "-l", "JavaScript",
+      "-e", KEY_EVENT_SCRIPT,
+      "--", action, `${this.#activationDelaySeconds}`,
+    ]);
   }
 
   async #run(command, args) {
@@ -125,7 +174,7 @@ export class CodexAccessibilityController {
       const detail = error?.stderr?.trim?.() || error?.message || `${command} failed.`;
       if (/not authorized|not permitted|assistive|accessibility|automation|1743|1002/i.test(detail)) {
         throw new Error(
-          "Vibe Pocket needs macOS Accessibility and Automation access to control the visible Codex window.",
+          "Vibe Pocket Bridge Host needs macOS Accessibility access to control the visible Codex window.",
           { cause: error },
         );
       }

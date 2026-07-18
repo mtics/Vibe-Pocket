@@ -74,9 +74,8 @@ direction keys, composer clearing, dictation, and Shift+Tab are sent to the
 visible Codex window after activating bundle `com.openai.codex`.
 
 On the first visible-window action, macOS may ask whether **Vibe Pocket Bridge
-Host** can control the computer and System Events. Allow that fixed background
-host under **System Settings > Privacy & Security > Accessibility** and
-**Automation**. Visible
+Host** can control the computer. Allow that fixed background host under **System
+Settings > Privacy & Security > Accessibility**. Visible
 window controls require an unlocked user session; app-server lifecycle and
 status tracking continue without a foreground window.
 

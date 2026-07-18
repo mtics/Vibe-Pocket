@@ -22,27 +22,34 @@ test("sends fixed Accessibility keystrokes to the Codex bundle", async () => {
   await controller.cycleMode();
   await controller.clearInput();
 
-  assert.equal(calls.length, 4);
-  for (const [command, args] of calls) {
+  assert.equal(calls.length, 8);
+  for (const [command, args] of calls.filter(([command]) => command === "osascript")) {
     assert.equal(command, "osascript");
-    assert.ok(args.includes('tell application id "com.openai.codex" to activate'));
+    assert.deepEqual(args.slice(0, 3), ["-l", "JavaScript", "-e"]);
+    assert.ok(!args.join("\n").includes("System Events"));
   }
-  assert.ok(calls[0][1].includes('tell application "System Events" to key code 36'));
-  assert.ok(calls[1][1].includes('tell application "System Events" to key code 123'));
-  assert.ok(calls[2][1].includes('tell application "System Events" to key code 48 using shift down'));
-  assert.ok(calls[3][1].includes('tell application "System Events" to keystroke "a" using command down'));
-  assert.ok(calls[3][1].includes('tell application "System Events" to key code 51'));
+  assert.deepEqual(calls.filter(([command]) => command === "open").map(([, args]) => args), [
+    ["-b", "com.openai.codex"],
+    ["-b", "com.openai.codex"],
+    ["-b", "com.openai.codex"],
+    ["-b", "com.openai.codex"],
+  ]);
+  assert.equal(calls[1][1].at(-2), "approve");
+  assert.equal(calls[3][1].at(-2), "left");
+  assert.equal(calls[5][1].at(-2), "mode");
+  assert.equal(calls[7][1].at(-2), "clear");
 });
 
-test("passes phone dictation only as an osascript argument", async () => {
+test("passes phone dictation only as a JXA argument", async () => {
   const { controller, calls } = makeController();
   const hostileText = '测试" & do shell script "touch /tmp/not-allowed"';
 
   await controller.setDictationDraft(hostileText);
 
-  assert.equal(calls[0][0], "osascript");
-  assert.equal(calls[0][1].at(-1), hostileText);
-  assert.ok(!calls[0][1].slice(0, -1).join("\n").includes(hostileText));
+  assert.equal(calls[0][0], "open");
+  assert.equal(calls[1][0], "osascript");
+  assert.equal(calls[1][1].at(-2), hostileText);
+  assert.ok(!calls[1][1].slice(0, -2).join("\n").includes(hostileText));
 });
 
 test("toggles visible dictation only when the requested state changes", async () => {
@@ -52,22 +59,23 @@ test("toggles visible dictation only when the requested state changes", async ()
   await controller.setVoice(true);
   await controller.setVoice(false);
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 4);
   assert.equal(controller.voiceActive, false);
-  assert.ok(calls[0][1].includes('tell application "System Events" to keystroke "d" using {control down, shift down}'));
+  assert.equal(calls[1][1].at(-2), "voice");
+  assert.equal(calls[3][1].at(-2), "voice");
 });
 
 test("reports the macOS permission boundary clearly", async () => {
   const controller = new CodexAccessibilityController({
     runCommand: async () => {
-      const error = new Error("osascript is not authorized to send Apple events");
-      error.stderr = "not authorized";
+      const error = new Error("CGEvent is not permitted to post keyboard input");
+      error.stderr = "not permitted";
       throw error;
     },
   });
 
   await assert.rejects(
     () => controller.press("approve"),
-    /Accessibility and Automation access/,
+    /Accessibility access/,
   );
 });
