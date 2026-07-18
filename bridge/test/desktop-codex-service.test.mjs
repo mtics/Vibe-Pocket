@@ -421,6 +421,36 @@ test("slow polling remains single-flight instead of accumulating status calls", 
   assert.ok(desktop.statusCalls <= 4, `expected bounded status calls, saw ${desktop.statusCalls}`);
 });
 
+test("does not start a background scan while a controller command is queued", async () => {
+  class CommandBlockingDesktop extends FakeDesktop {
+    statusCalls = 0;
+    releasePress = Promise.withResolvers();
+
+    async status() {
+      this.statusCalls += 1;
+      return super.status();
+    }
+
+    async press(control) {
+      await this.releasePress.promise;
+      await super.press(control);
+    }
+  }
+
+  const desktop = new CommandBlockingDesktop();
+  const service = makeService(desktop, new FakeEvents(), { pollIntervalMs: 5 });
+  await service.start();
+  const statusCallsAfterStart = desktop.statusCalls;
+  const command = service.command({ kind: "binding", inputId: "key_accept" }, "queued-command");
+
+  await new Promise((resolve) => setTimeout(resolve, 32));
+  assert.equal(desktop.statusCalls, statusCallsAfterStart);
+
+  desktop.releasePress.resolve();
+  await command;
+  await service.dispose();
+});
+
 test("updates and dispatches a selected layer gesture while preserving legacy tap dispatch", async () => {
   const desktop = new FakeDesktop();
   const service = makeService(desktop);

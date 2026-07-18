@@ -24,6 +24,7 @@ import { PocketError } from "./pocket-error.mjs";
 const DESKTOP_SESSION_ID = "vibe-pocket-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
 const ACTION_REFRESH_DEBOUNCE_MS = 160;
+const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const TASK_STATES = new Set(["idle", "unread", "thinking", "executing", "waiting", "complete", "error"]);
 const CODEX_HOOK_EVENTS = new Set(["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"]);
 
@@ -40,6 +41,7 @@ export class DesktopCodexService extends EventEmitter {
   #controllerState = emptyControllerState();
   #session = null;
   #commandQueue = Promise.resolve();
+  #queuedCommandCount = 0;
   #pollIntervalMs;
   #pollTimer = null;
   #pollRefresh = null;
@@ -52,7 +54,7 @@ export class DesktopCodexService extends EventEmitter {
     desktop,
     profile,
     profileStore = null,
-    pollIntervalMs = 1_000,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   }) {
     super();
     if (!desktop) {
@@ -162,13 +164,15 @@ export class DesktopCodexService extends EventEmitter {
       return existing.execution;
     }
 
+    this.#queuedCommandCount += 1;
     const execution = this.#commandQueue
       .then(() => this.#execute(command))
       .then(() => ({ commandId: `cmd_${randomUUID()}`, accepted: true, revision: `r_${this.#revision}` }))
       .catch((error) => {
         this.#idempotency.delete(idempotencyKey);
         throw error;
-      });
+      })
+      .finally(() => { this.#queuedCommandCount -= 1; });
     this.#commandQueue = execution.catch(() => {});
     this.#idempotency.set(idempotencyKey, { fingerprint, execution });
     this.#trimIdempotencyCache();
@@ -389,7 +393,12 @@ export class DesktopCodexService extends EventEmitter {
   }
 
   #schedulePollRefresh() {
-    if (this.#pollRefresh) return;
+    if (
+      this.#pollRefresh ||
+      this.#queuedCommandCount > 0 ||
+      this.#actionRefresh ||
+      this.#actionRefreshTimer
+    ) return;
     this.#pollRefresh = this.#refreshAvailability({ publishIfChanged: true })
       .finally(() => { this.#pollRefresh = null; });
   }
