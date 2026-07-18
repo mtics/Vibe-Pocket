@@ -34,6 +34,14 @@ class FakeAppServer extends EventEmitter {
         data: [":read-only", ":workspace", ":danger-full-access"].map((id) => ({ id, allowed: true })),
       };
     }
+    if (method === "collaborationMode/list") {
+      return {
+        data: [
+          { name: "Default", mode: "default", model: null, reasoning_effort: null },
+          { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+        ],
+      };
+    }
     if (method === "thread/list") {
       const roots = this.threads.filter((thread) => thread.sourceKind === "appServer");
       const agents = this.threads.filter((thread) => thread.sourceKind?.startsWith("subAgent"));
@@ -58,6 +66,7 @@ class FakeAppServer extends EventEmitter {
         effort: "medium",
         activePermissionProfile: { id: params.permissions },
         approvalPolicy: params.approvalPolicy,
+        collaborationMode: params.collaborationMode,
       };
       this.settings.set(thread.id, threadSettings);
       return {
@@ -75,6 +84,7 @@ class FakeAppServer extends EventEmitter {
         model: "gpt-test",
         reasoningEffort: "medium",
         activePermissionProfile: { id: ":workspace" },
+        collaborationMode: { mode: "default", settings: { model: "gpt-test" } },
       };
       return { thread, ...settings };
     }
@@ -91,6 +101,7 @@ class FakeAppServer extends EventEmitter {
         activePermissionProfile: params.permissions
           ? { id: params.permissions }
           : current.activePermissionProfile,
+        collaborationMode: params.collaborationMode ?? current.collaborationMode,
       };
       this.settings.set(params.threadId, threadSettings);
       return { threadSettings };
@@ -198,11 +209,16 @@ test("submits phone dictation with direct turn APIs and selected reasoning", asy
   assert.equal((await controller.status()).controls["clear-input"], false);
 });
 
-test("cycles mode and starts a workflow with the selected permission profile", async () => {
+test("cycles collaboration mode and access independently before a workflow", async () => {
   const { appServer, controller } = makeController();
   await controller.status();
+  await controller.attach();
   await controller.cycleMode();
-  assert.equal((await controller.status()).mode.label, "Full access");
+  assert.equal((await controller.status()).mode.label, "Plan");
+  assert.equal((await controller.status()).access.label, "Workspace");
+  assert.equal(appServer.calls.findLast(({ method }) => method === "thread/settings/update").params.collaborationMode.mode, "plan");
+  await controller.cycleAccess();
+  assert.equal((await controller.status()).access.label, "Full access");
 
   await controller.workflow("Review this change.");
 
@@ -241,6 +257,134 @@ test("resolves command and permission approvals with their distinct schemas", as
   assert.deepEqual(appServer.responses.at(-1), {
     id: "approval-2",
     result: { permissions: {}, scope: "turn" },
+  });
+});
+
+test("navigates and answers Codex user-input requests through JSON-RPC", async () => {
+  const appServer = new FakeAppServer();
+  appServer.threads = [ownedThread()];
+  const { controller } = makeController(appServer, ["thread-a"]);
+  await controller.status();
+  appServer.emit("serverRequest", {
+    id: "question-1",
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "thread-a",
+      turnId: "turn-a",
+      itemId: "item-a",
+      questions: [
+        {
+          id: "scope",
+          header: "Scope",
+          question: "Which implementation scope should Codex use?",
+          options: [
+            { label: "Focused", description: "Change only the affected module." },
+            { label: "Broad", description: "Include adjacent cleanup." },
+          ],
+        },
+        {
+          id: "tests",
+          header: "Tests",
+          question: "How much verification should Codex run?",
+          options: [
+            { label: "Targeted", description: "Run focused tests." },
+            { label: "Full", description: "Run the complete suite." },
+          ],
+        },
+      ],
+    },
+  });
+
+  let snapshot = await controller.status();
+  assert.equal(snapshot.taskState, "waiting");
+  assert.equal(snapshot.controls.approve, true);
+  assert.equal(snapshot.controls.navigate, true);
+  assert.deepEqual(snapshot.userInput, {
+    questionIndex: 0,
+    questionCount: 2,
+    header: "Scope",
+    question: "Which implementation scope should Codex use?",
+    options: [
+      { label: "Focused", description: "Change only the affected module." },
+      { label: "Broad", description: "Include adjacent cleanup." },
+    ],
+    selectedOptionIndex: 0,
+    hasSpokenAnswer: false,
+    isSecret: false,
+  });
+
+  await controller.navigate("down");
+  await controller.navigate("right");
+  await controller.navigate("down");
+  snapshot = await controller.status();
+  assert.equal(snapshot.userInput.header, "Tests");
+  assert.equal(snapshot.userInput.selectedOptionIndex, 1);
+
+  await controller.press("approve");
+  assert.deepEqual(appServer.responses.at(-1), {
+    id: "question-1",
+    result: {
+      answers: {
+        scope: { answers: ["Broad"] },
+        tests: { answers: ["Full"] },
+      },
+    },
+  });
+  assert.equal((await controller.status()).userInput, null);
+});
+
+test("uses phone dictation for free-form Codex questions and clears it safely", async () => {
+  const appServer = new FakeAppServer();
+  appServer.threads = [ownedThread()];
+  const { controller } = makeController(appServer, ["thread-a"]);
+  await controller.status();
+  appServer.emit("serverRequest", {
+    id: "question-voice",
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "thread-a",
+      turnId: "turn-a",
+      itemId: "item-a",
+      questions: [{
+        id: "details",
+        header: "Details",
+        question: "What behavior do you want?",
+        options: null,
+      }],
+    },
+  });
+
+  await controller.setDictationDraft("Keep the public API unchanged.");
+  assert.equal((await controller.status()).userInput.hasSpokenAnswer, true);
+  assert.equal((await controller.status()).controls["clear-input"], true);
+  await controller.clearInput();
+  assert.equal((await controller.status()).userInput.hasSpokenAnswer, false);
+  await controller.setDictationDraft("Preserve the current API.");
+  await controller.press("approve");
+  assert.deepEqual(appServer.responses.at(-1), {
+    id: "question-voice",
+    result: { answers: { details: { answers: ["Preserve the current API."] } } },
+  });
+
+  appServer.emit("serverRequest", {
+    id: "question-reject",
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "thread-a",
+      turnId: "turn-b",
+      itemId: "item-b",
+      questions: [{
+        id: "confirm",
+        header: "Confirm",
+        question: "Continue?",
+        options: [{ label: "Yes", description: "Continue." }],
+      }],
+    },
+  });
+  await controller.press("reject");
+  assert.deepEqual(appServer.responses.at(-1), {
+    id: "question-reject",
+    result: { answers: { confirm: { answers: [] } } },
   });
 });
 
@@ -306,17 +450,21 @@ test("restores thread mode and reasoning before calculating the next step", asyn
     reasoningEffort: "high",
     activePermissionProfile: { id: ":danger-full-access" },
     approvalPolicy: "never",
+    collaborationMode: { mode: "default", settings: { model: "gpt-test" } },
   });
   const { controller } = makeController(appServer, ["thread-a"]);
 
   const restored = await controller.status();
-  assert.equal(restored.mode.label, "Full access");
+  assert.equal(restored.mode.label, "Default");
+  assert.equal(restored.access.label, "Full access");
   assert.equal(restored.reasoning.label, "high");
 
   await controller.cycleMode();
+  await controller.cycleAccess();
   await controller.adjustReasoning(1);
   const updated = await controller.status();
-  assert.equal(updated.mode.label, "Read only");
+  assert.equal(updated.mode.label, "Plan");
+  assert.equal(updated.access.label, "Read only");
   assert.equal(updated.reasoning.label, "high");
 });
 

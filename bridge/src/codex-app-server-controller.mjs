@@ -16,6 +16,7 @@ const APPROVAL_METHODS = new Set([
   "item/fileChange/requestApproval",
   "item/permissions/requestApproval",
 ]);
+const USER_INPUT_METHOD = "item/tool/requestUserInput";
 const EXECUTION_ITEM_TYPES = new Set([
   "commandExecution",
   "fileChange",
@@ -27,6 +28,10 @@ const MODES = [
   { label: "Read only", permissions: ":read-only", approvalPolicy: "on-request" },
   { label: "Workspace", permissions: ":workspace", approvalPolicy: "on-request" },
   { label: "Full access", permissions: ":danger-full-access", approvalPolicy: "never" },
+];
+const FALLBACK_COLLABORATION_MODES = [
+  { name: "Default", mode: "default", model: null, reasoning_effort: null },
+  { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
 ];
 const FALLBACK_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -47,13 +52,16 @@ export class CodexAppServerController {
   #threadOutcomes = new Map();
   #executionItems = new Map();
   #approvals = new Map();
+  #userInputs = new Map();
   #agentThreads = new Map();
   #unreadThreads = new Set();
   #threadSettings = new Map();
   #allowedPermissions = new Set(MODES.map(({ permissions }) => permissions));
+  #collaborationModes = structuredClone(FALLBACK_COLLABORATION_MODES);
   #models = new Map();
   #defaultModel = null;
   #defaultModeIndex = 1;
+  #defaultCollaborationModeIndex = 0;
   #defaultEffort = "medium";
   #voiceActive = false;
   #draft = null;
@@ -72,8 +80,10 @@ export class CodexAppServerController {
     if (this.#focusThreadId) await this.#ensureLoaded(this.#focusThreadId);
     const agents = this.#agents();
     const approval = this.#focusedApproval();
+    const userInput = this.#focusedUserInput();
     const settings = this.#settingsFor(this.#focusThreadId);
     const hasDraft = Boolean(this.#draft?.text);
+    const hasUserInputDraft = Boolean(userInput?.customAnswers.has(this.#activeUserInputQuestion(userInput)?.id));
     return {
       available: true,
       message: this.#focusThreadId
@@ -84,19 +94,25 @@ export class CodexAppServerController {
         voice: true,
         stop: this.#activeTurns.has(this.#focusThreadId),
         "new-task": true,
-        approve: Boolean(approval) || hasDraft,
-        reject: Boolean(approval) || hasDraft,
-        "clear-input": hasDraft,
+        approve: Boolean(approval) || Boolean(userInput) || hasDraft,
+        reject: Boolean(approval) || Boolean(userInput) || hasDraft,
+        "clear-input": hasDraft || hasUserInputDraft,
         "focus-agent": agents.length > 0,
         "mode-cycle": true,
-        navigate: agents.length > 0,
+        "access-cycle": true,
+        navigate: Boolean(userInput) || agents.length > 0,
         reasoning: true,
         workflow: true,
       },
       agents,
       voice: { available: true, active: this.#voiceActive },
-      mode: { available: true, label: MODES[settings.modeIndex].label },
+      mode: {
+        available: this.#collaborationModes.length > 0,
+        label: this.#collaborationModes[settings.collaborationModeIndex]?.name ?? "Default",
+      },
+      access: { available: true, label: MODES[settings.modeIndex].label },
       reasoning: { available: true, label: settings.effort },
+      userInput: this.#publicUserInput(userInput),
     };
   }
 
@@ -138,6 +154,13 @@ export class CodexAppServerController {
       throw new Error("Phone dictation must contain printable non-empty text up to 12,000 characters.");
     }
     const threadId = await this.#ensureFocusedThread();
+    const userInput = this.#focusedUserInput();
+    if (userInput) {
+      const question = this.#activeUserInputQuestion(userInput);
+      userInput.customAnswers.set(question.id, text.trim());
+      this.#voiceActive = false;
+      return { message: `Stored a spoken answer for ${question.header}. Press Accept to send it.` };
+    }
     this.#draft = { text: text.trim(), threadId };
     this.#voiceActive = false;
     return { message: "Stored phone dictation for the focused task. Press Accept to send it." };
@@ -146,6 +169,8 @@ export class CodexAppServerController {
   async navigate(direction) {
     await this.#ensureStarted();
     await this.#refreshThreads();
+    const userInput = this.#focusedUserInput();
+    if (userInput) return this.#navigateUserInput(userInput, direction);
     const agents = this.#agents();
     if (agents.length === 0) throw new Error("There are no Vibe Pocket Codex tasks to navigate.");
     const current = agents.findIndex((agent) => agent.focused);
@@ -156,6 +181,23 @@ export class CodexAppServerController {
   }
 
   async cycleMode() {
+    await this.#ensureStarted();
+    if (this.#focusThreadId) await this.#ensureLoaded(this.#focusThreadId);
+    const current = this.#settingsFor(this.#focusThreadId);
+    const collaborationModeIndex = (current.collaborationModeIndex + 1) % this.#collaborationModes.length;
+    const collaborationMode = this.#collaborationModePayload(collaborationModeIndex, current);
+    this.#defaultCollaborationModeIndex = collaborationModeIndex;
+    if (this.#focusThreadId) {
+      const result = await this.#appServer.request("thread/settings/update", {
+        threadId: this.#focusThreadId,
+        collaborationMode,
+      });
+      this.#captureSettings(this.#focusThreadId, result.threadSettings ?? result, { collaborationModeIndex });
+    }
+    return { message: `Selected ${this.#collaborationModes[collaborationModeIndex].name} collaboration mode.` };
+  }
+
+  async cycleAccess() {
     await this.#ensureStarted();
     if (this.#focusThreadId) await this.#ensureLoaded(this.#focusThreadId);
     const current = this.#settingsFor(this.#focusThreadId);
@@ -175,6 +217,11 @@ export class CodexAppServerController {
 
   async clearInput() {
     await this.#ensureStarted();
+    const userInput = this.#focusedUserInput();
+    const question = this.#activeUserInputQuestion(userInput);
+    if (question && userInput.customAnswers.delete(question.id)) {
+      return { message: `Cleared the spoken answer for ${question.header}.` };
+    }
     this.#draft = null;
     return { message: "Cleared the pending phone dictation." };
   }
@@ -225,7 +272,7 @@ export class CodexAppServerController {
     if (this.#started) return;
     await this.#appServer.start();
     this.#started = true;
-    await Promise.all([this.#loadModels(), this.#loadPermissionProfiles()]);
+    await Promise.all([this.#loadModels(), this.#loadPermissionProfiles(), this.#loadCollaborationModes()]);
     for (const threadId of await this.#ownershipStore?.load?.() ?? []) {
       this.#ownedRootIds.add(threadId);
     }
@@ -268,6 +315,27 @@ export class CodexAppServerController {
     } catch (error) {
       this.#allowedPermissions = new Set(MODES.map(({ permissions }) => permissions));
       if (error.message?.includes("unavailable")) throw error;
+    }
+  }
+
+  async #loadCollaborationModes() {
+    try {
+      const result = await this.#appServer.request("collaborationMode/list", {});
+      const modes = (result.data ?? []).filter((mode) => (
+        mode
+        && typeof mode.name === "string"
+        && (mode.mode === "default" || mode.mode === "plan")
+      )).map((mode) => ({
+        name: mode.name.slice(0, 64),
+        mode: mode.mode,
+        model: typeof mode.model === "string" ? mode.model : null,
+        reasoning_effort: typeof mode.reasoning_effort === "string" ? mode.reasoning_effort : null,
+      }));
+      if (modes.length > 0) this.#collaborationModes = modes;
+      const defaultIndex = this.#collaborationModes.findIndex(({ mode }) => mode === "default");
+      this.#defaultCollaborationModeIndex = Math.max(0, defaultIndex);
+    } catch {
+      this.#collaborationModes = structuredClone(FALLBACK_COLLABORATION_MODES);
     }
   }
 
@@ -334,10 +402,15 @@ export class CodexAppServerController {
   async #createThread() {
     const mode = MODES[this.#defaultModeIndex];
     const cwd = Object.values(this.#workspaces)[0];
+    const collaborationMode = this.#collaborationModePayload(
+      this.#defaultCollaborationModeIndex,
+      this.#settingsFor(null),
+    );
     const result = await this.#appServer.request("thread/start", {
       cwd,
       approvalPolicy: mode.approvalPolicy,
       permissions: mode.permissions,
+      collaborationMode,
       threadSource: OWNER_THREAD_SOURCE,
     });
     this.#ownedRootIds.add(result.thread.id);
@@ -347,6 +420,7 @@ export class CodexAppServerController {
     this.#loadedThreads.add(result.thread.id);
     this.#captureSettings(result.thread.id, result, {
       modeIndex: this.#defaultModeIndex,
+      collaborationModeIndex: this.#defaultCollaborationModeIndex,
       effort: result.reasoningEffort ?? this.#defaultEffort,
       model: result.model ?? this.#defaultModel,
     });
@@ -424,6 +498,11 @@ export class CodexAppServerController {
       this.#respondToApproval(approval, true);
       return { message: "Approved the focused Codex request." };
     }
+    const userInput = this.#focusedUserInput();
+    if (userInput) {
+      this.#respondToUserInput(userInput, true);
+      return { message: "Answered the focused Codex question." };
+    }
     await this.#submitDraft();
     return { message: "Submitted the phone dictation to Codex." };
   }
@@ -433,6 +512,11 @@ export class CodexAppServerController {
     if (approval) {
       this.#respondToApproval(approval, false);
       return { message: "Rejected the focused Codex request." };
+    }
+    const userInput = this.#focusedUserInput();
+    if (userInput) {
+      this.#respondToUserInput(userInput, false);
+      return { message: "Dismissed the focused Codex question." };
     }
     if (this.#draft) {
       this.#draft = null;
@@ -457,6 +541,42 @@ export class CodexAppServerController {
     this.#approvals.delete(approval.requestId);
   }
 
+  #navigateUserInput(userInput, direction) {
+    if (direction === "left" || direction === "right") {
+      const delta = direction === "left" ? -1 : 1;
+      userInput.activeQuestionIndex = wrapIndex(
+        userInput.activeQuestionIndex + delta,
+        userInput.questions.length,
+      );
+      const question = this.#activeUserInputQuestion(userInput);
+      return { message: `Selected question ${userInput.activeQuestionIndex + 1}: ${question.header}.` };
+    }
+
+    const question = this.#activeUserInputQuestion(userInput);
+    if (question.options.length === 0) {
+      throw new Error("This Codex question needs a spoken answer. Hold Voice, then press Accept.");
+    }
+    const delta = direction === "up" ? -1 : 1;
+    const selected = userInput.selectedOptionIndexes.get(question.id) ?? 0;
+    const next = wrapIndex(selected + delta, question.options.length);
+    userInput.selectedOptionIndexes.set(question.id, next);
+    userInput.customAnswers.delete(question.id);
+    return { message: `Selected ${question.options[next].label} for ${question.header}.` };
+  }
+
+  #respondToUserInput(userInput, accepted) {
+    const answers = Object.fromEntries(userInput.questions.map((question) => {
+      if (!accepted) return [question.id, { answers: [] }];
+      const customAnswer = userInput.customAnswers.get(question.id);
+      if (customAnswer) return [question.id, { answers: [customAnswer] }];
+      const selected = userInput.selectedOptionIndexes.get(question.id) ?? 0;
+      const label = question.options[selected]?.label;
+      return [question.id, { answers: label ? [label] : [] }];
+    }));
+    this.#appServer.respond(userInput.requestId, { answers });
+    this.#userInputs.delete(userInput.requestId);
+  }
+
   #registerOwnedThread(thread) {
     if (!thread || !this.#workspaceAllows(thread.cwd)) return;
     if (thread.sessionId) this.#ownedSessionIds.add(thread.sessionId);
@@ -470,6 +590,8 @@ export class CodexAppServerController {
     const existing = this.#threadSettings.get(threadId) ?? {};
     const permissionId = value.activePermissionProfile?.id;
     const modeIndex = MODES.findIndex(({ permissions }) => permissions === permissionId);
+    const collaborationKind = value.collaborationMode?.mode ?? fallback.collaborationMode;
+    const collaborationModeIndex = this.#collaborationModes.findIndex(({ mode }) => mode === collaborationKind);
     const model = value.model ?? fallback.model ?? existing.model ?? this.#defaultModel;
     const effort = value.effort ?? value.reasoningEffort ?? fallback.effort ?? existing.effort
       ?? this.#models.get(model)?.defaultEffort ?? this.#defaultEffort;
@@ -477,6 +599,9 @@ export class CodexAppServerController {
       model,
       effort,
       modeIndex: modeIndex >= 0 ? modeIndex : fallback.modeIndex ?? existing.modeIndex ?? this.#defaultModeIndex,
+      collaborationModeIndex: collaborationModeIndex >= 0
+        ? collaborationModeIndex
+        : fallback.collaborationModeIndex ?? existing.collaborationModeIndex ?? this.#defaultCollaborationModeIndex,
     });
   }
 
@@ -485,6 +610,21 @@ export class CodexAppServerController {
       model: this.#defaultModel,
       effort: this.#defaultEffort,
       modeIndex: this.#defaultModeIndex,
+      collaborationModeIndex: this.#defaultCollaborationModeIndex,
+    };
+  }
+
+  #collaborationModePayload(index, settings) {
+    const mode = this.#collaborationModes[index];
+    const model = mode?.model ?? settings.model ?? this.#defaultModel;
+    if (!mode || !model) throw new Error("Codex did not advertise a usable collaboration mode.");
+    return {
+      mode: mode.mode,
+      settings: {
+        model,
+        reasoning_effort: mode.reasoning_effort ?? settings.effort ?? this.#defaultEffort,
+        developer_instructions: null,
+      },
     };
   }
 
@@ -520,12 +660,37 @@ export class CodexAppServerController {
 
   #hasWaitingState(threadId, status) {
     if ([...this.#approvals.values()].some((approval) => approval.threadId === threadId)) return true;
+    if ([...this.#userInputs.values()].some((input) => input.threadId === threadId)) return true;
     return status?.type === "active"
       && status.activeFlags?.some((flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput");
   }
 
   #focusedApproval() {
     return [...this.#approvals.values()].find((approval) => approval.threadId === this.#focusThreadId) ?? null;
+  }
+
+  #focusedUserInput() {
+    return [...this.#userInputs.values()].find((input) => input.threadId === this.#focusThreadId) ?? null;
+  }
+
+  #activeUserInputQuestion(userInput) {
+    return userInput?.questions[userInput.activeQuestionIndex] ?? null;
+  }
+
+  #publicUserInput(userInput) {
+    if (!userInput) return null;
+    const question = this.#activeUserInputQuestion(userInput);
+    const selectedOptionIndex = userInput.selectedOptionIndexes.get(question.id) ?? 0;
+    return {
+      questionIndex: userInput.activeQuestionIndex,
+      questionCount: userInput.questions.length,
+      header: question.header,
+      question: question.question,
+      options: question.options,
+      selectedOptionIndex: question.options.length > 0 ? selectedOptionIndex : -1,
+      hasSpokenAnswer: userInput.customAnswers.has(question.id),
+      isSecret: question.isSecret,
+    };
   }
 
   #workspaceAllows(cwd) {
@@ -537,6 +702,15 @@ export class CodexAppServerController {
   }
 
   #onServerRequest(message) {
+    if (message.method === USER_INPUT_METHOD) {
+      const userInput = normalizeUserInputRequest(message);
+      if (!userInput) {
+        this.#appServer.respondWithError(message.id, -32602, "Invalid Codex user-input request.");
+        return;
+      }
+      this.#userInputs.set(message.id, userInput);
+      return;
+    }
     if (!APPROVAL_METHODS.has(message.method)) {
       this.#appServer.respondWithError(message.id, -32601, "Unsupported Vibe Pocket server request.");
       return;
@@ -555,6 +729,7 @@ export class CodexAppServerController {
     const turnId = message.params?.turnId ?? message.params?.turn?.id;
     if (message.method === "serverRequest/resolved") {
       this.#approvals.delete(message.params?.requestId);
+      this.#userInputs.delete(message.params?.requestId);
       return;
     }
     if (message.method === "thread/started" && message.params?.thread) {
@@ -615,6 +790,67 @@ function chooseDecision(available, preferred) {
   if (!Array.isArray(available) || available.length === 0) return preferred[0];
   const offered = new Set(available.filter((value) => typeof value === "string"));
   return preferred.find((value) => offered.has(value)) ?? null;
+}
+
+function normalizeUserInputRequest(message) {
+  const params = message.params;
+  if (
+    (typeof message.id !== "string" && typeof message.id !== "number")
+    || !params
+    || typeof params.threadId !== "string"
+    || typeof params.turnId !== "string"
+    || !Array.isArray(params.questions)
+    || params.questions.length === 0
+    || params.questions.length > 3
+  ) {
+    return null;
+  }
+
+  const questions = params.questions.map((question) => {
+    if (!question || typeof question !== "object" || Array.isArray(question)) return null;
+    const id = printableText(question.id, 64);
+    const header = printableText(question.header, 64);
+    const prompt = printableText(question.question, 2_000);
+    if (!id || !header || !prompt) return null;
+    if (question.options !== null && question.options !== undefined && !Array.isArray(question.options)) return null;
+    const options = (question.options ?? []).map((option) => {
+      if (!option || typeof option !== "object" || Array.isArray(option)) return null;
+      const label = printableText(option.label, 120);
+      const description = printableText(option.description, 500, { allowEmpty: true });
+      return label && description !== null ? { label, description } : null;
+    });
+    if (options.some((option) => option === null) || options.length > 8) return null;
+    return {
+      id,
+      header,
+      question: prompt,
+      options,
+      isSecret: question.isSecret === true,
+    };
+  });
+  if (questions.some((question) => question === null) || new Set(questions.map(({ id }) => id)).size !== questions.length) {
+    return null;
+  }
+
+  return {
+    requestId: message.id,
+    threadId: params.threadId,
+    turnId: params.turnId,
+    questions,
+    activeQuestionIndex: 0,
+    selectedOptionIndexes: new Map(questions.map(({ id }) => [id, 0])),
+    customAnswers: new Map(),
+  };
+}
+
+function printableText(value, maxLength, { allowEmpty = false } = {}) {
+  if (typeof value !== "string" || value.length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 || allowEmpty ? trimmed : null;
+}
+
+function wrapIndex(index, length) {
+  return ((index % length) + length) % length;
 }
 
 function validDictation(text) {

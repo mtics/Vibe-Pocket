@@ -10,10 +10,13 @@ import {
   createDefaultControllerProfile,
   normalizeControllerProfile,
   updateControllerBinding,
+  updateControllerLayerColor,
+  updateControllerWorkflowPrompt,
   validateControllerAction,
+  workflowPrompt,
 } from "../src/controller-profile.mjs";
 
-test("migrates version 1 direct actions into version 2 tap gestures", () => {
+test("migrates version 1 direct actions into version 3 tap gestures and defaults", () => {
   const legacy = createDefaultControllerProfile();
   legacy.version = 1;
   for (const layer of legacy.layers) {
@@ -27,6 +30,26 @@ test("migrates version 1 direct actions into version 2 tap gestures", () => {
   assert.deepEqual(migrated.layers[0].bindings.key_voice, { tap: { type: "voice" } });
   assert.deepEqual(bindingFor(migrated, "layer-1", "key_voice"), { type: "voice" });
   assert.equal(bindingFor(migrated, "layer-1", "key_voice", "hold"), null);
+  assert.match(workflowPrompt(migrated, "debug"), /Investigate the current failure/);
+  assert.equal(migrated.layers[0].color, "#F4F4F2");
+});
+
+test("persists validated workflow prompts, layer colors, and layer actions", () => {
+  let profile = createDefaultControllerProfile();
+  profile = updateControllerWorkflowPrompt(profile, {
+    workflowId: "debug",
+    prompt: "Reproduce the failure, isolate the cause, fix it, and run the focused tests.",
+  });
+  profile = updateControllerLayerColor(profile, { layerId: "layer-2", color: "#12abef" });
+  profile = updateControllerBinding(profile, {
+    layerId: "layer-1",
+    inputId: "key_focus",
+    action: { type: "select_layer", layerId: "layer-2" },
+  });
+
+  assert.equal(workflowPrompt(profile, "debug"), "Reproduce the failure, isolate the cause, fix it, and run the focused tests.");
+  assert.equal(profile.layers[1].color, "#12ABEF");
+  assert.deepEqual(bindingFor(profile, "layer-1", "key_focus"), { type: "select_layer", layerId: "layer-2" });
 });
 
 test("supports tap, double_tap, and hold slots on every fixed input", () => {

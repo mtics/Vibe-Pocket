@@ -53,6 +53,10 @@ export class MacCodexDesktopController {
     return this.#invoke("mode-cycle");
   }
 
+  async cycleAccess() {
+    return this.#invoke("mode-cycle");
+  }
+
   async adjustReasoning(delta) {
     return this.#invoke("reasoning", [String(delta)]);
   }

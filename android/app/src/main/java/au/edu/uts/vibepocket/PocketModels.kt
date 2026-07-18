@@ -54,9 +54,11 @@ data class PocketSnapshot(
         "stop" -> controls.stop
         "new_task" -> controls.newTask
         "mode_cycle" -> controls.modeCycle
+        "access_cycle" -> controls.accessCycle
         "clear_input" -> controls.clearInput
         "focus_next" -> controls.focusAgent || status.state == "ready"
         "focus_agent" -> controls.focusAgent
+        "select_layer" -> controller?.profile?.layers?.any { it.id == action.layerId } == true
         "navigate" -> controls.navigate
         "reasoning_depth" -> controls.reasoning
         "workflow" -> controls.workflow
@@ -92,6 +94,7 @@ data class DesktopControls(
     val clearInput: Boolean = false,
     val focusAgent: Boolean = false,
     val modeCycle: Boolean = false,
+    val accessCycle: Boolean = false,
     val navigate: Boolean = false,
     val reasoning: Boolean = false,
     val workflow: Boolean = false,
@@ -108,7 +111,25 @@ data class ControllerState(
     val focusedAgentId: String?,
     val voice: VoiceStatus?,
     val mode: SelectorStatus,
+    val access: SelectorStatus = SelectorStatus(false, ""),
     val reasoning: SelectorStatus,
+    val userInput: CodexQuestion? = null,
+)
+
+data class CodexQuestion(
+    val questionIndex: Int,
+    val questionCount: Int,
+    val header: String,
+    val question: String,
+    val options: List<CodexQuestionOption>,
+    val selectedOptionIndex: Int,
+    val hasSpokenAnswer: Boolean,
+    val isSecret: Boolean,
+)
+
+data class CodexQuestionOption(
+    val label: String,
+    val description: String,
 )
 
 data class ControllerProfile(
@@ -157,6 +178,7 @@ data class GestureOption(
 data class ControllerWorkflow(
     val id: String,
     val label: String,
+    val prompt: String,
 )
 
 data class ControllerLayer(
@@ -176,12 +198,14 @@ data class ControllerAction(
     val delta: Int? = null,
     val index: Int? = null,
     val workflowId: String? = null,
+    val layerId: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().put("type", type).also { root ->
         direction?.let { root.put("direction", it) }
         delta?.let { root.put("delta", it) }
         index?.let { root.put("index", it) }
         workflowId?.let { root.put("workflowId", it) }
+        layerId?.let { root.put("layerId", it) }
     }
 }
 
@@ -270,6 +294,8 @@ sealed interface PocketCommand {
     ) : PocketCommand
 
     data class RenameLayer(val layerId: String, val name: String) : PocketCommand
+    data class UpdateLayerColor(val layerId: String, val color: String) : PocketCommand
+    data class UpdateWorkflowPrompt(val workflowId: String, val prompt: String) : PocketCommand
     data object ResetProfile : PocketCommand
     data object Attach : PocketCommand
     data object Voice : PocketCommand

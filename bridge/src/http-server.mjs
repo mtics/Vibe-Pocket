@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { PocketError } from "./pocket-controller-service.mjs";
 
-export const POCKET_PROTOCOL_VERSION = 4;
+export const POCKET_PROTOCOL_VERSION = 5;
 
 export function createPocketHttpServer({ service, events, token }) {
   return createServer(async (request, response) => {

@@ -32,6 +32,7 @@ class FakeDesktop {
         "clear-input": true,
         "focus-agent": true,
         "mode-cycle": true,
+        "access-cycle": true,
         navigate: true,
         reasoning: true,
         workflow: true,
@@ -39,6 +40,7 @@ class FakeDesktop {
       agents: this.agents,
       voice: this.voice,
       mode: { available: true, label: "Codex" },
+      access: { available: true, label: "Workspace" },
       reasoning: { available: true, label: "High" },
     };
   }
@@ -52,6 +54,7 @@ class FakeDesktop {
   async setDictationDraft(text) { this.calls.push(["setDictationDraft", text]); }
   async navigate(direction) { this.calls.push(["navigate", direction]); }
   async cycleMode() { this.calls.push(["cycleMode"]); }
+  async cycleAccess() { this.calls.push(["cycleAccess"]); }
   async clearInput() { this.calls.push(["clearInput"]); }
   async focusAgent(index) { this.calls.push(["focusAgent", index]); }
   async adjustReasoning(delta) { this.calls.push(["adjustReasoning", delta]); }
@@ -101,6 +104,7 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controller.focusedAgentId, "agent-111111111111111111111111");
   assert.deepEqual(snapshot.controller.voice, { available: true, active: false });
   assert.equal(snapshot.controller.mode.label, "Codex");
+  assert.equal(snapshot.controller.access.label, "Workspace");
   assert.equal(snapshot.controller.reasoning.label, "High");
   assert.equal(snapshot.controls.reasoning, true);
 });
@@ -333,6 +337,46 @@ test("persists layer renames and resets the complete profile", async () => {
   assert.equal(snapshot.controller.profile.layers[1].name, "Layer 2");
   assert.deepEqual(snapshot.controller.profile.layers[1].bindings, {});
   assert.equal(store.saves, 3);
+});
+
+test("persists workflow prompts and colors and dispatches semantic layer switching", async () => {
+  const store = new MemoryProfileStore();
+  const first = makeService(new FakeDesktop(), new FakeEvents(), { profileStore: store });
+  await first.start();
+  await first.command({
+    kind: "update_workflow",
+    workflowId: "debug",
+    prompt: "Reproduce the issue, apply the smallest fix, and run targeted tests.",
+  }, "workflow-prompt");
+  await first.command({
+    kind: "update_layer_color",
+    layerId: "layer-2",
+    color: "#28B4A0",
+  }, "layer-color");
+  await first.command({
+    kind: "update_binding",
+    layerId: "layer-1",
+    inputId: "key_focus",
+    action: { type: "select_layer", layerId: "layer-2" },
+  }, "layer-binding");
+  await first.dispose();
+
+  const desktop = new FakeDesktop();
+  const restarted = makeService(desktop, new FakeEvents(), { profileStore: store });
+  await restarted.start();
+  let snapshot = await restarted.snapshot();
+  assert.equal(snapshot.controller.profile.layers[1].color, "#28B4A0");
+  assert.match(snapshot.controller.profile.workflows.find(({ id }) => id === "debug").prompt, /smallest fix/);
+
+  await restarted.command({ kind: "binding", inputId: "key_focus" }, "switch-with-binding");
+  snapshot = await restarted.snapshot();
+  assert.equal(snapshot.controller.activeLayerId, "layer-2");
+  await restarted.command({ kind: "select_layer", layerId: "layer-1" }, "return-layer-1");
+  await restarted.command({ kind: "binding", inputId: "joystick_down" }, "run-custom-debug");
+  assert.deepEqual(desktop.calls.at(-1), [
+    "workflow",
+    "Reproduce the issue, apply the smallest fix, and run targeted tests.",
+  ]);
 });
 
 test("rejects unsafe configuration commands before desktop dispatch or persistence", async () => {

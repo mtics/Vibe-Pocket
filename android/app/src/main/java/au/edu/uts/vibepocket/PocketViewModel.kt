@@ -246,6 +246,21 @@ class PocketViewModel(
         return submit(PocketCommand.RenameLayer(layerId, trimmed), "rename:$layerId")
     }
 
+    fun updateLayerColor(layerId: String, color: String): Boolean {
+        if (!color.matches(Regex("#[0-9a-fA-F]{6}"))) return false
+        val layer = _state.value.snapshot?.controller?.profile?.layers?.firstOrNull { it.id == layerId } ?: return false
+        if (layer.color.equals(color, ignoreCase = true)) return false
+        return submit(PocketCommand.UpdateLayerColor(layerId, color.uppercase()), "color:$layerId")
+    }
+
+    fun updateWorkflowPrompt(workflowId: String, prompt: String): Boolean {
+        val trimmed = prompt.trim()
+        if (trimmed.isEmpty() || trimmed.length > 4_000 || trimmed.any { it.isISOControl() && it != '\n' && it != '\t' }) return false
+        val workflow = _state.value.snapshot?.controller?.profile?.workflows?.firstOrNull { it.id == workflowId } ?: return false
+        if (workflow.prompt == trimmed) return false
+        return submit(PocketCommand.UpdateWorkflowPrompt(workflowId, trimmed), "workflow:$workflowId")
+    }
+
     fun resetProfile(): Boolean {
         if (_state.value.snapshot?.controller?.profile == null) return false
         return submit(PocketCommand.ResetProfile, "reset-profile")

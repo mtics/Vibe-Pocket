@@ -1,4 +1,4 @@
-export const CONTROLLER_PROFILE_VERSION = 2;
+export const CONTROLLER_PROFILE_VERSION = 3;
 
 const WORKFLOW_PROMPTS = Object.freeze({
   "review-pr": "Review the current change for correctness, security, regressions, and missing tests. Report concrete findings first.",
@@ -31,10 +31,10 @@ const INPUTS = [
 ];
 
 const WORKFLOWS = [
-  { id: "review-pr", label: "Review PR" },
-  { id: "debug", label: "Debug" },
-  { id: "refactor", label: "Refactor" },
-  { id: "test", label: "Tests" },
+  { id: "review-pr", label: "Review PR", prompt: WORKFLOW_PROMPTS["review-pr"] },
+  { id: "debug", label: "Debug", prompt: WORKFLOW_PROMPTS.debug },
+  { id: "refactor", label: "Refactor", prompt: WORKFLOW_PROMPTS.refactor },
+  { id: "test", label: "Tests", prompt: WORKFLOW_PROMPTS.test },
 ];
 
 export const CONTROLLER_GESTURES = deepFreeze([
@@ -50,6 +50,7 @@ const NO_ARGUMENT_ACTIONS = new Map([
   ["new_task", "New task"],
   ["stop", "Stop"],
   ["mode_cycle", "Next mode"],
+  ["access_cycle", "Next access level"],
   ["clear_input", "Clear input"],
   ["focus_next", "Next agent"],
   ["attach", "Focus Codex"],
@@ -100,6 +101,11 @@ export const CONTROLLER_ACTION_CATALOG = deepFreeze([
     label: `Focus agent ${index + 1}`,
     action: { type: "focus_agent", index },
   })),
+  ...LAYER_IDS.map((layerId, index) => ({
+    id: `select_layer_${index + 1}`,
+    label: `Select layer ${index + 1}`,
+    action: { type: "select_layer", layerId },
+  })),
   ...WORKFLOWS.map(({ id, label }) => ({
     id: `workflow_${id}`,
     label,
@@ -122,7 +128,7 @@ export function createDefaultControllerProfile() {
 
 export function normalizeControllerProfile(candidate) {
   requireRecord(candidate, "Controller profile");
-  if (candidate.version !== 1 && candidate.version !== CONTROLLER_PROFILE_VERSION) {
+  if (![1, 2, CONTROLLER_PROFILE_VERSION].includes(candidate.version)) {
     throw new ControllerProfileValidationError("Controller profile version is not supported.");
   }
   if (!Array.isArray(candidate.layers) || candidate.layers.length !== LAYER_IDS.length) {
@@ -141,14 +147,14 @@ export function normalizeControllerProfile(candidate) {
   return {
     version: CONTROLLER_PROFILE_VERSION,
     inputs: structuredClone(INPUTS),
-    workflows: structuredClone(WORKFLOWS),
+    workflows: candidate.version >= 3 ? normalizeWorkflows(candidate.workflows) : structuredClone(WORKFLOWS),
     layers: LAYER_IDS.map((id, index) => {
       const layer = candidatesById.get(id);
       if (!layer) throw new ControllerProfileValidationError("Controller profile is missing a fixed layer.");
       return {
         id,
         name: validateLayerName(layer.name),
-        color: LAYER_COLORS[index],
+        color: candidate.version >= 3 ? validateLayerColor(layer.color) : LAYER_COLORS[index],
         bindings: normalizeBindings(layer.bindings),
       };
     }),
@@ -195,6 +201,22 @@ export function renameControllerLayer(profile, { layerId, name }) {
   return next;
 }
 
+export function updateControllerLayerColor(profile, { layerId, color }) {
+  validateLayerId(layerId);
+  const next = normalizeControllerProfile(profile);
+  next.layers.find((candidate) => candidate.id === layerId).color = validateLayerColor(color);
+  return normalizeControllerProfile(next);
+}
+
+export function updateControllerWorkflowPrompt(profile, { workflowId, prompt }) {
+  if (!WORKFLOW_IDS.has(workflowId)) {
+    throw new ControllerProfileValidationError("Workflow does not exist.");
+  }
+  const next = normalizeControllerProfile(profile);
+  next.workflows.find((workflow) => workflow.id === workflowId).prompt = validateWorkflowPrompt(prompt);
+  return normalizeControllerProfile(next);
+}
+
 export function validateControllerAction(action) {
   requireRecord(action, "Controller action");
   if (NO_ARGUMENT_ACTIONS.has(action.type)) {
@@ -221,6 +243,10 @@ export function validateControllerAction(action) {
       throw new ControllerProfileValidationError("Agent index must be an integer from 0 to 5.");
     }
     return { type: "focus_agent", index: action.index };
+  }
+  if (action.type === "select_layer") {
+    requireExactKeys(action, ["type", "layerId"], "Layer action");
+    return { type: "select_layer", layerId: validateLayerId(action.layerId) };
   }
   if (action.type === "workflow") {
     requireExactKeys(action, ["type", "workflowId"], "Workflow action");
@@ -253,10 +279,30 @@ export function validateGesture(gesture) {
   return gesture;
 }
 
-export function workflowPrompt(workflowId) {
-  const prompt = WORKFLOW_PROMPTS[workflowId];
+export function workflowPrompt(profile, workflowId) {
+  const prompt = normalizeControllerProfile(profile).workflows.find(({ id }) => id === workflowId)?.prompt;
   if (!prompt) throw new ControllerProfileValidationError("Unknown Vibe Pocket workflow.");
   return prompt;
+}
+
+function normalizeWorkflows(workflows) {
+  if (!Array.isArray(workflows) || workflows.length !== WORKFLOWS.length) {
+    throw new ControllerProfileValidationError("Controller profile must contain exactly four workflows.");
+  }
+  const candidates = new Map();
+  for (const workflow of workflows) {
+    requireRecord(workflow, "Workflow");
+    requireExactKeys(workflow, ["id", "label", "prompt"], "Workflow");
+    if (!WORKFLOW_IDS.has(workflow.id) || candidates.has(workflow.id)) {
+      throw new ControllerProfileValidationError("Controller profile contains an unknown or duplicate workflow.");
+    }
+    const canonical = WORKFLOWS.find(({ id }) => id === workflow.id);
+    if (workflow.label !== canonical.label) {
+      throw new ControllerProfileValidationError("Workflow labels cannot alter the fixed workflow topology.");
+    }
+    candidates.set(workflow.id, { ...canonical, prompt: validateWorkflowPrompt(workflow.prompt) });
+  }
+  return WORKFLOWS.map(({ id }) => candidates.get(id));
 }
 
 function buildDefaultProfile() {
@@ -316,6 +362,24 @@ function validateLayerName(name) {
   const trimmed = name.trim();
   if (trimmed.length === 0 || trimmed.length > 40 || /[\u0000-\u001f\u007f]/.test(trimmed)) {
     throw new ControllerProfileValidationError("Layer name must be 1 to 40 printable characters.");
+  }
+  return trimmed;
+}
+
+function validateLayerColor(color) {
+  if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+    throw new ControllerProfileValidationError("Layer color must be a six-digit hexadecimal color.");
+  }
+  return color.toUpperCase();
+}
+
+function validateWorkflowPrompt(prompt) {
+  if (typeof prompt !== "string") {
+    throw new ControllerProfileValidationError("Workflow prompt must be text.");
+  }
+  const trimmed = prompt.trim();
+  if (trimmed.length === 0 || trimmed.length > 4_000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(trimmed)) {
+    throw new ControllerProfileValidationError("Workflow prompt must be 1 to 4,000 printable characters.");
   }
   return trimmed;
 }

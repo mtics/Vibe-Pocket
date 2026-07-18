@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Sync
@@ -99,6 +100,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -141,6 +144,10 @@ private val ExecutingColor = Color(0xFF59C7F2)
 private val WaitingColor = Color(0xFFF2B95F)
 private val CompleteColor = Color(0xFF55D6A4)
 private val ErrorColor = Color(0xFFFF776B)
+private val LayerColorChoices = listOf(
+    "#F4F4F2", "#A020F0", "#25D9E8", "#FF8C24",
+    "#FF4F9A", "#FFE04A", "#55D6A4", "#FF776B",
+)
 
 @Composable
 fun VibePocketTheme(content: @Composable () -> Unit) {
@@ -308,6 +315,8 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                 }
             },
             onRename = viewModel::renameLayer,
+            onColor = viewModel::updateLayerColor,
+            onWorkflow = viewModel::updateWorkflowPrompt,
             onReset = viewModel::resetProfile,
         )
     }
@@ -383,6 +392,7 @@ private fun ControllerScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TaskStatusStrip(snapshot)
+        snapshot.controller?.userInput?.let { CodexQuestionPanel(it) }
         SectionLabel("Agents")
         AgentGrid(
             snapshot = snapshot,
@@ -401,6 +411,7 @@ private fun ControllerScreen(
         }
         ModeAndFocus(
             mode = controller?.mode ?: SelectorStatus(false, "Unavailable"),
+            access = controller?.access ?: SelectorStatus(false, "Unavailable"),
             touchInput = touchInput,
             snapshot = snapshot,
             busy = busy,
@@ -442,6 +453,72 @@ private fun ControllerScreen(
             )
         }
         Spacer(Modifier.height(18.dp))
+    }
+}
+
+@Composable
+private fun CodexQuestionPanel(question: CodexQuestion) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(WaitingColor.copy(alpha = 0.09f), RoundedCornerShape(6.dp))
+            .border(1.dp, WaitingColor.copy(alpha = 0.65f), RoundedCornerShape(6.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.HourglassTop, contentDescription = null, tint = WaitingColor, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(question.header, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(
+                "${question.questionIndex + 1}/${question.questionCount}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        Text(question.question, style = MaterialTheme.typography.bodyMedium)
+        question.options.forEachIndexed { index, option ->
+            val selected = index == question.selectedOptionIndex && !question.hasSpokenAnswer
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        if (selected) WaitingColor.copy(alpha = 0.16f) else Color.Transparent,
+                        RoundedCornerShape(4.dp),
+                    )
+                    .padding(horizontal = 9.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (selected) Icons.Default.Check else Icons.Default.RadioButtonUnchecked,
+                    contentDescription = null,
+                    tint = if (selected) WaitingColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(17.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(option.label, style = MaterialTheme.typography.labelLarge)
+                    if (option.description.isNotEmpty()) {
+                        Text(
+                            option.description,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+        if (question.hasSpokenAnswer) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Mic, contentDescription = null, tint = WaitingColor, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (question.isSecret) "Private spoken answer ready" else "Spoken answer ready",
+                    color = WaitingColor,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
     }
 }
 
@@ -584,6 +661,7 @@ private fun LayerSelector(
 @Composable
 private fun ModeAndFocus(
     mode: SelectorStatus,
+    access: SelectorStatus,
     touchInput: ControllerInput?,
     snapshot: PocketSnapshot,
     busy: Boolean,
@@ -603,6 +681,15 @@ private fun ModeAndFocus(
             Text("Mode", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             Text(
                 mode.label.ifBlank { "Unavailable" },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Column(Modifier.weight(1f)) {
+            Text("Access", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            Text(
+                access.label.ifBlank { "Unavailable" },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = FontWeight.Medium,
@@ -1077,6 +1164,8 @@ private fun MappingSheet(
     onUpdate: (String, String, ControllerGesture, String) -> Unit,
     onClear: (String, String, ControllerGesture) -> Unit,
     onRename: (String, String) -> Boolean,
+    onColor: (String, String) -> Boolean,
+    onWorkflow: (String, String) -> Boolean,
     onReset: () -> Boolean,
 ) {
     val controller = snapshot.controller ?: return
@@ -1117,6 +1206,31 @@ private fun MappingSheet(
                 ) { Text("Rename") }
             }
             Spacer(Modifier.height(10.dp))
+            Text("Layer color", style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.height(7.dp))
+            LayerColorChoices.chunked(4).forEach { colors ->
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    colors.forEach { color ->
+                        val parsed = parseProfileColor(color)
+                        val selected = layer.color.equals(color, ignoreCase = true)
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(parsed)
+                                .border(
+                                    if (selected) 3.dp else 1.dp,
+                                    if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                    CircleShape,
+                                )
+                                .semantics { contentDescription = "Layer color $color" }
+                                .clickable(enabled = !busy && !selected, onClick = { onColor(layer.id, color) }),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            Spacer(Modifier.height(14.dp))
             profile.inputs.forEach { input ->
                 MappingInputRow(
                     input = input,
@@ -1126,6 +1240,17 @@ private fun MappingSheet(
                     onSelect = { gesture -> target = MappingTarget(input, gesture) },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f))
+            }
+            Spacer(Modifier.height(14.dp))
+            Text("Workflow prompts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            profile.workflows.forEach { workflow ->
+                WorkflowPromptEditor(
+                    workflow = workflow,
+                    busy = busy,
+                    onSave = { prompt -> onWorkflow(workflow.id, prompt) },
+                )
+                Spacer(Modifier.height(10.dp))
             }
             TextButton(
                 onClick = { confirmReset = true },
@@ -1169,6 +1294,35 @@ private fun MappingSheet(
             },
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun WorkflowPromptEditor(
+    workflow: ControllerWorkflow,
+    busy: Boolean,
+    onSave: (String) -> Boolean,
+) {
+    var prompt by rememberSaveable(workflow.id, workflow.prompt) { mutableStateOf(workflow.prompt) }
+    val trimmed = prompt.trim()
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = { if (it.length <= 4_000) prompt = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(workflow.label) },
+            minLines = 3,
+            maxLines = 6,
+        )
+        TextButton(
+            onClick = { onSave(prompt) },
+            enabled = !busy && trimmed.isNotEmpty() && trimmed != workflow.prompt,
+            modifier = Modifier.align(Alignment.End),
+        ) {
+            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Save")
+        }
     }
 }
 

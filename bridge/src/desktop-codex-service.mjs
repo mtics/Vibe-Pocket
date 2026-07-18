@@ -11,6 +11,8 @@ import {
   normalizeControllerProfile,
   renameControllerLayer,
   updateControllerBinding,
+  updateControllerLayerColor,
+  updateControllerWorkflowPrompt,
   validateControllerAction,
   validateGesture,
   validateInputId,
@@ -230,6 +232,26 @@ export class DesktopCodexService extends EventEmitter {
         return;
       }
 
+      if (command.kind === "update_layer_color") {
+        requireCommandKeys(command, ["kind", "layerId", "color"]);
+        const next = updateControllerLayerColor(this.#profile, {
+          layerId: command.layerId,
+          color: command.color,
+        });
+        await this.#replaceProfile(next, `Updated ${command.layerId} color.`);
+        return;
+      }
+
+      if (command.kind === "update_workflow") {
+        requireCommandKeys(command, ["kind", "workflowId", "prompt"]);
+        const next = updateControllerWorkflowPrompt(this.#profile, {
+          workflowId: command.workflowId,
+          prompt: command.prompt,
+        });
+        await this.#replaceProfile(next, `Updated ${command.workflowId} workflow.`);
+        return;
+      }
+
       if (command.kind === "reset_profile") {
         requireCommandKeys(command, ["kind"]);
         await this.#replaceProfile(createDefaultControllerProfile(), "Reset all controller layers.", { resetLayer: true });
@@ -282,6 +304,9 @@ export class DesktopCodexService extends EventEmitter {
       case "mode_cycle":
         await this.#perform(() => this.#desktop.cycleMode(), "Selected the next Codex mode.");
         return;
+      case "access_cycle":
+        await this.#perform(() => this.#desktop.cycleAccess(), "Selected the next Codex access level.");
+        return;
       case "clear_input":
         await this.#perform(() => this.#desktop.clearInput(), "Cleared the pending phone dictation.");
         return;
@@ -305,6 +330,13 @@ export class DesktopCodexService extends EventEmitter {
         this.#markFocusedAgent(agent.id);
         return;
       }
+      case "select_layer": {
+        const layer = this.#profile.layers.find(({ id }) => id === action.layerId);
+        if (!layer) throw new PocketError(409, "layer_unavailable", "That controller layer is unavailable.");
+        this.#activeLayerId = layer.id;
+        this.#recordAction(`Selected ${layer.name}.`);
+        return;
+      }
       case "reasoning_depth":
         if (action.delta !== 1 && action.delta !== -1) {
           throw new PocketError(400, "invalid_reasoning_delta", "Reasoning adjustment must be one step clockwise or counter-clockwise.");
@@ -313,7 +345,7 @@ export class DesktopCodexService extends EventEmitter {
         return;
       case "workflow":
         await this.#perform(
-          () => this.#desktop.workflow(workflowPrompt(action.workflowId)),
+          () => this.#desktop.workflow(workflowPrompt(this.#profile, action.workflowId)),
           "Started the selected workflow in a new Codex task.",
         );
         return;
@@ -520,6 +552,7 @@ function emptyControls() {
     "clear-input": false,
     "focus-agent": false,
     "mode-cycle": false,
+    "access-cycle": false,
     navigate: false,
     reasoning: false,
     workflow: false,
@@ -540,7 +573,9 @@ function emptyControllerState() {
     focusedAgentId: null,
     voice: { available: false, active: false },
     mode: { available: false, label: "" },
+    access: { available: false, label: "" },
     reasoning: { available: false, label: "" },
+    userInput: null,
   };
 }
 
@@ -568,7 +603,34 @@ function normalizeControllerState(result, previousFocusedAgentId) {
     focusedAgentId,
     voice: normalizeVoice(result.voice),
     mode: normalizeSelector(result.mode),
+    access: normalizeSelector(result.access),
     reasoning: normalizeSelector(result.reasoning),
+    userInput: normalizeUserInput(result.userInput),
+  };
+}
+
+function normalizeUserInput(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const questionCount = Number.isInteger(value.questionCount) ? value.questionCount : 0;
+  const questionIndex = Number.isInteger(value.questionIndex) ? value.questionIndex : -1;
+  if (questionCount < 1 || questionCount > 3 || questionIndex < 0 || questionIndex >= questionCount) return null;
+  if (typeof value.header !== "string" || typeof value.question !== "string" || !Array.isArray(value.options)) return null;
+  const options = value.options.slice(0, 8).map((option) => ({
+    label: typeof option?.label === "string" ? option.label.slice(0, 120) : "",
+    description: typeof option?.description === "string" ? option.description.slice(0, 500) : "",
+  })).filter(({ label }) => label.length > 0);
+  const selectedOptionIndex = options.length > 0 && Number.isInteger(value.selectedOptionIndex)
+    ? Math.max(0, Math.min(options.length - 1, value.selectedOptionIndex))
+    : -1;
+  return {
+    questionIndex,
+    questionCount,
+    header: value.header.slice(0, 64),
+    question: value.question.slice(0, 2_000),
+    options,
+    selectedOptionIndex,
+    hasSpokenAnswer: value.hasSpokenAnswer === true,
+    isSecret: value.isSecret === true,
   };
 }
 

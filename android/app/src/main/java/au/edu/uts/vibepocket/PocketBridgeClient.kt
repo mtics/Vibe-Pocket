@@ -159,6 +159,7 @@ internal fun parsePocketSnapshot(root: JSONObject): PocketSnapshot {
             clearInput = controls.optBoolean("clear-input", false),
             focusAgent = controls.optBoolean("focus-agent", false),
             modeCycle = controls.optBoolean("mode-cycle", false),
+            accessCycle = controls.optBoolean("access-cycle", false),
             navigate = controls.optBoolean("navigate", false),
             reasoning = controls.optBoolean("reasoning", false),
             workflow = controls.optBoolean("workflow", false),
@@ -197,7 +198,34 @@ private fun parseController(value: JSONObject?): ControllerState? {
         focusedAgentId = focusedAgentId,
         voice = parseVoice(value.optJSONObject("voice")),
         mode = parseSelector(value.optJSONObject("mode")),
+        access = parseSelector(value.optJSONObject("access")),
         reasoning = parseSelector(value.optJSONObject("reasoning")),
+        userInput = parseCodexQuestion(value.optJSONObject("userInput")),
+    )
+}
+
+private fun parseCodexQuestion(value: JSONObject?): CodexQuestion? {
+    value ?: return null
+    val count = value.optInt("questionCount", 0).takeIf { it in 1..3 } ?: return null
+    val index = value.optInt("questionIndex", -1).takeIf { it in 0 until count } ?: return null
+    val header = value.safeString("header")?.take(64) ?: return null
+    val question = value.safeString("question")?.take(2_000) ?: return null
+    val options = value.optJSONArray("options").objects().mapNotNull { option ->
+        val label = option.safeString("label")?.take(120) ?: return@mapNotNull null
+        CodexQuestionOption(label, option.safeString("description")?.take(500).orEmpty())
+    }.take(8)
+    val selected = value.optInt("selectedOptionIndex", -1)
+        .takeIf { it in options.indices }
+        ?: -1
+    return CodexQuestion(
+        questionIndex = index,
+        questionCount = count,
+        header = header,
+        question = question,
+        options = options,
+        selectedOptionIndex = selected,
+        hasSpokenAnswer = value.optBoolean("hasSpokenAnswer", false),
+        isSecret = value.optBoolean("isSecret", false),
     )
 }
 
@@ -214,7 +242,11 @@ private fun parseProfile(value: JSONObject?): ControllerProfile? {
     }.distinctBy(ControllerInput::id)
     val workflows = value.optJSONArray("workflows").objects().mapNotNull { workflow ->
         val id = workflow.safeString("id")?.take(64) ?: return@mapNotNull null
-        ControllerWorkflow(id, workflow.safeString("label")?.take(40) ?: id)
+        ControllerWorkflow(
+            id = id,
+            label = workflow.safeString("label")?.take(40) ?: id,
+            prompt = workflow.safeString("prompt")?.take(4_000).orEmpty(),
+        )
     }.distinctBy(ControllerWorkflow::id)
     val layers = value.optJSONArray("layers").objects().mapNotNull { layer ->
         val id = layer.safeString("id")?.take(64) ?: return@mapNotNull null
@@ -271,7 +303,7 @@ private fun parseControllerAction(value: JSONObject?): ControllerAction? {
     value ?: return null
     val type = value.safeString("type") ?: return null
     return when (type) {
-        "approve", "reject", "voice", "new_task", "stop", "mode_cycle", "clear_input", "focus_next", "attach" ->
+        "approve", "reject", "voice", "new_task", "stop", "mode_cycle", "access_cycle", "clear_input", "focus_next", "attach" ->
             ControllerAction(type)
         "navigate" -> value.safeString("direction")
             ?.takeIf { it in setOf("up", "down", "left", "right") }
@@ -282,6 +314,9 @@ private fun parseControllerAction(value: JSONObject?): ControllerAction? {
         "focus_agent" -> value.optInt("index", -1)
             .takeIf { it in 0..5 }
             ?.let { ControllerAction(type, index = it) }
+        "select_layer" -> value.safeString("layerId")
+            ?.take(64)
+            ?.let { ControllerAction(type, layerId = it) }
         "workflow" -> value.safeString("workflowId")
             ?.take(64)
             ?.let { ControllerAction(type, workflowId = it) }
@@ -333,6 +368,14 @@ internal fun PocketCommand.toJson(): JSONObject = when (this) {
         .put("kind", "rename_layer")
         .put("layerId", layerId)
         .put("name", name)
+    is PocketCommand.UpdateLayerColor -> JSONObject()
+        .put("kind", "update_layer_color")
+        .put("layerId", layerId)
+        .put("color", color)
+    is PocketCommand.UpdateWorkflowPrompt -> JSONObject()
+        .put("kind", "update_workflow")
+        .put("workflowId", workflowId)
+        .put("prompt", prompt)
     PocketCommand.ResetProfile -> JSONObject().put("kind", "reset_profile")
     PocketCommand.Attach -> JSONObject().put("kind", "attach")
     PocketCommand.Voice -> JSONObject().put("kind", "voice")

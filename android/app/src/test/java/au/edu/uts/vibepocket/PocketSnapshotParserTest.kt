@@ -18,7 +18,12 @@ class PocketSnapshotParserTest {
         assertEquals(0, snapshot.controller?.focusedAgentIndex)
         assertEquals(VoiceStatus(available = true, active = false), snapshot.controller?.voice)
         assertEquals("Codex", snapshot.controller?.mode?.label)
+        assertEquals("Workspace", snapshot.controller?.access?.label)
         assertEquals("High", snapshot.controller?.reasoning?.label)
+        assertEquals("Scope", snapshot.controller?.userInput?.header)
+        assertEquals(2, snapshot.controller?.userInput?.options?.size)
+        assertEquals("Broad", snapshot.controller?.userInput?.options?.get(1)?.label)
+        assertEquals(1, snapshot.controller?.userInput?.selectedOptionIndex)
         assertEquals(2, snapshot.controller?.agents?.size)
         assertEquals("Turing", snapshot.controller?.agents?.first()?.label)
         assertEquals("agent-0123456789abcdef01234567", snapshot.controller?.agents?.first()?.id)
@@ -27,6 +32,8 @@ class PocketSnapshotParserTest {
         assertEquals(TaskState.UNREAD, snapshot.controller?.agents?.last()?.state)
         assertEquals(6, snapshot.controller?.profile?.layers?.size)
         assertEquals(5, snapshot.controller?.profile?.inputs?.size)
+        assertEquals("Review this change.", snapshot.controller?.profile?.workflows?.first()?.prompt)
+        assertTrue(snapshot.controller?.actionCatalog?.any { it.action.type == "select_layer" && it.action.layerId == "layer-2" } == true)
         assertTrue(snapshot.inputEnabled("key_accept"))
         assertTrue(snapshot.inputEnabled("key_accept", ControllerGesture.DOUBLE_TAP))
         assertFalse(snapshot.inputEnabled("key_accept", ControllerGesture.HOLD))
@@ -160,6 +167,8 @@ class PocketSnapshotParserTest {
             ControllerGesture.DOUBLE_TAP,
         ).toJson()
         val rename = PocketCommand.RenameLayer("layer-2", "Research").toJson()
+        val color = PocketCommand.UpdateLayerColor("layer-2", "#55D6A4").toJson()
+        val workflow = PocketCommand.UpdateWorkflowPrompt("debug", "Investigate from evidence.").toJson()
         val reset = PocketCommand.ResetProfile.toJson()
 
         assertEquals("binding", binding.getString("kind"))
@@ -177,6 +186,10 @@ class PocketSnapshotParserTest {
         assertEquals("double_tap", clear.getString("gesture"))
         assertEquals("rename_layer", rename.getString("kind"))
         assertEquals("Research", rename.getString("name"))
+        assertEquals("update_layer_color", color.getString("kind"))
+        assertEquals("#55D6A4", color.getString("color"))
+        assertEquals("update_workflow", workflow.getString("kind"))
+        assertEquals("Investigate from evidence.", workflow.getString("prompt"))
         assertEquals(setOf("kind"), reset.keys().asSequence().toSet())
         assertEquals("voice_start", PocketCommand.VoiceStart.toJson().getString("kind"))
         assertEquals("voice_stop", PocketCommand.VoiceStop.toJson().getString("kind"))
@@ -198,7 +211,7 @@ class PocketSnapshotParserTest {
               "controls":{
                 "voice":true,"stop":false,"new-task":true,"approve":true,"reject":true,
                 "clear-input":true,"focus-agent":true,"mode-cycle":true,"navigate":true,
-                "reasoning":true,"workflow":true
+                "access-cycle":true,"reasoning":true,"workflow":true
               },
               "controller":{
                 "activeLayerId":"layer-1",
@@ -211,18 +224,30 @@ class PocketSnapshotParserTest {
                   {"id":"agent-89abcdef0123456789abcdef","label":"Dalton","state":"unread","focused":false}
                 ],
                 "mode":{"available":true,"label":"Codex"},
+                "access":{"available":true,"label":"Workspace"},
                 "reasoning":{"available":true,"label":"High"},
+                "userInput":{
+                  "questionIndex":0,"questionCount":1,"header":"Scope",
+                  "question":"Which scope should Codex use?",
+                  "options":[
+                    {"label":"Focused","description":"Only the affected module."},
+                    {"label":"Broad","description":"Include adjacent cleanup."}
+                  ],
+                  "selectedOptionIndex":1,"hasSpokenAnswer":false,"isSecret":false
+                },
                 "gestures":[
                   {"id":"tap","label":"Tap"},{"id":"double_tap","label":"Double tap"},{"id":"hold","label":"Hold"}
                 ],
                 "actionCatalog":[
                   {"id":"approve","label":"Approve","action":{"type":"approve"}},
                   {"id":"voice","label":"Voice","action":{"type":"voice"}},
+                  {"id":"access_cycle","label":"Next access level","action":{"type":"access_cycle"}},
                   {"id":"focus_agent_1","label":"Focus agent 1","action":{"type":"focus_agent","index":0}},
+                  {"id":"select_layer_2","label":"Select layer 2","action":{"type":"select_layer","layerId":"layer-2"}},
                   {"id":"workflow_review-pr","label":"Review PR","action":{"type":"workflow","workflowId":"review-pr"}}
                 ],
                 "profile":{
-                  "version":2,
+                  "version":3,
                   "inputs":[
                     {"id":"key_accept","kind":"key","label":"Accept","icon":"check"},
                     {"id":"key_stop","kind":"key","label":"Stop","icon":"stop"},
@@ -230,7 +255,7 @@ class PocketSnapshotParserTest {
                     {"id":"joystick_up","kind":"joystick","label":"Review PR","icon":"review"},
                     {"id":"dial_cw","kind":"dial","label":"More reasoning","icon":"dial"}
                   ],
-                  "workflows":[{"id":"review-pr","label":"Review PR"}],
+                  "workflows":[{"id":"review-pr","label":"Review PR","prompt":"Review this change."}],
                   "layers":[
                     {"id":"layer-1","name":"Default","color":"#55D6A4","bindings":{
                       "key_accept":{"tap":{"type":"approve"},"double_tap":{"type":"voice"}},
