@@ -26,6 +26,7 @@ test("installs fixed desktop semantic shortcuts without replacing user bindings"
       1,
     );
   }
+  assert.ok(installed.some(({ command, key }) => command === "composer.openModelPicker" && key === "Ctrl+Shift+M"));
 });
 
 test("re-enables a managed command that was explicitly cleared", async () => {

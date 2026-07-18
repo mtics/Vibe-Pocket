@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const VIBE_POCKET_CODEX_KEYBINDINGS = Object.freeze([
+  Object.freeze({ command: "composer.openModelPicker", key: "Ctrl+Shift+M" }),
   Object.freeze({ command: "composer.togglePlanMode", key: "Ctrl+Alt+Shift+P" }),
   Object.freeze({ command: "composer.increaseReasoningEffort", key: "Ctrl+Alt+Shift+U" }),
   Object.freeze({ command: "composer.decreaseReasoningEffort", key: "Ctrl+Alt+Shift+J" }),

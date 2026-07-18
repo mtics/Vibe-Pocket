@@ -80,6 +80,32 @@ class ControllerInputOrchestratorTest {
     }
 
     @Test
+    fun deliveredReasoningStepPublishesAnImmediateLocalAction() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val delivered = mutableListOf<ControllerAction>()
+        val orchestrator = ControllerInputOrchestrator(hid, bridge, delivered::add)
+        val action = ControllerAction("reasoning_depth", delta = 1)
+
+        assertTrue(orchestrator.activate(snapshot(action), INPUT_ID, ControllerGesture.TAP))
+
+        assertEquals(listOf(action), delivered)
+        assertTrue(bridge.calls.isEmpty())
+    }
+
+    @Test
+    fun modelPickerUsesTheNativeHidShortcutWithoutBridgeFallback() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = ControllerInputOrchestrator(hid, bridge)
+
+        assertTrue(orchestrator.openModelPicker(snapshot(ControllerAction("approve"))))
+
+        assertEquals(listOf(ControllerAction("model_picker")), hid.sent)
+        assertTrue(bridge.calls.isEmpty())
+    }
+
+    @Test
     fun minimumReasoningDisablesOnlyTheDownwardPlan() {
         val minimum = ReasoningStatus(
             available = true,

@@ -25,6 +25,15 @@ test("only the explicit attach action may activate ChatGPT", async () => {
   assert.match(source, /case "attach":[\s\S]*?desktop\(activateDesktop: true\)/);
 });
 
+test("composer controls and Agent focus identity use the focused Codex window", async () => {
+  const source = await readFile(helperUrl, "utf8");
+
+  assert.match(source, /kAXFocusedWindowAttribute/);
+  assert.match(source, /codexArea\(in: codexScope\(for: application\)\)/);
+  assert.match(source, /let selectedTaskTitle = focusedTaskTitle\(in: codexScope\(for: application\)\)/);
+  assert.match(source, /let root = AXUIElementCreateApplication\(application\.processIdentifier\)[\s\S]*?focusedTaskTitle: selectedTaskTitle/);
+});
+
 test("production Swift semantics keep minimum reasoning adjustable upward", async (context) => {
   if (process.platform !== "darwin") {
     context.skip("The macOS Accessibility helper is compiled only on macOS.");
@@ -47,7 +56,11 @@ guard let medium = ReasoningLevel.parse(from: "5.6 Luna 中") else {
 }
 precondition(medium == .medium)
 precondition(medium.canIncrease && medium.canDecrease)
+precondition(ReasoningLevel.modelLabel(from: "5.6 Luna 中") == "5.6 Luna")
 precondition(ReasoningLevel.parse(from: "5.7 Preview") == nil)
+precondition(agentStatePriority("waiting") < agentStatePriority("executing"))
+precondition(agentStatePriority("executing") < agentStatePriority("idle"))
+precondition(maxAgentTargets == 24)
 `;
     const mainPath = join(directory, "main.swift");
     const executablePath = join(directory, "reasoning-probe");

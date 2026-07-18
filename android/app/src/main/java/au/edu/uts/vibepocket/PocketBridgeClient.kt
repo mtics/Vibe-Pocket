@@ -182,7 +182,7 @@ private fun parseController(value: JSONObject?): ControllerState? {
             state = TaskState.fromWire(agent.safeString("state").orEmpty()),
             focused = agent.optBoolean("focused", false),
         )
-    }.take(6)
+    }.take(MAX_AGENT_COUNT)
     val focused = value.optInt("focusedAgentIndex", -1).takeIf { it in agents.indices } ?: -1
     val focusedAgentId = value.safeString("focusedAgentId")
         ?.takeIf(AgentIdPattern::matches)
@@ -337,6 +337,7 @@ private fun parseReasoning(value: JSONObject?): ReasoningStatus {
     return ReasoningStatus(
         available = available,
         label = value?.safeString("label")?.take(64).orEmpty(),
+        modelLabel = value?.safeString("modelLabel")?.take(64).orEmpty(),
         level = ReasoningLevel.fromWire(value?.safeString("level")),
         // These fields were added after protocol v5. Defaulting to the overall
         // capability keeps a rolling bridge/app upgrade interactive.

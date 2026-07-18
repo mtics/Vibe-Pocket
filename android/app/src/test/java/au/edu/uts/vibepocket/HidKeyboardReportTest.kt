@@ -42,6 +42,16 @@ class HidKeyboardReportTest {
             listOf(
                 HidChord(
                     modifier = HidKeyboardReport.MODIFIER_LEFT_CONTROL or
+                        HidKeyboardReport.MODIFIER_LEFT_SHIFT,
+                    usage = HidKeyboardReport.USAGE_M,
+                ),
+            ),
+            CodexHidMapping.chords(ControllerAction("model_picker")),
+        )
+        assertEquals(
+            listOf(
+                HidChord(
+                    modifier = HidKeyboardReport.MODIFIER_LEFT_CONTROL or
                         HidKeyboardReport.MODIFIER_LEFT_SHIFT or
                         HidKeyboardReport.MODIFIER_LEFT_ALT,
                     usage = HidKeyboardReport.USAGE_U,

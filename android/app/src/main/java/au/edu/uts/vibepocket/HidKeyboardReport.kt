@@ -14,6 +14,7 @@ internal object HidKeyboardReport {
     const val USAGE_A = 0x04
     const val USAGE_D = 0x07
     const val USAGE_J = 0x0D
+    const val USAGE_M = 0x10
     const val USAGE_N = 0x11
     const val USAGE_P = 0x13
     const val USAGE_U = 0x18
@@ -60,6 +61,12 @@ internal object CodexHidMapping {
             HidChord(
                 modifier = semanticCommandModifiers,
                 usage = HidKeyboardReport.USAGE_P,
+            ),
+        )
+        "model_picker" -> listOf(
+            HidChord(
+                modifier = HidKeyboardReport.MODIFIER_LEFT_CONTROL or HidKeyboardReport.MODIFIER_LEFT_SHIFT,
+                usage = HidKeyboardReport.USAGE_M,
             ),
         )
         "reasoning_depth" -> when (action.delta) {

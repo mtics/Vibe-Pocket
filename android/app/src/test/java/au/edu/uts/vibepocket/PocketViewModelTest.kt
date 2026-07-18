@@ -134,6 +134,42 @@ class PocketViewModelTest {
     }
 
     @Test
+    fun deliveredHidReasoningStepIsImmediateAndSurvivesAStaleSnapshot() = runTest(dispatcher) {
+        val confirmed = REASONING_SNAPSHOT.copy(
+            revision = "r_confirmed",
+            controller = REASONING_SNAPSHOT.controller?.copy(
+                reasoning = REASONING_SNAPSHOT.controller.reasoning.copy(
+                    label = "High",
+                    level = ReasoningLevel.HIGH,
+                ),
+            ),
+        )
+        val client = SnapshotQueueClient(
+            REASONING_SNAPSHOT,
+            REASONING_SNAPSHOT.copy(revision = "r_stale"),
+            confirmed,
+        )
+        val viewModel = PocketViewModel(
+            store = FakeStore(ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            ioDispatcher = dispatcher,
+            nowMillis = { 1_000L },
+        )
+        runCurrent()
+
+        viewModel.applyLocalHidAction(ControllerAction("reasoning_depth", delta = 1))
+        assertEquals(ReasoningLevel.HIGH, viewModel.state.value.snapshot?.controller?.reasoning?.level)
+
+        viewModel.refresh()
+        runCurrent()
+        assertEquals(ReasoningLevel.HIGH, viewModel.state.value.snapshot?.controller?.reasoning?.level)
+
+        viewModel.refresh()
+        runCurrent()
+        assertEquals("High", viewModel.state.value.snapshot?.controller?.reasoning?.label)
+    }
+
+    @Test
     fun rapidVoiceReleaseQueuesStopBehindStart() = runTest(dispatcher) {
         val config = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
         val client = BlockingVoiceClient()
@@ -317,6 +353,20 @@ class PocketViewModelTest {
                 voice = VoiceStatus(available = true, active = false),
                 mode = SelectorStatus(false, ""),
                 reasoning = ReasoningStatus.Unavailable,
+            ),
+        )
+
+        val REASONING_SNAPSHOT = VOICE_SNAPSHOT.copy(
+            controls = VOICE_SNAPSHOT.controls.copy(reasoning = true),
+            controller = VOICE_SNAPSHOT.controller?.copy(
+                reasoning = ReasoningStatus(
+                    available = true,
+                    label = "Medium",
+                    modelLabel = "Codex",
+                    level = ReasoningLevel.MEDIUM,
+                    canIncrease = true,
+                    canDecrease = true,
+                ),
             ),
         )
     }

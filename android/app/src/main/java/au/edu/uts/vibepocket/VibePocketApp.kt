@@ -47,6 +47,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MarkChatUnread
@@ -171,6 +173,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         ControllerInputOrchestrator(
             hid = hidController,
             bridge = PocketViewModelBridgeTransport(viewModel),
+            onHidAction = viewModel::applyLocalHidAction,
         )
     }
     val hidState by hidController.state.collectAsStateWithLifecycle()
@@ -293,6 +296,11 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
+    val onModelPicker: () -> Unit = {
+        if (inputOrchestrator.openModelPicker(state.snapshot)) {
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        }
+    }
     val onLayer: (String) -> Boolean = { layerId ->
         viewModel.selectLayer(layerId).also { selected ->
             if (selected) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -359,6 +367,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
+                    onModelPicker = onModelPicker,
                     onLayer = onLayer,
                 )
             }
@@ -444,6 +453,7 @@ private fun ControllerScreen(
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     onAgent: (String) -> Unit,
+    onModelPicker: () -> Unit,
     onLayer: (String) -> Boolean,
 ) {
     val controller = snapshot.controller
@@ -564,6 +574,7 @@ private fun ControllerScreen(
                 onInput = routedInput,
                 onVoiceStart = routedVoiceStart,
                 onVoiceStop = onVoiceStop,
+                onOpenModelPicker = onModelPicker,
                 inputBlocked = layerGuardActive,
             )
         }
@@ -750,18 +761,50 @@ private fun AgentGrid(
     onAgentClick: (String) -> Unit,
 ) {
     val slots = snapshot.agentSlots()
-    slots.chunked(3).forEach { row ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            row.forEach { slot ->
-                val agent = slot.agent
-                AgentTile(
-                    agent = agent,
-                    focused = slot.focused,
-                    enabled = agent != null && "agent:${agent.id}" !in inFlightIds && slot.canFocus,
-                    loading = agent != null && "agent:${agent.id}" in inFlightIds,
-                    onClick = { agent?.id?.let(onAgentClick) },
-                    modifier = Modifier.weight(1f),
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(slots.size) {
+        if (slots.size <= COLLAPSED_AGENT_COUNT) expanded = false
+    }
+    val visibleSlots = if (expanded) slots else slots.take(COLLAPSED_AGENT_COUNT)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (visibleSlots.isEmpty()) {
+            Text(
+                "No active Codex tasks detected",
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        visibleSlots.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { slot ->
+                    val agent = slot.agent
+                    AgentTile(
+                        agent = agent,
+                        focused = slot.focused,
+                        enabled = agent != null && "agent:${agent.id}" !in inFlightIds && slot.canFocus,
+                        loading = agent != null && "agent:${agent.id}" in inFlightIds,
+                        onClick = { agent?.id?.let(onAgentClick) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(3 - row.size) {
+                    Spacer(Modifier.weight(1f).height(58.dp))
+                }
+            }
+        }
+        if (slots.size > COLLAPSED_AGENT_COUNT) {
+            TextButton(
+                onClick = { expanded = !expanded },
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
                 )
+                Spacer(Modifier.width(6.dp))
+                Text(if (expanded) "Show fewer" else "Show ${slots.size - COLLAPSED_AGENT_COUNT} more")
             }
         }
     }
@@ -1314,6 +1357,7 @@ private fun ReasoningDial(
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    onOpenModelPicker: () -> Unit,
     inputBlocked: Boolean,
 ) {
     val counterClockwise = inputs.firstOrNull { it.id.endsWith("ccw") }
@@ -1326,7 +1370,13 @@ private fun ReasoningDial(
     }
     val rotationEnabled = !inputBlocked && !inputPending && (counterClockwiseEnabled || clockwiseEnabled)
     val currentOnInput by rememberUpdatedState(onInput)
+    val currentOnOpenModelPicker by rememberUpdatedState(onOpenModelPicker)
     val view = LocalView.current
+    val touchSlop = LocalViewConfiguration.current.touchSlop
+    val modelPickerEnabled = !inputBlocked && !inputPending &&
+        snapshot.controller?.desktopFocused == true &&
+        snapshot.controller.userInput == null &&
+        reasoning.available
     var rotationDegrees by remember { mutableStateOf(0f) }
     Row(
         modifier = Modifier
@@ -1358,9 +1408,11 @@ private fun ReasoningDial(
                 Box(
                     modifier = Modifier
                         .matchParentSize()
-                        .semantics { contentDescription = "Reasoning dial. Rotate clockwise to increase or counterclockwise to decrease." }
-                        .pointerInput(rotationEnabled, clockwise?.id, counterClockwise?.id) {
-                            if (!rotationEnabled) return@pointerInput
+                        .semantics {
+                            contentDescription = "Reasoning dial. Tap to choose a model, rotate to adjust reasoning."
+                        }
+                        .pointerInput(rotationEnabled, modelPickerEnabled, clockwise?.id, counterClockwise?.id) {
+                            if (!rotationEnabled && !modelPickerEnabled) return@pointerInput
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 val minimumRadius = min(size.width, size.height) * DIAL_ROTATION_DEAD_ZONE_FRACTION
@@ -1371,34 +1423,52 @@ private fun ReasoningDial(
                                     size.height / 2f,
                                     minimumRadius,
                                 )
+                                var moved = false
+                                var stepped = false
+                                var released = false
                                 try {
                                     var pressed = true
                                     while (pressed) {
                                         val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-                                        val update = advanceDialRotation(
-                                            dialState,
-                                            change.position.x,
-                                            change.position.y,
-                                            size.width / 2f,
-                                            size.height / 2f,
-                                            minimumRadius,
-                                        )
-                                        dialState = update.state
-                                        rotationDegrees += Math.toDegrees(update.deltaRadians).toFloat()
-                                        when (update.step) {
-                                            1 -> clockwise?.id?.let { inputId ->
-                                                currentOnInput(inputId, ControllerGesture.TAP)
+                                        if (
+                                            abs(change.position.x - down.position.x) > touchSlop ||
+                                            abs(change.position.y - down.position.y) > touchSlop
+                                        ) {
+                                            moved = true
+                                        }
+                                        if (rotationEnabled) {
+                                            val update = advanceDialRotation(
+                                                dialState,
+                                                change.position.x,
+                                                change.position.y,
+                                                size.width / 2f,
+                                                size.height / 2f,
+                                                minimumRadius,
+                                            )
+                                            dialState = update.state
+                                            rotationDegrees += Math.toDegrees(update.deltaRadians).toFloat()
+                                            when (update.step) {
+                                                1 -> clockwise?.id?.let { inputId ->
+                                                    currentOnInput(inputId, ControllerGesture.TAP)
+                                                }
+                                                -1 -> counterClockwise?.id?.let { inputId ->
+                                                    currentOnInput(inputId, ControllerGesture.TAP)
+                                                }
                                             }
-                                            -1 -> counterClockwise?.id?.let { inputId ->
-                                                currentOnInput(inputId, ControllerGesture.TAP)
+                                            if (update.step != 0) {
+                                                stepped = true
+                                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                             }
                                         }
-                                        if (update.step != 0) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                         pressed = change.pressed
+                                        if (!pressed) released = true
                                         change.consume()
                                     }
                                 } finally {
                                     rotationDegrees %= 360f
+                                }
+                                if (released && !moved && !stepped && modelPickerEnabled) {
+                                    currentOnOpenModelPicker()
                                 }
                             }
                         },
@@ -1415,12 +1485,28 @@ private fun ReasoningDial(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text(
-                reasoning.label.ifBlank { if (reasoning.available) "Reasoning" else "Unavailable" },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.Medium,
-            )
+            if (reasoning.modelLabel.isNotBlank()) {
+                Text(
+                    reasoning.modelLabel,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    reasoning.level?.displayLabel ?: reasoning.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            } else {
+                Text(
+                    reasoning.label.ifBlank { if (reasoning.available) "Reasoning" else "Unavailable" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
         }
         DialStepButton(
             clockwise,
@@ -1434,6 +1520,8 @@ private fun ReasoningDial(
         )
     }
 }
+
+private const val COLLAPSED_AGENT_COUNT = 6
 
 @Composable
 private fun DialStepButton(

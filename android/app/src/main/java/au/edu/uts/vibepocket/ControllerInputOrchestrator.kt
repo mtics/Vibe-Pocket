@@ -126,6 +126,7 @@ internal class PocketViewModelBridgeTransport(
 internal class ControllerInputOrchestrator(
     private val hid: ControllerHidTransport,
     private val bridge: ControllerBridgeTransport,
+    private val onHidAction: (ControllerAction) -> Unit = {},
 ) {
     private data class HeldVoice(
         val inputId: String,
@@ -142,8 +143,14 @@ internal class ControllerInputOrchestrator(
         ControllerInputPlan.Disabled -> false
         is ControllerInputPlan.Bridge -> bridge.activate(plan.inputId, plan.gesture)
         is ControllerInputPlan.PreferHidTap ->
-            hid.send(plan.action) || bridge.activate(plan.fallback.inputId, plan.fallback.gesture)
+            deliverHid(plan.action) || bridge.activate(plan.fallback.inputId, plan.fallback.gesture)
         is ControllerInputPlan.PreferHidHold -> false
+    }
+
+    fun openModelPicker(snapshot: PocketSnapshot?): Boolean {
+        val controller = snapshot?.controller ?: return false
+        if (!controller.desktopFocused || controller.userInput != null || !controller.reasoning.available) return false
+        return deliverHid(ControllerAction("model_picker"))
     }
 
     fun startNavigationRepeat(snapshot: PocketSnapshot?, inputId: String): Boolean {
@@ -191,5 +198,11 @@ internal class ControllerInputOrchestrator(
     fun releaseHeldInput() {
         heldVoice = null
         hid.releaseAnyHeld()
+    }
+
+    private fun deliverHid(action: ControllerAction): Boolean {
+        if (!hid.send(action)) return false
+        onHidAction(action)
+        return true
     }
 }

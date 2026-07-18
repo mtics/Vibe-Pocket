@@ -1,5 +1,6 @@
 package au.edu.uts.vibepocket
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,18 +52,41 @@ class PocketSnapshotParserTest {
     }
 
     @Test
-    fun emptyAgentSlotsAreDisabledUnfocusedPlaceholders() {
+    fun agentSlotsContainOnlyRealTasksAndPreserveFocusedIdentity() {
         val snapshot = parsePocketSnapshot(JSONObject(CONTROLLER_SNAPSHOT))
 
         val slots = snapshot.agentSlots()
 
-        assertEquals(6, slots.size)
+        assertEquals(2, slots.size)
         assertTrue(slots[0].canFocus)
         assertTrue(slots[0].focused)
         assertFalse(slots[1].focused)
-        assertNull(slots[2].agent)
-        assertFalse(slots[2].canFocus)
-        assertFalse(slots[2].focused)
+        assertTrue(slots.all { it.agent != null })
+    }
+
+    @Test
+    fun parsesMoreThanSixAgentsUpToTheBoundedControllerLimit() {
+        val root = JSONObject(CONTROLLER_SNAPSHOT)
+        val agents = JSONArray()
+        repeat(30) { index ->
+            agents.put(
+                JSONObject()
+                    .put("id", "agent-${index.toString(16).padStart(24, '0')}")
+                    .put("label", "Task $index")
+                    .put("state", if (index == 12) "waiting" else "idle")
+                    .put("focused", index == 23),
+            )
+        }
+        root.getJSONObject("controller")
+            .put("agents", agents)
+            .put("focusedAgentId", "agent-${23.toString(16).padStart(24, '0')}")
+            .put("focusedAgentIndex", 23)
+
+        val snapshot = parsePocketSnapshot(root)
+
+        assertEquals(MAX_AGENT_COUNT, snapshot.controller?.agents?.size)
+        assertEquals(TaskState.WAITING, snapshot.agentSlots().first().agent?.state)
+        assertTrue(snapshot.agentSlots().any { it.focused })
     }
 
     @Test

@@ -1,9 +1,21 @@
 import { createHash } from "node:crypto";
 
 import { openCodexThread } from "./codex-thread-opener.mjs";
+import { RolloutActivityReader } from "./rollout-activity-reader.mjs";
 
 const MAX_THREADS = 100;
+const MAX_AGENT_COUNT = 24;
 const AGENT_ID_PATTERN = /^agent-[a-f0-9]{24}$/;
+const ACTIVE_AGENT_STATES = new Set(["waiting", "error", "executing", "thinking", "unread"]);
+const AGENT_STATE_PRIORITY = new Map([
+  ["waiting", 0],
+  ["error", 1],
+  ["executing", 2],
+  ["thinking", 3],
+  ["unread", 4],
+  ["complete", 6],
+  ["idle", 7],
+]);
 
 export class CodexThreadCatalog {
   #appServer;
@@ -15,42 +27,77 @@ export class CodexThreadCatalog {
   #cachedThreads = [];
   #cacheExpiresAt = 0;
   #agentThreads = new Map();
+  #activityReader;
 
   constructor({
     appServer,
     openThread = openCodexThread,
+    activityReader = new RolloutActivityReader(),
     cacheTtlMs = 3_000,
     now = Date.now,
   }) {
     if (!appServer) throw new TypeError("CodexThreadCatalog requires an app-server client.");
     this.#appServer = appServer;
     this.#openThread = openThread;
+    this.#activityReader = activityReader;
     this.#cacheTtlMs = cacheTtlMs;
     this.#now = now;
   }
 
   async resolveVisibleAgents(visibleAgents) {
-    if (!Array.isArray(visibleAgents) || visibleAgents.length === 0) {
-      this.#agentThreads.clear();
-      return [];
-    }
+    visibleAgents = Array.isArray(visibleAgents) ? visibleAgents : [];
 
-    const threads = await this.#threads();
-    const nextAgentThreads = new Map();
+    let threads = await this.#threads();
+    const targetedAgents = visibleAgents.filter((agent) => {
+      if (!agent || typeof agent.label !== "string") return false;
+      if (uniqueMatches(agent, threads).length === 1) return false;
+      return agent.focused === true || ACTIVE_AGENT_STATES.has(agent.state);
+    });
+    const searchTerms = [...new Set(targetedAgents.map(({ label }) => searchTermForLabel(label)).filter(Boolean))];
+    if (searchTerms.length > 0) {
+      const searched = await Promise.all(searchTerms.map((term) => this.#searchThreads(term)));
+      threads = uniqueTopLevelThreads([...threads, ...searched.flat()]);
+      this.#cachedThreads = threads;
+    }
+    let activityStates = new Map();
+    try {
+      activityStates = await this.#activityReader.statesFor(threads);
+    } catch {
+      activityStates = new Map();
+    }
     const assignedThreadIds = new Set();
     const resolved = [];
     for (const agent of visibleAgents) {
       if (!agent || typeof agent.label !== "string") continue;
-      const matches = threads.filter((thread) => labelMatchesThread(agent.label, thread));
+      const matches = uniqueMatches(agent, threads);
       if (matches.length !== 1 || assignedThreadIds.has(matches[0].id)) continue;
       const thread = matches[0];
       const id = agentIdForThread(thread.id);
-      nextAgentThreads.set(id, thread.id);
       assignedThreadIds.add(thread.id);
       resolved.push({ ...agent, id });
     }
-    this.#agentThreads = nextAgentThreads;
-    return resolved;
+    for (const thread of threads) {
+      const state = activityStates.get(thread.id);
+      const label = threadLabel(thread);
+      if (!state || !label || assignedThreadIds.has(thread.id)) continue;
+      assignedThreadIds.add(thread.id);
+      resolved.push({ id: agentIdForThread(thread.id), label, state, focused: false });
+    }
+    const ordered = resolved.toSorted((left, right) => {
+      const priority = (AGENT_STATE_PRIORITY.get(left.state) ?? 8)
+        - (AGENT_STATE_PRIORITY.get(right.state) ?? 8);
+      if (priority !== 0) return priority;
+      if (left.focused !== right.focused) return left.focused ? -1 : 1;
+      return 0;
+    });
+    const selected = ordered.slice(0, MAX_AGENT_COUNT);
+    const focused = ordered.find((agent) => agent.focused);
+    if (focused && !selected.some((agent) => agent.id === focused.id)) {
+      selected[MAX_AGENT_COUNT - 1] = focused;
+    }
+    const threadsByAgentID = new Map(threads.map((thread) => [agentIdForThread(thread.id), thread.id]));
+    this.#agentThreads = new Map(selected.map((agent) => [agent.id, threadsByAgentID.get(agent.id)]));
+    return selected;
   }
 
   async focusAgent(agentId) {
@@ -90,6 +137,17 @@ export class CodexThreadCatalog {
     return this.#cachedThreads;
   }
 
+  async #searchThreads(searchTerm) {
+    const result = await this.#appServer.request("thread/list", {
+      limit: 20,
+      sortDirection: "desc",
+      sortKey: "recency_at",
+      searchTerm,
+      useStateDbOnly: true,
+    });
+    return uniqueTopLevelThreads(result?.data);
+  }
+
   async #ensureStarted() {
     if (this.#started) return;
     if (!this.#startPromise) {
@@ -123,8 +181,24 @@ function labelMatchesThread(visibleLabel, thread) {
     && aliases.some((alias) => alias.startsWith(prefix));
 }
 
+function uniqueMatches(agent, threads) {
+  return threads.filter((thread) => labelMatchesThread(agent.label, thread));
+}
+
+function searchTermForLabel(label) {
+  const term = label.replace(/(?:\.\.\.|…)$/, "").trim();
+  return term.length >= 4 ? term : null;
+}
+
 function normalizeLabel(value) {
   return typeof value === "string" ? value.replaceAll(/\s+/g, " ").trim() : "";
+}
+
+function threadLabel(thread) {
+  return [thread.agentNickname, thread.name, thread.preview]
+    .map(normalizeLabel)
+    .find(Boolean)
+    ?.slice(0, 200) ?? "";
 }
 
 function agentIdForThread(threadId) {

@@ -23,7 +23,13 @@ class PocketViewModel(
     private val store: ConfigStore,
     private val client: PocketClient = PocketBridgeClient(),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
+    private data class PendingReasoning(
+        val status: ReasoningStatus,
+        val expiresAtMillis: Long,
+    )
+
     private data class VoiceOwner(
         val inputId: String,
         val config: ConnectionConfig,
@@ -54,6 +60,7 @@ class PocketViewModel(
     @Volatile private var lastEventId: String? = null
     @Volatile private var eventConnectionError: String? = null
     private var events: PocketEventStream? = null
+    @Volatile private var pendingReasoning: PendingReasoning? = null
 
     init {
         store.load()?.let { config ->
@@ -71,6 +78,7 @@ class PocketViewModel(
             }
         store.save(config)
         stopEvents()
+        pendingReasoning = null
         lastEventId = null
         eventConnectionError = null
         _state.value = PocketUiState(config = config)
@@ -81,6 +89,7 @@ class PocketViewModel(
     fun disconnect() {
         stopOwnedVoice()
         stopEvents()
+        pendingReasoning = null
         lastEventId = null
         eventConnectionError = null
         store.clear()
@@ -114,12 +123,13 @@ class PocketViewModel(
                             if (_state.value.config == config) {
                                 _state.update { current ->
                                     val visibleSnapshot = current.snapshot
+                                    val reconciledSnapshot = reconcilePendingReasoning(snapshot, visibleSnapshot)
                                     val nextSnapshot = if (
-                                        visibleSnapshot != null && visibleSnapshot.hasSameControllerSurface(snapshot)
+                                        visibleSnapshot != null && visibleSnapshot.hasSameControllerSurface(reconciledSnapshot)
                                     ) {
                                         visibleSnapshot
                                     } else {
-                                        snapshot
+                                        reconciledSnapshot
                                     }
                                     current.copy(snapshot = nextSnapshot, isRefreshing = false, error = null)
                                 }
@@ -177,6 +187,44 @@ class PocketViewModel(
     fun reportLocalError(message: String) {
         _state.update { it.copy(error = message) }
         _feedback.tryEmit(PocketFeedback.Error)
+    }
+
+    fun applyLocalHidAction(action: ControllerAction) {
+        if (action.type != "reasoning_depth") return
+        _state.update { current ->
+            val snapshot = current.snapshot ?: return@update current
+            val controller = snapshot.controller ?: return@update current
+            val shifted = controller.reasoning.shifted(action.delta) ?: return@update current
+            pendingReasoning = PendingReasoning(
+                status = shifted,
+                expiresAtMillis = nowMillis() + REASONING_CONFIRMATION_WINDOW_MILLIS,
+            )
+            current.copy(
+                snapshot = snapshot.copy(controller = controller.copy(reasoning = shifted)),
+                error = null,
+            )
+        }
+    }
+
+    private fun reconcilePendingReasoning(
+        remote: PocketSnapshot,
+        visible: PocketSnapshot?,
+    ): PocketSnapshot {
+        val pending = pendingReasoning ?: return remote
+        val remoteReasoning = remote.controller?.reasoning
+        if (
+            nowMillis() >= pending.expiresAtMillis ||
+            remoteReasoning?.available != true ||
+            remoteReasoning.level == pending.status.level
+        ) {
+            pendingReasoning = null
+            return remote
+        }
+        val optimistic = visible?.controller?.reasoning
+            ?.takeIf { it.level == pending.status.level }
+            ?: pending.status
+        val controller = remote.controller
+        return remote.copy(controller = controller.copy(reasoning = optimistic))
     }
 
     private fun stopOwnedVoice(inputId: String? = null): Boolean {
@@ -366,3 +414,5 @@ class PocketViewModelFactory(private val store: SecureConfigStore) : ViewModelPr
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T = PocketViewModel(store) as T
 }
+
+private const val REASONING_CONFIRMATION_WINDOW_MILLIS = 3_000L

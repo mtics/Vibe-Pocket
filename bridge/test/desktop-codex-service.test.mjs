@@ -16,6 +16,7 @@ class FakeDesktop {
   reasoning = {
     available: true,
     label: "High",
+    modelLabel: "Codex",
     level: "high",
     canIncrease: true,
     canDecrease: true,
@@ -120,6 +121,7 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controller.mode.label, "Codex");
   assert.equal(snapshot.controller.access.label, "Workspace");
   assert.equal(snapshot.controller.reasoning.label, "High");
+  assert.equal(snapshot.controller.reasoning.modelLabel, "Codex");
   assert.equal(snapshot.controller.reasoning.level, "high");
   assert.equal(snapshot.controller.reasoning.canIncrease, true);
   assert.equal(snapshot.controller.reasoning.canDecrease, true);
@@ -131,6 +133,7 @@ test("keeps reasoning adjustable upward at the minimum level", async () => {
   desktop.reasoning = {
     available: true,
     label: "5.6 Sol 最小",
+    modelLabel: "5.6 Sol",
     level: "minimal",
     canIncrease: true,
     canDecrease: false,
@@ -148,6 +151,7 @@ test("keeps both reasoning directions available when the host sees an unknown la
   desktop.reasoning = {
     available: true,
     label: "5.7 Preview",
+    modelLabel: "",
     level: "",
     canIncrease: true,
     canDecrease: true,
@@ -160,6 +164,22 @@ test("keeps both reasoning directions available when the host sees an unknown la
   assert.equal(reasoning.level, null);
   assert.equal(reasoning.canIncrease, true);
   assert.equal(reasoning.canDecrease, true);
+});
+
+test("keeps more than six visible agents up to the bounded controller limit", async () => {
+  const desktop = new FakeDesktop();
+  desktop.agents = Array.from({ length: 30 }, (_, index) => ({
+    id: `agent-${index.toString(16).padStart(24, "0")}`,
+    label: `Task ${index}`,
+    state: index === 12 ? "executing" : "idle",
+    focused: index === 23,
+  }));
+  const service = makeService(desktop);
+  await service.start();
+
+  const agents = (await service.snapshot()).controller.agents;
+  assert.equal(agents.length, 24);
+  assert.equal(agents.filter(({ focused }) => focused).length, 1);
 });
 
 test("clears a stale agent focus when the desktop no longer reports a selected task", async () => {

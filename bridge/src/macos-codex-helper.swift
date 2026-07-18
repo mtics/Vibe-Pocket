@@ -145,8 +145,17 @@ private func codexArea(for application: NSRunningApplication) throws -> AXUIElem
   guard AXIsProcessTrusted() else {
     throw HelperFailure.message("Grant Accessibility permission to the Vibe Pocket Bridge host, then retry.")
   }
+  return try codexArea(in: codexScope(for: application))
+}
+
+private func codexScope(for application: NSRunningApplication) -> AXUIElement {
   let root = AXUIElementCreateApplication(application.processIdentifier)
-  return try codexArea(in: root)
+  var value: CFTypeRef?
+  if AXUIElementCopyAttributeValue(root, kAXFocusedWindowAttribute as CFString, &value) == .success,
+     let focusedWindow = value as! AXUIElement? {
+    return focusedWindow
+  }
+  return root
 }
 
 private func codexArea(in root: AXUIElement) throws -> AXUIElement {
@@ -371,6 +380,21 @@ private enum ReasoningLevel: String, CaseIterable {
     return nil
   }
 
+  static func modelLabel(from label: String) -> String {
+    let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalized = trimmed.lowercased()
+    let candidates = aliases.flatMap(\.1).sorted(by: { $0.count > $1.count })
+    for candidate in candidates {
+      if normalized == candidate { return "" }
+      let suffix = " \(candidate)"
+      if normalized.hasSuffix(suffix) {
+        return String(trimmed.dropLast(suffix.count))
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+      }
+    }
+    return ""
+  }
+
   func shifted(by delta: Int) -> ReasoningLevel? {
     guard delta == -1 || delta == 1,
           let currentIndex = Self.allCases.firstIndex(of: self) else { return nil }
@@ -385,6 +409,7 @@ private enum ReasoningLevel: String, CaseIterable {
 private struct ReasoningControl {
   let element: AXUIElement
   let label: String
+  let modelLabel: String
   let level: ReasoningLevel?
 }
 
@@ -422,7 +447,13 @@ private func reasoningControl(in index: AreaIndex) -> ReasoningControl? {
     guard index.roles[candidateIndex] == "AXPopUpButton",
           attributeBool(element, kAXEnabledAttribute as CFString) else { return nil }
     let label = reasoningControlLabel(element)
-    return ReasoningControl(element: element, label: label, level: ReasoningLevel.parse(from: label))
+    let level = ReasoningLevel.parse(from: label)
+    return ReasoningControl(
+      element: element,
+      label: label,
+      modelLabel: level == nil ? "" : ReasoningLevel.modelLabel(from: label),
+      level: level
+    )
   }
   if let parsed = candidates.first(where: { $0.level != nil }) { return parsed }
   let hinted = candidates.filter { hasReasoningRoleHint($0.element) }
@@ -502,6 +533,8 @@ private struct TaskListSnapshot {
   let currentRow: TaskRow?
 }
 
+private let maxAgentTargets = 24
+
 private func taskListSnapshot(in root: AXUIElement) -> TaskListSnapshot? {
   let lists = descendants(of: root, maxDepth: 22) {
     attributeString($0, kAXRoleAttribute as CFString) == "AXList"
@@ -513,13 +546,21 @@ private func taskListSnapshot(in root: AXUIElement) -> TaskListSnapshot? {
       || taskListLabels.contains(normalizedAttribute(list, kAXTitleAttribute as CFString))
     return (rows, named)
   }
-  let namedCandidates = candidates.filter(\.named)
-  guard let selected = (namedCandidates.isEmpty ? candidates : namedCandidates)
-    .max(by: { $0.rows.count < $1.rows.count }) else { return nil }
+  guard !candidates.isEmpty else { return nil }
+  let orderedCandidates = candidates.sorted { left, right in
+    if left.named != right.named { return left.named && !right.named }
+    return left.rows.count > right.rows.count
+  }
+  var rows = [TaskRow]()
+  for candidate in orderedCandidates {
+    for row in candidate.rows where !rows.contains(where: { CFEqual($0.content, row.content) }) {
+      rows.append(row)
+    }
+  }
   let currentRow = candidates.lazy.flatMap(\.rows).first { row in
     taskIsFocused(row.content) || taskIsFocused(row.target)
   }
-  return TaskListSnapshot(rows: selected.rows, currentRow: currentRow)
+  return TaskListSnapshot(rows: rows, currentRow: currentRow)
 }
 
 private func taskIsFocused(_ element: AXUIElement) -> Bool {
@@ -587,10 +628,23 @@ private func taskIndicatorState(in button: AXUIElement) -> String {
   return statusContainers.isEmpty ? "idle" : "executing"
 }
 
-private func agentTargets(in root: AXUIElement, currentTaskState: String) -> [AgentTarget] {
+private func focusedTaskTitle(in root: AXUIElement) -> String? {
+  taskListSnapshot(in: root)?.currentRow.flatMap { taskLabel(in: $0.content) }
+}
+
+private func agentTargets(
+  in root: AXUIElement,
+  currentTaskState: String,
+  focusedTaskTitle: String? = nil
+) -> [AgentTarget] {
   guard let snapshot = taskListSnapshot(in: root) else { return [] }
-  let currentRow = snapshot.currentRow
-  let visibleTaskTitle = currentRow.flatMap { taskLabel(in: $0.content) }
+  let visibleTaskTitle = focusedTaskTitle ?? snapshot.currentRow.flatMap { taskLabel(in: $0.content) }
+  let currentRow = visibleTaskTitle.flatMap { title in
+    snapshot.rows.first { row in
+      guard let label = taskLabel(in: row.content) else { return false }
+      return taskLabelsMatch(title, label) || taskLabelsMatch(label, title)
+    }
+  } ?? snapshot.currentRow
   var orderedRows = [TaskRow]()
   if let currentRow { orderedRows.append(currentRow) }
   for row in snapshot.rows {
@@ -599,7 +653,6 @@ private func agentTargets(in root: AXUIElement, currentTaskState: String) -> [Ag
             taskLabel(in: existing.content).map { taskLabelsMatch($0, label) } == true
           }) else { continue }
     orderedRows.append(row)
-    if orderedRows.count == 6 { break }
   }
   var seen = Set<String>()
   var candidates = [(id: String, element: AXUIElement, stateElement: AXUIElement, label: String)]()
@@ -608,9 +661,8 @@ private func agentTargets(in root: AXUIElement, currentTaskState: String) -> [Ag
     let id = stableAgentID(for: row.content, fallbackPath: "sidebar-task-\(taskIndex)\u{0}\(label)")
     guard seen.insert(id).inserted else { continue }
     candidates.append((id: id, element: row.target, stateElement: row.content, label: label))
-    if candidates.count == 6 { break }
   }
-  return candidates.map { candidate in
+  let targets = candidates.map { candidate in
     let focused = visibleTaskTitle.map { taskLabelsMatch($0, candidate.label) } ?? false
     return AgentTarget(
       id: candidate.id,
@@ -619,6 +671,25 @@ private func agentTargets(in root: AXUIElement, currentTaskState: String) -> [Ag
       state: focused ? currentTaskState : taskIndicatorState(in: candidate.stateElement),
       focused: focused
     )
+  }
+  return targets.enumerated().sorted { left, right in
+    let leftPriority = agentStatePriority(left.element.state)
+    let rightPriority = agentStatePriority(right.element.state)
+    if leftPriority != rightPriority { return leftPriority < rightPriority }
+    if left.element.focused != right.element.focused { return left.element.focused }
+    return left.offset < right.offset
+  }.prefix(maxAgentTargets).map(\.element)
+}
+
+private func agentStatePriority(_ state: String) -> Int {
+  switch state {
+  case "waiting": return 0
+  case "error": return 1
+  case "executing": return 2
+  case "thinking": return 3
+  case "unread": return 4
+  case "complete": return 6
+  default: return 7
   }
 }
 
@@ -721,8 +792,13 @@ private func taskState(in index: AreaIndex) -> String {
 private func statusReply(application: NSRunningApplication, area: AXUIElement) -> [String: Any] {
   let index = AreaIndex(area)
   let currentState = taskState(in: index)
+  let selectedTaskTitle = focusedTaskTitle(in: codexScope(for: application))
   let root = AXUIElementCreateApplication(application.processIdentifier)
-  let agents = agentTargets(in: root, currentTaskState: currentState)
+  let agents = agentTargets(
+    in: root,
+    currentTaskState: currentState,
+    focusedTaskTitle: selectedTaskTitle
+  )
   let reasoning = reasoningControl(in: index)
   let controls = controlAvailability(in: index, hasAgents: !agents.isEmpty)
   let reasoningAvailable = controls["reasoning"] == true
@@ -745,6 +821,7 @@ private func statusReply(application: NSRunningApplication, area: AXUIElement) -
     "reasoning": [
       "available": reasoningAvailable,
       "label": reasoning?.label ?? "",
+      "modelLabel": reasoning?.modelLabel ?? "",
       "level": reasoning?.level?.rawValue ?? "",
       "canIncrease": reasoningAvailable && (reasoning?.level?.canIncrease ?? true),
       "canDecrease": reasoningAvailable && (reasoning?.level?.canDecrease ?? true),
@@ -1086,8 +1163,13 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       throw HelperFailure.message("A valid Codex agent ID is required.")
     }
     let (application, area) = try desktop(activateDesktop: false)
+    let selectedTaskTitle = focusedTaskTitle(in: codexScope(for: application))
     let root = AXUIElementCreateApplication(application.processIdentifier)
-    let agents = agentTargets(in: root, currentTaskState: taskState(in: AreaIndex(area)))
+    let agents = agentTargets(
+      in: root,
+      currentTaskState: taskState(in: AreaIndex(area)),
+      focusedTaskTitle: selectedTaskTitle
+    )
     guard let agent = agents.first(where: { $0.id == agentID }) else {
       throw HelperFailure.message("That Codex agent is no longer visible.")
     }
@@ -1096,10 +1178,12 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
         for _ in 0..<attempts {
           usleep(150_000)
           let updatedArea = try codexArea(for: application)
+          let updatedSelectedTaskTitle = focusedTaskTitle(in: codexScope(for: application))
           let updatedRoot = AXUIElementCreateApplication(application.processIdentifier)
           let updatedAgents = agentTargets(
             in: updatedRoot,
-            currentTaskState: taskState(in: AreaIndex(updatedArea))
+            currentTaskState: taskState(in: AreaIndex(updatedArea)),
+            focusedTaskTitle: updatedSelectedTaskTitle
           )
           if updatedAgents.contains(where: { $0.focused && $0.label == agent.label }) {
             return true

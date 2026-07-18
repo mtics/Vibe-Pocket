@@ -25,6 +25,7 @@ const DESKTOP_SESSION_ID = "vibe-pocket-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
 const ACTION_REFRESH_DEBOUNCE_MS = 160;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+const MAX_AGENT_COUNT = 24;
 const TASK_STATES = new Set(["idle", "unread", "thinking", "executing", "waiting", "complete", "error"]);
 const CODEX_HOOK_EVENTS = new Set(["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"]);
 
@@ -638,7 +639,7 @@ function normalizeControllerState(result) {
     ? result.agents
       .filter((agent) => agent && typeof agent.id === "string" && /^agent-[a-f0-9]{24}$/.test(agent.id)
         && typeof agent.label === "string" && typeof agent.state === "string")
-      .slice(0, 6)
+      .slice(0, MAX_AGENT_COUNT)
       .map((agent) => ({
         id: agent.id,
         label: agent.label.slice(0, 64),
@@ -710,6 +711,7 @@ function normalizeReasoning(value) {
   return {
     available,
     label: typeof value?.label === "string" ? value.label.slice(0, 80) : "",
+    modelLabel: typeof value?.modelLabel === "string" ? value.modelLabel.slice(0, 80) : "",
     level,
     // Additive protocol fields: an older host still leaves both directions
     // usable, while a current host can express the minimum/maximum boundary.

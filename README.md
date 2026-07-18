@@ -7,12 +7,13 @@ scoped semantic operations.
 
 ## Controller
 
-The Android 0.7.5 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.6 controller uses protocol v5 and a versioned profile from the
 M5:
 
-- Six live Agent Keys distinguish idle, unread, thinking, running,
-  needs-input, complete, and error states. A populated key focuses that exact
-  Agent by an opaque stable ID rather than by its current list position.
+- The status-ranked Agent list shows six tasks initially and expands to at most
+  24. It distinguishes idle, unread, thinking, running, needs-input, complete,
+  and error states. A populated key focuses that exact Agent by an opaque stable
+  ID rather than by its current list position.
 - Thirteen command keys cover accept/submit, reject/dismiss, Codex voice input,
   new task, stop, collaboration mode, clear, Agent focus, navigation, and task
   resume. Mode cycles Codex Default and Plan; access permissions are a separate
@@ -28,6 +29,8 @@ M5:
   `codex://threads/<id>` link. The catalog never resumes or modifies a task,
   and macOS opens the link in the background without activating Codex. Native
   task navigation does not wait behind an Accessibility status scan.
+  Read-only rollout lifecycle markers add active tasks from projects whose task
+  rows are not mounted in the current sidebar.
 - New task, Clear, Access, and workflows use narrow Bridge operations. Clear
   writes only the visible Codex composer's AX value. Access uses a semantic AX
   press and reports unavailable when macOS cannot expose the menu reliably; it
@@ -40,6 +43,10 @@ M5:
   review, debug, refactor, or test workflow on release.
 - Rotate the center dial clockwise or counterclockwise to change the visible
   Codex reasoning selector by one verified UI step for every quarter turn.
+  Tap the center of the dial to open Codex's native model picker through its
+  semantic keyboard shortcut. This path does not use Accessibility or move the
+  Mac pointer. The phone updates a delivered reasoning step immediately while
+  the Bridge confirms the resulting desktop state.
   Structural control discovery is independent from localized level labels.
   The adjacent minus and plus keys expose directional capability separately,
   so the minimum disables only minus and the maximum disables only plus.
@@ -75,8 +82,10 @@ ADB/accessory traffic, but it is not a replacement for the Bluetooth HID link.
 
 Visible command keys operate the Codex task currently shown on the M5. The
 Bridge resolves visible task labels uniquely against Codex's read-only task
-catalog, omits workspace or ambiguous rows, and derives stable opaque Agent IDs
-from the real task IDs.
+catalog, adds active top-level tasks found through rollout lifecycle markers,
+omits ambiguous rows, and derives stable opaque Agent IDs from the real task
+IDs. The focused task identity and composer controls still come only from the
+focused Codex window.
 `vibe-pocket-attach` is an optional shortcut for opening a known desktop task
 by ID before focusing its composer.
 
@@ -203,9 +212,12 @@ request microphone, Bluetooth scanning, or location access.
 3. In Virtual hardware, tap the M5 host and wait for the band to say connected.
    Open an idle Codex task and test arrows, Clear, Mode, Reasoning, New task,
    and push-to-talk Voice. Drag around the center reasoning dial: each clockwise
-   or counterclockwise quarter turn changes one available reasoning level. Hold
-   a default direction key to repeat navigation.
-4. Select a visible Agent key, or tap New task.
+   or counterclockwise quarter turn changes one available reasoning level. Tap
+   its center to open the desktop model picker. Hold a default direction key to
+   repeat navigation.
+4. Select a visible Agent key, expand the list when more than six tasks are
+   available, or tap New task. Tasks needing attention and tasks still running
+   are ordered before completed and idle tasks.
 5. Test Agent navigation, collaboration mode, reasoning, and workflows.
    Workflow directions deliberately create and submit a new visible task.
 6. Hold L1 with Accept, Reject, Voice, New task, Up, or Down to switch to
@@ -245,7 +257,7 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 90 Node tests cover native task-link routing, semantic Accessibility
+- Bridge: Node tests cover native task-link routing, semantic Accessibility
   routing, controller
   profiles, desktop task focusing, compatibility modules, permission schemas,
   modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,

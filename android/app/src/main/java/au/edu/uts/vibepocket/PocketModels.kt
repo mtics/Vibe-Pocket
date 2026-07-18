@@ -250,6 +250,8 @@ data class AgentStatus(
     val focused: Boolean,
 )
 
+internal const val MAX_AGENT_COUNT = 24
+
 data class VoiceStatus(
     val available: Boolean,
     val active: Boolean,
@@ -263,15 +265,15 @@ internal data class AgentSlot(
 
 internal val AgentIdPattern = Regex("^agent-[a-f0-9]{24}$")
 
-internal fun PocketSnapshot.agentSlots(slotCount: Int = 6): List<AgentSlot> {
-    require(slotCount >= 0)
+internal fun PocketSnapshot.agentSlots(): List<AgentSlot> {
     val agents = controller?.agents.orEmpty()
-    return List(slotCount) { index ->
-        val agent = agents.getOrNull(index)
+        .sortedWith(compareBy<AgentStatus> { it.state.agentPriority }.thenByDescending(AgentStatus::focused))
+        .take(MAX_AGENT_COUNT)
+    return agents.map { agent ->
         AgentSlot(
             agent = agent,
-            canFocus = agent?.let { agentFocusEnabled(it.id) } == true,
-            focused = agent?.let { it.focused || it.id == controller?.focusedAgentId } == true,
+            canFocus = agentFocusEnabled(agent.id),
+            focused = agent.focused || agent.id == controller?.focusedAgentId,
         )
     }
 }
@@ -289,6 +291,24 @@ enum class ReasoningLevel(val wireValue: String) {
     XHIGH("xhigh"),
     ;
 
+    fun shifted(delta: Int?): ReasoningLevel? {
+        if (delta != -1 && delta != 1) return null
+        val targetIndex = ordinal + delta
+        return entries.getOrNull(targetIndex)
+    }
+
+    val displayLabel: String
+        get() = when (this) {
+            MINIMAL -> "Minimal"
+            LOW -> "Low"
+            MEDIUM -> "Medium"
+            HIGH -> "High"
+            XHIGH -> "Extra high"
+        }
+
+    val canIncrease: Boolean get() = this != XHIGH
+    val canDecrease: Boolean get() = this != MINIMAL
+
     companion object {
         fun fromWire(value: String?): ReasoningLevel? = entries.firstOrNull { it.wireValue == value }
     }
@@ -297,6 +317,7 @@ enum class ReasoningLevel(val wireValue: String) {
 data class ReasoningStatus(
     val available: Boolean,
     val label: String,
+    val modelLabel: String = "",
     val level: ReasoningLevel?,
     val canIncrease: Boolean,
     val canDecrease: Boolean,
@@ -307,10 +328,21 @@ data class ReasoningStatus(
         else -> false
     }
 
+    fun shifted(delta: Int?): ReasoningStatus? {
+        if (!allows(delta)) return null
+        val target = level?.shifted(delta) ?: return null
+        return copy(
+            level = target,
+            canIncrease = target.canIncrease,
+            canDecrease = target.canDecrease,
+        )
+    }
+
     companion object {
         val Unavailable = ReasoningStatus(
             available = false,
             label = "",
+            modelLabel = "",
             level = null,
             canIncrease = false,
             canDecrease = false,
@@ -332,6 +364,17 @@ enum class TaskState(val wireValue: String) {
         fun fromWire(value: String): TaskState = entries.firstOrNull { it.wireValue == value } ?: IDLE
     }
 }
+
+private val TaskState.agentPriority: Int
+    get() = when (this) {
+        TaskState.WAITING -> 0
+        TaskState.ERROR -> 1
+        TaskState.EXECUTING -> 2
+        TaskState.THINKING -> 3
+        TaskState.UNREAD -> 4
+        TaskState.COMPLETE -> 6
+        TaskState.IDLE -> 7
+    }
 
 sealed interface PocketCommand {
     data class Binding(
