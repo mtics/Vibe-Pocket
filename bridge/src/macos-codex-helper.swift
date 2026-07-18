@@ -177,6 +177,9 @@ private func verifyForeground(_ application: NSRunningApplication) throws {
 }
 
 private func activate(_ application: NSRunningApplication) throws {
+  if NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier {
+    return
+  }
   guard application.activate(options: []) else {
     throw HelperFailure.message("ChatGPT could not be activated on the M5.")
   }
@@ -908,7 +911,9 @@ private func selectCompactMenuOption(
     usleep(60_000)
   }
   try postKey(36)
-  usleep(700_000)
+  // Let the selector commit before a queued dial step opens it again. The
+  // bridge's follow-up status scan verifies the visible result asynchronously.
+  usleep(260_000)
   shouldCancelMenu = false
   return labels[selectedIndex]
 }
@@ -1090,20 +1095,19 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
     guard controlButton(.voice, in: area) != nil else {
       throw HelperFailure.message(DesktopControl.voice.unavailableMessage)
     }
-    if voiceIsActive(in: area) != desiredActive {
-      try press(.voice, in: area)
-      var reachedTargetState = false
-      for _ in 0..<8 {
-        usleep(200_000)
-        let updatedArea = try codexArea(for: application)
-        if voiceIsActive(in: updatedArea) == desiredActive {
-          reachedTargetState = true
-          break
-        }
+    if desiredActive {
+      if !voiceIsActive(in: area) { try press(.voice, in: area) }
+    } else {
+      // A short press can release before ChatGPT has published the microphone
+      // state. Re-read once so the release still closes the just-started PTT.
+      let currentArea: AXUIElement
+      if voiceIsActive(in: area) {
+        currentArea = area
+      } else {
+        usleep(100_000)
+        currentArea = try codexArea(for: application)
       }
-      guard reachedTargetState else {
-        throw HelperFailure.message("The ChatGPT Codex dictation state did not change.")
-      }
+      if voiceIsActive(in: currentArea) { try press(.voice, in: currentArea) }
     }
     return [
       "ok": true,
@@ -1123,36 +1127,15 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       throw HelperFailure.message("The ChatGPT Codex access mode is not currently adjustable.")
     }
     let before = accessModeLabel(in: area) ?? ""
-    let beforeKey = accessModeKey(for: before)
     try selectNextAccessMode(from: button, in: application, currentLabel: before)
-    for _ in 0..<20 {
-      usleep(150_000)
-      let updatedArea = try codexArea(for: application)
-      let after = accessModeLabel(in: updatedArea) ?? ""
-      if !after.isEmpty, accessModeKey(for: after) != beforeKey {
-        return ["ok": true, "message": "Changed the ChatGPT Codex access mode to \(after)."]
-      }
-    }
-    throw HelperFailure.message("The ChatGPT Codex access mode did not change.")
+    return ["ok": true, "message": "Requested the next ChatGPT Codex access mode."]
   case "plan-mode":
-    let (application, area) = try desktop(activateDesktop: true)
+    let (_, area) = try desktop(activateDesktop: true)
     guard controlButton(.stop, in: area) == nil else {
       throw HelperFailure.message("Plan mode cannot be changed while the visible Codex task is running.")
     }
-    let before = planModeIsActive(in: AreaIndex(area))
     try togglePlanMode(in: area)
-    for _ in 0..<8 {
-      usleep(150_000)
-      let updatedArea = try codexArea(for: application)
-      let after = planModeIsActive(in: AreaIndex(updatedArea))
-      if after != before {
-        return [
-          "ok": true,
-          "message": "Changed Codex mode to \(after ? "Plan" : "Default").",
-        ]
-      }
-    }
-    throw HelperFailure.message("The ChatGPT Codex mode did not change.")
+    return ["ok": true, "message": "Requested the next Codex collaboration mode."]
   case "reasoning":
     guard let rawDelta = arguments.dropFirst().first,
           let delta = Int(rawDelta), delta == -1 || delta == 1 else {
@@ -1167,22 +1150,7 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       throw HelperFailure.message("ChatGPT exposed an unrecognized model and reasoning selection.")
     }
     try selectReasoningLevel(from: popup, in: application, currentLevel: before.level, delta: delta)
-    for _ in 0..<20 {
-      usleep(150_000)
-      let updatedArea = try codexArea(for: application)
-      guard let updatedPopup = reasoningPopup(in: updatedArea) else { continue }
-      let afterTitle = attributeString(updatedPopup, kAXTitleAttribute as CFString)
-      guard let after = reasoningSelection(from: afterTitle) else { continue }
-      if after.model != before.model {
-        try? selectModel(before.model, from: updatedPopup, in: application)
-        throw HelperFailure.message("The Codex model changed while adjusting reasoning and was restored.")
-      }
-      if after.level != before.level {
-        return ["ok": true, "message": "Changed the ChatGPT Codex reasoning level to \(afterTitle)."]
-      }
-    }
-    try? postKey(53)
-    throw HelperFailure.message("The ChatGPT Codex reasoning level did not change.")
+    return ["ok": true, "message": "Requested the next ChatGPT Codex reasoning level."]
   case "clear-input":
     let (_, area) = try desktop(activateDesktop: true)
     try clearInput(in: area)

@@ -105,6 +105,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -325,12 +326,11 @@ fun VibePocketApp(viewModel: PocketViewModel) {
             )
         },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            state.error?.let { ErrorBanner(it) }
             val snapshot = state.snapshot
             if (snapshot == null) {
                 LoadingScreen(isRefreshing = state.isRefreshing, onRefresh = viewModel::refresh)
@@ -358,6 +358,14 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                     onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
                     onLayer = onLayer,
+                )
+            }
+            state.error?.let { message ->
+                ErrorBanner(
+                    message = message,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .zIndex(1f),
                 )
             }
         }
@@ -1038,12 +1046,11 @@ private fun GestureControl(
         !snapshot.inputAllowsQueuedRepeat(input.id)
     val effectiveVoiceTap = voiceTap && !layerModifierPressed
     val voicePressEnabled = effectiveVoiceTap && !inputPending && !inputBlocked
-    val interactive = !inputBlocked && !inputPending && (effectiveVoiceTap || enabledGestures.isNotEmpty())
+    val interactive = !inputBlocked && (effectiveVoiceTap || enabledGestures.isNotEmpty())
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     val currentNavigationRepeat by rememberUpdatedState(onNavigationRepeat)
     val currentLayerChord by rememberUpdatedState(onLayerChord)
-    val loading = inputPending
     val repeatNavigation = navigationRepeatEnabled && !inputPending && !inputBlocked && !layerModifierPressed
     val layerChordEnabled = layerModifierPressed && !inputBlocked && isLayerShiftTarget(input.id)
     val container = when (input.id) {
@@ -1124,11 +1131,7 @@ private fun GestureControl(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
-        if (loading) {
-            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-        } else {
-            Icon(inputIcon(input.icon), contentDescription = null, modifier = Modifier.size(20.dp))
-        }
+        Icon(inputIcon(input.icon), contentDescription = null, modifier = Modifier.size(20.dp))
         Text(input.label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
         GestureIndicators(snapshot, input.id)
     }
@@ -1455,7 +1458,8 @@ private fun DialStepButton(
         inFlightIds.any { it.startsWith("input:${candidate.id}:") } &&
             !snapshot.inputAllowsQueuedRepeat(candidate.id)
     } == true
-    val enabled = !inputBlocked && input != null && enabledGestures.isNotEmpty() && !inputPending
+    val baseEnabled = !inputBlocked && input != null && enabledGestures.isNotEmpty()
+    val enabled = baseEnabled && !inputPending
     val voiceTap = input?.let { snapshot.voiceTapEnabled(it.id) } == true
     val tapEnabled = ControllerGesture.TAP in enabledGestures
     val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
@@ -1508,13 +1512,9 @@ private fun DialStepButton(
                 } else null,
                 onLongClickLabel = if (holdEnabled) "Run hold binding" else null,
             )
-            .alpha(if (enabled) 1f else 0.38f),
+            .alpha(if (baseEnabled) 1f else 0.38f),
     ) {
-        if (inputPending) {
-            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-        } else {
-            Icon(icon, contentDescription = input?.label, modifier = Modifier.size(28.dp))
-        }
+        Icon(icon, contentDescription = input?.label, modifier = Modifier.size(28.dp))
     }
 }
 
@@ -1796,9 +1796,9 @@ private fun SectionLabel(label: String) {
 }
 
 @Composable
-private fun ErrorBanner(message: String) {
+private fun ErrorBanner(message: String, modifier: Modifier = Modifier) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.error,
         contentColor = MaterialTheme.colorScheme.onError,
     ) {

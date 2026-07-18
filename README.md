@@ -7,7 +7,7 @@ Accessibility controls and narrowly scoped virtual input.
 
 ## Controller
 
-The Android 0.7.0 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.1 controller uses protocol v5 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,
@@ -28,7 +28,8 @@ M5:
   corresponding control in the visible Codex window before acting.
 - Voice is push-to-talk for the visible ChatGPT Codex dictation control. Hold
   the key to start the desktop dictation state and release it to stop; the M5
-  bridge verifies both transitions through macOS Accessibility.
+  bridge performs the semantic Accessibility action immediately, then
+  reconciles the resulting desktop state through its status scan.
 - A four-way joystick creates a visible Codex task and submits the built-in
   review, debug, refactor, or test workflow on release.
 - Rotate the center dial clockwise or counterclockwise to change the visible
@@ -220,7 +221,7 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 72 Node tests cover semantic Accessibility routing, controller
+- Bridge: 76 Node tests cover semantic Accessibility routing, controller
   profiles, desktop task focusing, compatibility modules, permission schemas,
   modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,
   polling, idempotency, authentication, and HTTP health.
