@@ -234,7 +234,7 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 82 Node tests cover semantic Accessibility routing, controller
+- Bridge: 84 Node tests cover semantic Accessibility routing, controller
   profiles, desktop task focusing, compatibility modules, permission schemas,
   modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,
   polling, idempotency, authentication, and HTTP health.
