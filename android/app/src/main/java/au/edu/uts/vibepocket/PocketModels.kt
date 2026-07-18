@@ -42,6 +42,15 @@ data class PocketSnapshot(
             (controller?.profile == null && inputId == "key_voice")
     }
 
+    fun supportsHidNavigationRepeat(inputId: String, hidConnected: Boolean): Boolean {
+        if (!hidConnected || controller?.userInput != null) return false
+        val tapAction = actionFor(inputId, ControllerGesture.TAP)
+        return tapAction?.type == "navigate" &&
+            inputEnabled(inputId, ControllerGesture.TAP) &&
+            actionFor(inputId, ControllerGesture.DOUBLE_TAP) == null &&
+            actionFor(inputId, ControllerGesture.HOLD) == null
+    }
+
     fun agentFocusEnabled(agentId: String): Boolean {
         val state = controller ?: return false
         return controls.focusAgent && state.agents.any { it.id == agentId }

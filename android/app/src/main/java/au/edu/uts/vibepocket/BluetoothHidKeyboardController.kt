@@ -21,6 +21,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class HidHost(
@@ -46,10 +49,13 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
     private val callbackExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val reportExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val repeatExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val closed = AtomicBoolean(false)
     private val receiverRegistered = AtomicBoolean(false)
+    private val repeatLock = Any()
     private var hidDevice: BluetoothHidDevice? = null
     private var connectedHost: BluetoothDevice? = null
+    private var navigationRepeat: ScheduledFuture<*>? = null
 
     private val _state = MutableStateFlow(
         HidKeyboardState(
@@ -73,6 +79,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
 
         override fun onServiceDisconnected(profile: Int) {
             if (profile != BluetoothProfile.HID_DEVICE) return
+            stopNavigationRepeat()
             hidDevice = null
             connectedHost = null
             _state.value = _state.value.copy(
@@ -97,6 +104,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
                     "Bluetooth keyboard registration failed. Toggle Bluetooth and try again."
                 },
             )
+            reconcileConnectedHost()
             refreshHosts()
         }
 
@@ -117,6 +125,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
                     )
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    stopNavigationRepeat()
                     if (connectedHost?.address == device.address) connectedHost = null
                     _state.value = _state.value.copy(
                         connectedHostAddress = null,
@@ -166,6 +175,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     fun connect(address: String): Boolean {
         if (!hasPermissions() || !_state.value.registered) return false
         val device = adapter?.bondedDevices?.firstOrNull { it.address == address } ?: return false
+        stopNavigationRepeat()
         _state.value = _state.value.copy(
             connectingHostAddress = address,
             message = "Connecting Bluetooth keyboard to ${safeName(device)}...",
@@ -200,9 +210,31 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         return true
     }
 
+    fun startNavigationRepeat(action: ControllerAction?): Boolean {
+        if (action?.type != "navigate" || !send(action)) return false
+        synchronized(repeatLock) {
+            navigationRepeat?.cancel(false)
+            navigationRepeat = repeatExecutor.scheduleAtFixedRate(
+                { send(action) },
+                NAVIGATION_REPEAT_INITIAL_DELAY_MILLIS,
+                NAVIGATION_REPEAT_INTERVAL_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+        return true
+    }
+
+    fun stopNavigationRepeat() {
+        synchronized(repeatLock) {
+            navigationRepeat?.cancel(false)
+            navigationRepeat = null
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun refreshHosts() {
         if (!hasPermissions()) return
+        reconcileConnectedHost()
         val hosts = adapter?.bondedDevices.orEmpty()
             .map { HidHost(it.address, safeName(it)) }
             .sortedWith(compareBy<HidHost> { it.name.lowercase() }.thenBy { it.address })
@@ -220,6 +252,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     @SuppressLint("MissingPermission")
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        stopNavigationRepeat()
         runCatching { hidDevice?.unregisterApp() }
         runCatching { hidDevice?.let { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, it) } }
         if (receiverRegistered.compareAndSet(true, false)) runCatching { appContext.unregisterReceiver(bluetoothReceiver) }
@@ -227,6 +260,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         connectedHost = null
         callbackExecutor.shutdownNow()
         reportExecutor.shutdownNow()
+        repeatExecutor.shutdownNow()
     }
 
     @SuppressLint("MissingPermission")
@@ -266,6 +300,30 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     }
 
     @SuppressLint("MissingPermission")
+    private fun reconcileConnectedHost() {
+        val proxy = hidDevice ?: return
+        val actual = runCatching { proxy.connectedDevices.firstOrNull() }.getOrNull()
+        if (actual != null) {
+            connectedHost = actual
+            _state.value = _state.value.copy(
+                connectedHostAddress = actual.address,
+                connectingHostAddress = null,
+                message = "Connected to ${safeName(actual)}. Standard controls now use Bluetooth HID.",
+            )
+            return
+        }
+        if (connectedHost != null || _state.value.connectedHostAddress != null) {
+            stopNavigationRepeat()
+            connectedHost = null
+            _state.value = _state.value.copy(
+                connectedHostAddress = null,
+                connectingHostAddress = null,
+                message = "Bluetooth keyboard ready. Pair or connect a Mac.",
+            )
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     private fun safeName(device: BluetoothDevice): String = runCatching { device.name }
         .getOrNull()
         ?.takeIf(String::isNotBlank)
@@ -275,6 +333,8 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         private const val REPORT_ID = 0
         private const val KEY_HOLD_MILLIS = 24L
         private const val KEY_GAP_MILLIS = 12L
+        private const val NAVIGATION_REPEAT_INITIAL_DELAY_MILLIS = 280L
+        private const val NAVIGATION_REPEAT_INTERVAL_MILLIS = 90L
 
         private val KEYBOARD_DESCRIPTOR = byteArrayOf(
             0x05, 0x01, 0x09, 0x06, 0xA1.toByte(), 0x01,

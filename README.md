@@ -19,7 +19,9 @@ M5:
   remappable action.
   Accept resolves a pending Codex approval first and otherwise submits the
   focused task's dictation draft. Reject declines or discards the same intent.
-- Arrow navigation uses Bluetooth HID reports when a Mac is connected.
+- Arrow navigation uses Bluetooth HID reports when a Mac is connected. Default
+  direction keys repeat while held after a short delay; a custom double-tap,
+  long-press, or Codex structured question keeps its own mapping instead.
   Context-sensitive commands such as Accept, Reject, Stop, New task, Clear,
   Mode, Access, and Reasoning use the authenticated Bridge, which locates the
   corresponding control in the visible Codex window before acting.
@@ -160,8 +162,9 @@ microphone access. Vibe Pocket does not request Bluetooth scanning or location.
 1. Keep the M5 online with an idle Codex task visible.
 2. Open Vibe Pocket, tap Pair, and allow Nearby devices. In macOS Bluetooth
    settings, pair the Xiaomi 13, then tap its Mac entry in Vibe Pocket.
-3. Confirm the Virtual hardware band says connected. Open an idle Codex task and
-   test arrows, Clear, Mode, Reasoning, New task, and push-to-talk Voice.
+3. In Virtual hardware, tap the M5 host and wait for the band to say connected.
+   Open an idle Codex task and test arrows, Clear, Mode, Reasoning, New task,
+   and push-to-talk Voice. Hold a default direction key to repeat navigation.
 4. Select a visible Agent key, or tap New task.
 5. Test Agent navigation, collaboration mode, reasoning, and workflows.
    Workflow directions deliberately create and submit a new visible task.
@@ -196,13 +199,13 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 68 Node tests cover semantic Accessibility routing, controller
+- Bridge: 72 Node tests cover semantic Accessibility routing, controller
   profiles, desktop task focusing, compatibility modules, permission schemas,
   modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,
   polling, idempotency, authentication, and HTTP health.
 - Android JVM tests cover profile parsing, protocol v5 data, structured command
-  serialization, capability gating, HID boot-keyboard reports, fixed Codex key
-  mappings, and Bridge-only semantic actions.
+  serialization, capability gating, HID boot-keyboard reports, repeat policy,
+  fixed Codex key mappings, and Bridge-only semantic actions.
 - Android `lintDebug` and `assembleDebug` pass under Java 17.
 - The M5 LaunchAgent, local health endpoint, and Tailnet HTTPS health endpoint
   are verified live.

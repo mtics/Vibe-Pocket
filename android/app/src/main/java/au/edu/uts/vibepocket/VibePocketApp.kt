@@ -284,6 +284,18 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val onInput: (String, ControllerGesture) -> Unit = { inputId, gesture ->
         if (dispatchInput(inputId, gesture)) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
+    val onNavigationRepeat: (String, Boolean) -> Unit = { inputId, initial ->
+        val action = state.snapshot?.let { snapshot ->
+            CodexHidMapping.actionFor(snapshot, inputId, ControllerGesture.TAP)
+        }
+        if (initial) {
+            if (hidController.startNavigationRepeat(action)) {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            }
+        } else {
+            hidController.stopNavigationRepeat()
+        }
+    }
     val onVoiceStart: (String) -> Boolean = { inputId ->
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -364,6 +376,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                         hidController.refreshHosts()
                     },
                     onInput = onInput,
+                    onNavigationRepeat = onNavigationRepeat,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
@@ -447,6 +460,7 @@ private fun ControllerScreen(
     onConnectHid: (String) -> Boolean,
     onRefreshHid: () -> Unit,
     onInput: (String, ControllerGesture) -> Unit,
+    onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     onAgent: (String) -> Unit,
@@ -506,8 +520,10 @@ private fun ControllerScreen(
         CommandKeyGrid(
             inputs = keyInputs,
             snapshot = snapshot,
+            hidNavigationAvailable = hidState.connected,
             inFlightIds = inFlightIds,
             onInput = onInput,
+            onNavigationRepeat = onNavigationRepeat,
             onVoiceStart = onVoiceStart,
             onVoiceStop = onVoiceStop,
         )
@@ -587,7 +603,7 @@ private fun VirtualHardwarePanel(
             val connecting = host.address == state.connectingHostAddress
             FilledTonalButton(
                 onClick = { onConnect(host.address) },
-                enabled = state.registered && !connected && !connecting,
+                enabled = state.registered && !connecting,
                 modifier = Modifier.fillMaxWidth().height(42.dp),
                 shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.filledTonalButtonColors(
@@ -866,8 +882,10 @@ private fun ModeAndFocus(
 private fun CommandKeyGrid(
     inputs: List<ControllerInput>,
     snapshot: PocketSnapshot,
+    hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
+    onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
 ) {
@@ -877,8 +895,10 @@ private fun CommandKeyGrid(
                 CommandKey(
                     input = input,
                     snapshot = snapshot,
+                    hidNavigationAvailable = hidNavigationAvailable,
                     inFlightIds = inFlightIds,
                     onInput = onInput,
+                    onNavigationRepeat = onNavigationRepeat,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
                     modifier = Modifier.weight(1f),
@@ -893,8 +913,10 @@ private fun CommandKeyGrid(
 private fun CommandKey(
     input: ControllerInput,
     snapshot: PocketSnapshot,
+    hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
+    onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     modifier: Modifier,
@@ -904,6 +926,8 @@ private fun CommandKey(
         snapshot = snapshot,
         inFlightIds = inFlightIds,
         onInput = onInput,
+        navigationRepeatEnabled = snapshot.supportsHidNavigationRepeat(input.id, hidNavigationAvailable),
+        onNavigationRepeat = onNavigationRepeat,
         onVoiceStart = onVoiceStart,
         onVoiceStop = onVoiceStop,
         modifier = modifier.height(66.dp),
@@ -916,6 +940,8 @@ private fun GestureControl(
     snapshot: PocketSnapshot,
     inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
+    navigationRepeatEnabled: Boolean = false,
+    onNavigationRepeat: (String, Boolean) -> Unit = { _, _ -> },
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     modifier: Modifier,
@@ -930,7 +956,9 @@ private fun GestureControl(
     val interactive = !inputPending && (voiceTap || enabledGestures.isNotEmpty())
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
+    val currentNavigationRepeat by rememberUpdatedState(onNavigationRepeat)
     val loading = inputPending
+    val repeatNavigation = navigationRepeatEnabled && !inputPending
     val container = when (input.id) {
         "key_accept" -> MaterialTheme.colorScheme.primaryContainer
         "key_reject", "key_stop" -> ErrorColor.copy(alpha = 0.18f)
@@ -957,8 +985,26 @@ private fun GestureControl(
                     }
                 }
             }
+            .pointerInput(input.id, repeatNavigation) {
+                if (!repeatNavigation) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    currentNavigationRepeat(input.id, true)
+                    try {
+                        var pressed = true
+                        while (pressed) {
+                            val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                            pressed = change?.pressed == true
+                            change?.consume()
+                        }
+                    } finally {
+                        currentNavigationRepeat(input.id, false)
+                    }
+                }
+            }
             .combinedClickable(
-                enabled = !voiceTap && enabledGestures.isNotEmpty() && !inputPending,
+                enabled = !voiceTap && enabledGestures.isNotEmpty() && !inputPending && !repeatNavigation,
                 onClick = {
                     if (!voiceTap && tapEnabled) {
                         onInput(input.id, ControllerGesture.TAP)

@@ -594,7 +594,7 @@ private func controlAvailability(in index: AreaIndex, hasAgents: Bool) -> [Strin
     "access-cycle": accessModeButton(in: index) != nil && !isExecuting,
     "navigate": true,
     "reasoning": reasoningPopup(in: index) != nil && !isExecuting,
-    "workflow": prompt(in: index) != nil && !isExecuting,
+    "workflow": direct[DesktopControl.newTask.rawValue] == true && prompt(in: index) != nil,
   ]) { _, new in new }
 }
 

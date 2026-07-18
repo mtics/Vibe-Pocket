@@ -187,6 +187,21 @@ test("routes default-layer keys, joystick, touch, and dial inputs", async () => 
   assert.deepEqual(desktop.calls[10], ["adjustReasoning", 1]);
 });
 
+test("keeps workflow controls available while the visible task is running", async () => {
+  const desktop = new FakeDesktop();
+  desktop.taskState = "executing";
+  desktop.controls = { ...desktop.controls, workflow: true, stop: true, "new-task": true };
+  const service = makeService(desktop);
+  await service.start();
+
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.controller.taskState, "executing");
+  assert.equal(snapshot.controls.workflow, true);
+  await service.command({ kind: "binding", inputId: "joystick_down" }, "workflow-while-running");
+
+  assert.equal(desktop.calls.at(-1)[0], "workflow");
+});
+
 test("acknowledges a desktop action before a slow state scan completes", async () => {
   class DelayedStatusDesktop extends FakeDesktop {
     delayStatus = false;
