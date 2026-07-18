@@ -188,8 +188,9 @@ only a bounded task label and state; task execution remains inside Codex.
   credentials, raw keyboard sequences, or direct shell execution endpoints.
 - Android delegates Bluetooth pairing keys and trust decisions to the platform;
   Vibe Pocket stores only the selected host address in process memory.
-- Idempotency keys are request-bound and bounded; rapid Android actions are
-  additionally protected by a single-flight gate.
+- Idempotency keys are request-bound and bounded; duplicate rapid presses on
+  the same Android control are suppressed while Bridge desktop actions remain
+  ordered.
 - The LaunchAgent starts Node with a minimal environment so unrelated user
   session credentials are not inherited by the bridge process.
 

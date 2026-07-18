@@ -23,6 +23,7 @@ import { PocketError } from "./pocket-error.mjs";
 
 const DESKTOP_SESSION_ID = "vibe-pocket-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
+const ACTION_REFRESH_DEBOUNCE_MS = 160;
 const TASK_STATES = new Set(["idle", "unread", "thinking", "executing", "waiting", "complete", "error"]);
 const CODEX_HOOK_EVENTS = new Set(["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"]);
 
@@ -42,6 +43,8 @@ export class DesktopCodexService extends EventEmitter {
   #pollIntervalMs;
   #pollTimer = null;
   #pollRefresh = null;
+  #actionRefresh = null;
+  #actionRefreshTimer = null;
 
   constructor({
     workspaces,
@@ -93,6 +96,10 @@ export class DesktopCodexService extends EventEmitter {
     this.#pollTimer = null;
     await this.#pollRefresh?.catch(() => {});
     this.#pollRefresh = null;
+    await this.#actionRefresh?.catch(() => {});
+    this.#actionRefresh = null;
+    if (this.#actionRefreshTimer) clearTimeout(this.#actionRefreshTimer);
+    this.#actionRefreshTimer = null;
     await this.#desktop.dispose?.();
   }
 
@@ -295,11 +302,11 @@ export class DesktopCodexService extends EventEmitter {
         throw new PocketError(400, "invalid_controller_configuration", error.message);
       }
       const message = error.message || "Codex did not accept this controller action.";
-      await this.#refreshAvailability();
       this.#status = { ...this.#status, message };
       this.#session.terminalTail = message;
       this.#session.updatedAt = new Date().toISOString();
       this.#touch("snapshot_changed");
+      this.#scheduleActionRefresh();
       throw new PocketError(409, "desktop_action_failed", message);
     }
   }
@@ -436,8 +443,19 @@ export class DesktopCodexService extends EventEmitter {
 
   async #perform(operation, fallbackMessage) {
     const result = await operation();
-    await this.#refreshAvailability();
     this.#recordAction(result?.message ?? fallbackMessage);
+    this.#scheduleActionRefresh();
+  }
+
+  #scheduleActionRefresh() {
+    if (this.#actionRefreshTimer) clearTimeout(this.#actionRefreshTimer);
+    this.#actionRefreshTimer = setTimeout(() => {
+      this.#actionRefreshTimer = null;
+      if (this.#actionRefresh) return;
+      this.#actionRefresh = this.#refreshAvailability({ publishIfChanged: true })
+        .finally(() => { this.#actionRefresh = null; });
+    }, ACTION_REFRESH_DEBOUNCE_MS);
+    this.#actionRefreshTimer.unref?.();
   }
 
   async #press(control, fallbackMessage) {

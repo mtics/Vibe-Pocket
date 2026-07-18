@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 
 class PocketViewModel(
     private val store: ConfigStore,
@@ -37,7 +38,7 @@ class PocketViewModel(
     private val _feedback = MutableSharedFlow<PocketFeedback>(extraBufferCapacity = 4)
     val feedback: SharedFlow<PocketFeedback> = _feedback.asSharedFlow()
 
-    private val commandGate = AtomicBoolean(false)
+    private val pendingCommandIds = ConcurrentHashMap.newKeySet<String>()
     private val voiceStateLock = Any()
     private val pendingVoiceCommands = ArrayDeque<VoiceCommand>()
     private val voiceScopeJob = SupervisorJob()
@@ -102,7 +103,8 @@ class PocketViewModel(
                 do {
                     refreshRequested.set(false)
                     val config = _state.value.config ?: break
-                    _state.update { it.copy(isRefreshing = true) }
+                    val isInitialLoad = _state.value.snapshot == null
+                    if (isInitialLoad) _state.update { it.copy(isRefreshing = true) }
                     runCatching { client.snapshot(config) }
                         .onSuccess { snapshot ->
                             if (_state.value.config == config) {
@@ -267,14 +269,14 @@ class PocketViewModel(
 
     private fun submit(command: PocketCommand, inFlightId: String): Boolean {
         val config = _state.value.config ?: return false
-        if (!commandGate.compareAndSet(false, true)) return false
-        _state.update { it.copy(inFlightId = inFlightId, error = null) }
+        if (!pendingCommandIds.add(inFlightId)) return false
+        _state.update { it.copy(inFlightIds = pendingCommandIds.toSet(), error = null) }
         viewModelScope.launch(ioDispatcher) {
             runCatching { client.command(config, command) }
                 .onSuccess {
                     if (_state.value.config == config) {
                         _feedback.tryEmit(PocketFeedback.Success)
-                        refresh()
+                        if (!foreground) refresh()
                     }
                 }
                 .onFailure { error ->
@@ -283,11 +285,9 @@ class PocketViewModel(
                         _feedback.tryEmit(PocketFeedback.Error)
                     }
                 }
-            commandGate.set(false)
+            pendingCommandIds.remove(inFlightId)
             if (_state.value.config == config) {
-                _state.update { current ->
-                    current.copy(inFlightId = current.inFlightId.takeUnless { it == inFlightId })
-                }
+                _state.update { current -> current.copy(inFlightIds = pendingCommandIds.toSet()) }
             }
         }
         return true
@@ -314,7 +314,7 @@ class PocketViewModel(
                     .onSuccess {
                         if (_state.value.config == transition.config) {
                             _feedback.tryEmit(PocketFeedback.Success)
-                            refresh()
+                            if (!foreground) refresh()
                         }
                     }
                     .onFailure { error ->

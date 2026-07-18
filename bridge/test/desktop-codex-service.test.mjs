@@ -121,6 +121,7 @@ test("clears a stale agent focus when the desktop no longer reports a selected t
   desktop.agents = desktop.agents.map((agent) => ({ ...agent, focused: false }));
 
   await service.command({ kind: "binding", inputId: "key_accept" }, "clear-stale-focus");
+  await new Promise((resolve) => setTimeout(resolve, 200));
 
   const snapshot = await service.snapshot();
   assert.equal(snapshot.controller.focusedAgentId, null);
@@ -184,6 +185,69 @@ test("routes default-layer keys, joystick, touch, and dial inputs", async () => 
   assert.equal(desktop.calls[9][0], "workflow");
   assert.match(desktop.calls[9][1], /Review the current change/);
   assert.deepEqual(desktop.calls[10], ["adjustReasoning", 1]);
+});
+
+test("acknowledges a desktop action before a slow state scan completes", async () => {
+  class DelayedStatusDesktop extends FakeDesktop {
+    delayStatus = false;
+    releaseStatus = Promise.withResolvers();
+
+    async status() {
+      if (this.delayStatus) await this.releaseStatus.promise;
+      return super.status();
+    }
+
+    async press(control) {
+      await super.press(control);
+      this.delayStatus = true;
+    }
+  }
+
+  const desktop = new DelayedStatusDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  const result = await Promise.race([
+    service.command({ kind: "binding", inputId: "key_accept" }, "fast-ack"),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("command waited for state scan")), 50)),
+  ]);
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  desktop.releaseStatus.resolve();
+  await service.dispose();
+});
+
+test("reports a desktop action failure before a slow state scan completes", async () => {
+  class DelayedFailureDesktop extends FakeDesktop {
+    delayStatus = false;
+    releaseStatus = Promise.withResolvers();
+
+    async status() {
+      if (this.delayStatus) await this.releaseStatus.promise;
+      return super.status();
+    }
+
+    async press() {
+      this.delayStatus = true;
+      throw new Error("The visible Codex control is not available.");
+    }
+  }
+
+  const desktop = new DelayedFailureDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    Promise.race([
+      service.command({ kind: "binding", inputId: "key_accept" }, "fast-error"),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("command waited for state scan")), 50)),
+    ]),
+    (error) => error.code === "desktop_action_failed",
+  );
+
+  desktop.releaseStatus.resolve();
+  await service.dispose();
 });
 
 test("focuses one of the six explicit Codex agent slots", async () => {

@@ -316,7 +316,7 @@ data class PocketUiState(
     val config: ConnectionConfig? = null,
     val snapshot: PocketSnapshot? = null,
     val isRefreshing: Boolean = false,
-    val inFlightId: String? = null,
+    val inFlightIds: Set<String> = emptySet(),
     val error: String? = null,
 )
 

@@ -12,7 +12,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -32,7 +31,7 @@ class PocketViewModelTest {
     }
 
     @Test
-    fun rapidSecondTapIsRejectedWhileFirstCommandIsInFlight() = runTest(dispatcher) {
+    fun duplicateTapIsRejectedWhileDistinctCommandsCanQueue() = runTest(dispatcher) {
         val config = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
         val client = BlockingClient()
         val viewModel = PocketViewModel(
@@ -44,12 +43,47 @@ class PocketViewModelTest {
 
         assertTrue(viewModel.activateInput("key_accept", ControllerGesture.TAP))
         assertFalse(viewModel.activateInput("key_accept", ControllerGesture.TAP))
+        assertTrue(viewModel.activateInput("key_voice", ControllerGesture.TAP))
         runCurrent()
-        assertEquals(listOf(PocketCommand.Binding("key_accept", ControllerGesture.TAP)), client.commands)
+        assertEquals(
+            listOf(
+                PocketCommand.Binding("key_accept", ControllerGesture.TAP),
+                PocketCommand.Binding("key_voice", ControllerGesture.TAP),
+            ),
+            client.commands,
+        )
+        assertEquals(
+            setOf("input:key_accept:tap", "input:key_voice:tap"),
+            viewModel.state.value.inFlightIds,
+        )
 
         client.commandRelease.complete(Unit)
         runCurrent()
-        assertNull(viewModel.state.value.inFlightId)
+        assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+    }
+
+    @Test
+    fun backgroundRefreshKeepsAnAlreadyLoadedControllerInteractive() = runTest(dispatcher) {
+        val config = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
+        val client = BlockingRefreshClient()
+        val viewModel = PocketViewModel(
+            store = FakeStore(config),
+            client = client,
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertEquals(VOICE_SNAPSHOT, viewModel.state.value.snapshot)
+        assertFalse(viewModel.state.value.isRefreshing)
+
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(VOICE_SNAPSHOT, viewModel.state.value.snapshot)
+        assertFalse(viewModel.state.value.isRefreshing)
+
+        client.refreshRelease.complete(Unit)
+        runCurrent()
     }
 
     @Test
@@ -200,6 +234,19 @@ class PocketViewModelTest {
             commands += command
             if (command == PocketCommand.VoiceStart) startRelease.await()
         }
+    }
+
+    private class BlockingRefreshClient : PocketClient {
+        var snapshotCalls = 0
+        val refreshRelease = CompletableDeferred<Unit>()
+
+        override suspend fun snapshot(config: ConnectionConfig): PocketSnapshot {
+            snapshotCalls += 1
+            if (snapshotCalls > 1) refreshRelease.await()
+            return VOICE_SNAPSHOT
+        }
+
+        override suspend fun command(config: ConnectionConfig, command: PocketCommand) = Unit
     }
 
     private companion object {

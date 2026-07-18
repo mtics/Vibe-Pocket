@@ -314,7 +314,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                 title = { Text("Vibe Pocket", fontWeight = FontWeight.SemiBold) },
                 actions = {
                     if (state.snapshot?.controller?.actionCatalog?.isNotEmpty() == true) {
-                        IconButton(onClick = { showMappings = true }, enabled = state.inFlightId == null) {
+                        IconButton(onClick = { showMappings = true }, enabled = state.inFlightIds.isEmpty()) {
                             Icon(Icons.Filled.Settings, contentDescription = "Configure controller mappings")
                         }
                     }
@@ -349,7 +349,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                 ControllerScreen(
                     snapshot = snapshot,
                     hidState = hidState,
-                    inFlightId = state.inFlightId,
+                    inFlightIds = state.inFlightIds,
                     onPairHid = {
                         pairRequested = true
                         when {
@@ -377,7 +377,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     if (showMappings && controller?.profile != null && controller.actionCatalog.isNotEmpty()) {
         MappingSheet(
             snapshot = requireNotNull(state.snapshot),
-            inFlightId = state.inFlightId,
+            inFlightIds = state.inFlightIds,
             onDismiss = { showMappings = false },
             onUpdate = { layerId, inputId, gesture, actionId ->
                 if (viewModel.updateBinding(layerId, inputId, gesture, actionId)) {
@@ -442,7 +442,7 @@ private fun ConnectScreen(onConnect: (String, String) -> Unit, error: String?) {
 private fun ControllerScreen(
     snapshot: PocketSnapshot,
     hidState: HidKeyboardState,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onPairHid: () -> Unit,
     onConnectHid: (String) -> Boolean,
     onRefreshHid: () -> Unit,
@@ -461,8 +461,6 @@ private fun ControllerScreen(
     val touchInput = inputs.firstOrNull { it.kind == InputKind.TOUCH }
     val joystickInputs = inputs.filter { it.kind == InputKind.JOYSTICK }
     val dialInputs = inputs.filter { it.kind == InputKind.DIAL }
-    val busy = inFlightId != null
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -481,7 +479,7 @@ private fun ControllerScreen(
         SectionLabel("Agents")
         AgentGrid(
             snapshot = snapshot,
-            inFlightId = inFlightId,
+            inFlightIds = inFlightIds,
             onAgentClick = onAgent,
         )
         controller?.profile?.layers?.take(6)?.let { layers ->
@@ -489,8 +487,8 @@ private fun ControllerScreen(
             LayerSelector(
                 layers = layers,
                 activeLayerId = controller.activeLayerId,
-                inFlightId = inFlightId,
-                enabled = !busy && snapshot.status.state == "ready",
+                inFlightIds = inFlightIds,
+                enabled = snapshot.status.state == "ready",
                 onLayer = onLayer,
             )
         }
@@ -499,8 +497,7 @@ private fun ControllerScreen(
             access = controller?.access ?: SelectorStatus(false, "Unavailable"),
             touchInput = touchInput,
             snapshot = snapshot,
-            busy = busy,
-            inFlightId = inFlightId,
+            inFlightIds = inFlightIds,
             onInput = onInput,
             onVoiceStart = onVoiceStart,
             onVoiceStop = onVoiceStop,
@@ -509,7 +506,7 @@ private fun ControllerScreen(
         CommandKeyGrid(
             inputs = keyInputs,
             snapshot = snapshot,
-            inFlightId = inFlightId,
+            inFlightIds = inFlightIds,
             onInput = onInput,
             onVoiceStart = onVoiceStart,
             onVoiceStop = onVoiceStop,
@@ -519,7 +516,7 @@ private fun ControllerScreen(
             WorkflowJoystick(
                 inputs = joystickInputs,
                 snapshot = snapshot,
-                busy = busy,
+                inFlightIds = inFlightIds,
                 onGesture = onInput,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
@@ -531,7 +528,7 @@ private fun ControllerScreen(
                 inputs = dialInputs,
                 reasoning = controller?.reasoning ?: SelectorStatus(false, "Unavailable"),
                 snapshot = snapshot,
-                inFlightId = inFlightId,
+                inFlightIds = inFlightIds,
                 onInput = onInput,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
@@ -710,7 +707,7 @@ private fun TaskStatusStrip(snapshot: PocketSnapshot) {
 @Composable
 private fun AgentGrid(
     snapshot: PocketSnapshot,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onAgentClick: (String) -> Unit,
 ) {
     val slots = snapshot.agentSlots()
@@ -721,8 +718,8 @@ private fun AgentGrid(
                 AgentTile(
                     agent = agent,
                     focused = slot.focused,
-                    enabled = inFlightId == null && slot.canFocus,
-                    loading = agent != null && inFlightId == "agent:${agent.id}",
+                    enabled = agent != null && "agent:${agent.id}" !in inFlightIds && slot.canFocus,
+                    loading = agent != null && "agent:${agent.id}" in inFlightIds,
                     onClick = { agent?.id?.let(onAgentClick) },
                     modifier = Modifier.weight(1f),
                 )
@@ -786,7 +783,7 @@ private fun AgentTile(
 private fun LayerSelector(
     layers: List<ControllerLayer>,
     activeLayerId: String?,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     enabled: Boolean,
     onLayer: (String) -> Unit,
 ) {
@@ -794,7 +791,7 @@ private fun LayerSelector(
         layers.forEachIndexed { index, layer ->
             val selected = layer.id == activeLayerId
             val layerColor = parseProfileColor(layer.color)
-            val loading = inFlightId == "layer:${layer.id}"
+            val loading = "layer:${layer.id}" in inFlightIds
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -802,7 +799,7 @@ private fun LayerSelector(
                     .clip(RoundedCornerShape(6.dp))
                     .background(if (selected) layerColor.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface)
                     .border(if (selected) 2.dp else 1.dp, layerColor.copy(alpha = if (selected) 1f else 0.45f), RoundedCornerShape(6.dp))
-                    .clickable(enabled = enabled && !selected, onClick = { onLayer(layer.id) }),
+                    .clickable(enabled = enabled && !selected && !loading, onClick = { onLayer(layer.id) }),
                 contentAlignment = Alignment.Center,
             ) {
                 if (loading) {
@@ -821,8 +818,7 @@ private fun ModeAndFocus(
     access: SelectorStatus,
     touchInput: ControllerInput?,
     snapshot: PocketSnapshot,
-    busy: Boolean,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -856,8 +852,7 @@ private fun ModeAndFocus(
             GestureControl(
                 input = touchInput,
                 snapshot = snapshot,
-                busy = busy,
-                inFlightId = inFlightId,
+                inFlightIds = inFlightIds,
                 onInput = onInput,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
@@ -871,7 +866,7 @@ private fun ModeAndFocus(
 private fun CommandKeyGrid(
     inputs: List<ControllerInput>,
     snapshot: PocketSnapshot,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -882,8 +877,7 @@ private fun CommandKeyGrid(
                 CommandKey(
                     input = input,
                     snapshot = snapshot,
-                    busy = inFlightId != null,
-                    inFlightId = inFlightId,
+                    inFlightIds = inFlightIds,
                     onInput = onInput,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
@@ -899,8 +893,7 @@ private fun CommandKeyGrid(
 private fun CommandKey(
     input: ControllerInput,
     snapshot: PocketSnapshot,
-    busy: Boolean,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -909,8 +902,7 @@ private fun CommandKey(
     GestureControl(
         input = input,
         snapshot = snapshot,
-        busy = busy,
-        inFlightId = inFlightId,
+        inFlightIds = inFlightIds,
         onInput = onInput,
         onVoiceStart = onVoiceStart,
         onVoiceStop = onVoiceStop,
@@ -922,8 +914,7 @@ private fun CommandKey(
 private fun GestureControl(
     input: ControllerInput,
     snapshot: PocketSnapshot,
-    busy: Boolean,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -934,11 +925,12 @@ private fun GestureControl(
     val tapEnabled = ControllerGesture.TAP in enabledGestures
     val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
     val holdEnabled = ControllerGesture.HOLD in enabledGestures
-    val voicePressEnabled = voiceTap && !busy
-    val interactive = !busy && (voiceTap || enabledGestures.isNotEmpty())
+    val inputPending = inFlightIds.any { it.startsWith("input:${input.id}:") }
+    val voicePressEnabled = voiceTap && !inputPending
+    val interactive = !inputPending && (voiceTap || enabledGestures.isNotEmpty())
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
-    val loading = inFlightId?.startsWith("input:${input.id}:") == true
+    val loading = inputPending
     val container = when (input.id) {
         "key_accept" -> MaterialTheme.colorScheme.primaryContainer
         "key_reject", "key_stop" -> ErrorColor.copy(alpha = 0.18f)
@@ -966,7 +958,7 @@ private fun GestureControl(
                 }
             }
             .combinedClickable(
-                enabled = !voiceTap && enabledGestures.isNotEmpty() && !busy,
+                enabled = !voiceTap && enabledGestures.isNotEmpty() && !inputPending,
                 onClick = {
                     if (!voiceTap && tapEnabled) {
                         onInput(input.id, ControllerGesture.TAP)
@@ -1014,16 +1006,19 @@ private fun GestureIndicators(snapshot: PocketSnapshot, inputId: String) {
 private fun WorkflowJoystick(
     inputs: List<ControllerInput>,
     snapshot: PocketSnapshot,
-    busy: Boolean,
+    inFlightIds: Set<String>,
     onGesture: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
 ) {
     val byDirection = remember(inputs) { inputs.associateBy { it.id.substringAfterLast('_') } }
     val enabledIds = inputs.filter { input ->
-        !busy && ControllerGesture.entries.any { snapshot.inputEnabled(input.id, it) }
+        !inFlightIds.any { it.startsWith("input:${input.id}:") }
+            && ControllerGesture.entries.any { snapshot.inputEnabled(input.id, it) }
     }.mapTo(mutableSetOf(), ControllerInput::id)
-    val voiceIds = inputs.filter { snapshot.voiceTapEnabled(it.id) && !busy }.mapTo(mutableSetOf(), ControllerInput::id)
+    val voiceIds = inputs.filter {
+        snapshot.voiceTapEnabled(it.id) && !inFlightIds.any { pending -> pending.startsWith("input:${it.id}:") }
+    }.mapTo(mutableSetOf(), ControllerInput::id)
     var selectedId by remember { mutableStateOf<String?>(null) }
     val currentOnGesture by rememberUpdatedState(onGesture)
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
@@ -1168,7 +1163,7 @@ private fun ReasoningDial(
     inputs: List<ControllerInput>,
     reasoning: SelectorStatus,
     snapshot: PocketSnapshot,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -1187,7 +1182,7 @@ private fun ReasoningDial(
             counterClockwise,
             Icons.Filled.Remove,
             snapshot,
-            inFlightId,
+            inFlightIds,
             onInput,
             onVoiceStart,
             onVoiceStop,
@@ -1215,7 +1210,7 @@ private fun ReasoningDial(
             clockwise,
             Icons.Filled.Add,
             snapshot,
-            inFlightId,
+            inFlightIds,
             onInput,
             onVoiceStart,
             onVoiceStop,
@@ -1228,7 +1223,7 @@ private fun DialStepButton(
     input: ControllerInput?,
     icon: ImageVector,
     snapshot: PocketSnapshot,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -1236,7 +1231,10 @@ private fun DialStepButton(
     val enabledGestures = if (input == null) emptyList() else {
         ControllerGesture.entries.filter { snapshot.inputEnabled(input.id, it) }
     }
-    val enabled = input != null && enabledGestures.isNotEmpty() && inFlightId == null
+    val inputPending = input?.let { candidate ->
+        inFlightIds.any { it.startsWith("input:${candidate.id}:") }
+    } == true
+    val enabled = input != null && enabledGestures.isNotEmpty() && !inputPending
     val voiceTap = input?.let { snapshot.voiceTapEnabled(it.id) } == true
     val tapEnabled = ControllerGesture.TAP in enabledGestures
     val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
@@ -1291,7 +1289,7 @@ private fun DialStepButton(
             )
             .alpha(if (enabled) 1f else 0.38f),
     ) {
-        if (input != null && inFlightId == "input:${input.id}:${ControllerGesture.TAP.wireValue}") {
+        if (inputPending) {
             CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
         } else {
             Icon(icon, contentDescription = input?.label, modifier = Modifier.size(28.dp))
@@ -1308,7 +1306,7 @@ private data class MappingTarget(
 @OptIn(ExperimentalMaterial3Api::class)
 private fun MappingSheet(
     snapshot: PocketSnapshot,
-    inFlightId: String?,
+    inFlightIds: Set<String>,
     onDismiss: () -> Unit,
     onUpdate: (String, String, ControllerGesture, String) -> Unit,
     onClear: (String, String, ControllerGesture) -> Unit,
@@ -1323,7 +1321,13 @@ private fun MappingSheet(
     var target by remember { mutableStateOf<MappingTarget?>(null) }
     var layerName by rememberSaveable(layer.id, layer.name) { mutableStateOf(layer.name) }
     var confirmReset by remember { mutableStateOf(false) }
-    val busy = inFlightId != null
+    val busy = inFlightIds.any { pending ->
+        pending.startsWith("mapping:")
+            || pending.startsWith("rename:")
+            || pending.startsWith("color:")
+            || pending.startsWith("workflow:")
+            || pending == "reset-profile"
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surface) {
         Column(
