@@ -10,13 +10,11 @@ import { SseHub } from "./sse-hub.mjs";
 const config = loadConfig();
 const events = new SseHub();
 const profileStore = new ControllerProfileStore({ profilePath: config.profilePath });
-const desktop = config.engine === "app-server"
-  ? new CodexAppServerController({
-      appServer: new CodexAppServer({ command: config.codexCommand }),
-      workspaces: config.workspaces,
-      ownershipStore: new OwnedThreadStore({ path: config.ownedThreadsPath }),
-    })
-  : undefined;
+const desktop = new CodexAppServerController({
+  appServer: new CodexAppServer({ command: config.codexCommand }),
+  workspaces: config.workspaces,
+  ownershipStore: new OwnedThreadStore({ path: config.ownedThreadsPath }),
+});
 const service = new DesktopCodexService({
   workspaces: config.workspaces,
   events,
@@ -31,7 +29,7 @@ server.listen(config.port, config.host, () => {
   console.log(`Configured workspaces: ${Object.keys(config.workspaces).join(", ")}`);
   console.log(`Controller profile: ${config.profilePath}`);
   console.log(`Owned Codex tasks: ${config.ownedThreadsPath}`);
-  console.log(`Codex control engine: ${config.engine}`);
+  console.log("Codex control engine: app-server (direct JSON-RPC)");
 });
 
 async function close() {

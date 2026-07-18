@@ -10,19 +10,13 @@ CONFIG_FILE="$CONFIG_DIR/bridge.env"
 PROFILE_FILE="$CONFIG_DIR/controller-profile.json"
 OWNED_THREADS_FILE="$CONFIG_DIR/owned-threads.json"
 RUNTIME_DIR="$CONFIG_DIR/runtime"
-HELPER_PATH="$RUNTIME_DIR/bin/vibe-pocket-codex-helper"
-HOST_APP="$RUNTIME_DIR/Vibe Pocket Bridge Host.app"
-HOST_CONTENTS="$HOST_APP/Contents"
-HOST_PATH="$HOST_CONTENTS/MacOS/Vibe Pocket Bridge Host"
 LOG_DIR="$HOME/Library/Logs/Vibe Pocket"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NODE_PATH=${VIBE_POCKET_NODE:-$(command -v node)}
 CODEX_PATH=${VIBE_POCKET_CODEX_COMMAND:-$(command -v codex)}
-SWIFTC_PATH=${VIBE_POCKET_SWIFTC:-/usr/bin/swiftc}
 TOKEN=${VIBE_POCKET_TOKEN:-}
 PORT=${VIBE_POCKET_PORT:-4320}
 WORKSPACE=${VIBE_POCKET_WORKSPACE:-${BRIDGE_DIR:h}}
-ENGINE=${VIBE_POCKET_ENGINE:-app-server}
 
 if [[ -z "$TOKEN" && -r "$CONFIG_FILE" ]]; then
   TOKEN=$(zsh -c 'source "$1"; print -rn -- "$VIBE_POCKET_TOKEN"' zsh "$CONFIG_FILE")
@@ -35,52 +29,22 @@ if (( ${#TOKEN} < 24 )); then
   print -u2 "VIBE_POCKET_TOKEN must contain at least 24 characters."
   exit 1
 fi
-if [[ "$ENGINE" != app-server && "$ENGINE" != accessibility ]]; then
-  print -u2 "VIBE_POCKET_ENGINE must be app-server or accessibility."
-  exit 1
-fi
-
 umask 077
 mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents"
 mkdir -p "$RUNTIME_DIR"
+rm -rf "$RUNTIME_DIR/node_modules"
 ditto "$BRIDGE_DIR" "$RUNTIME_DIR"
 chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
-PROGRAM_ARGUMENTS="    <string>$RUNTIME_DIR/bin/run-launchd.sh</string>"
-if [[ "$ENGINE" == accessibility ]]; then
-  "$SWIFTC_PATH" "$RUNTIME_DIR/src/macos-codex-helper.swift" -O -o "$HELPER_PATH"
-  codesign --force --sign - --identifier au.edu.uts.vibepocket.helper "$HELPER_PATH" >/dev/null
-  mkdir -p "$HOST_CONTENTS/MacOS"
-  "$SWIFTC_PATH" "$RUNTIME_DIR/src/macos-bridge-host.swift" -O -o "$HOST_PATH"
-  cat > "$HOST_CONTENTS/Info.plist" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key>
-  <string>Vibe Pocket Bridge Host</string>
-  <key>CFBundleIdentifier</key>
-  <string>au.edu.uts.vibepocket.bridge-host</string>
-  <key>CFBundleName</key>
-  <string>Vibe Pocket Bridge Host</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
-  <key>CFBundleVersion</key>
-  <string>1</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
-  <key>LSUIElement</key>
-  <true/>
-</dict>
-</plist>
-EOF
-  plutil -lint "$HOST_CONTENTS/Info.plist" >/dev/null
-  codesign --force --deep --sign - --identifier au.edu.uts.vibepocket.bridge-host "$HOST_APP" >/dev/null
-  PROGRAM_ARGUMENTS="    <string>$HOST_PATH</string>
-    <string>run</string>
-    <string>$RUNTIME_DIR/bin/run-launchd.sh</string>"
-fi
+# Remove artifacts left by releases that supported macOS Accessibility control.
+rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app" "$RUNTIME_DIR/bin/vibe-pocket-codex-helper"
+rm -f \
+  "$RUNTIME_DIR/src/macos-bridge-host.swift" \
+  "$RUNTIME_DIR/src/macos-codex-desktop.mjs" \
+  "$RUNTIME_DIR/src/macos-codex-helper.swift" \
+  "$RUNTIME_DIR/src/pocket-controller-service.mjs" \
+  "$RUNTIME_DIR/src/pocket-service.mjs" \
+  "$RUNTIME_DIR/test/pocket-controller-service.test.mjs" \
+  "$RUNTIME_DIR/test/pocket-service.test.mjs"
 TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
 {
   printf 'VIBE_POCKET_TOKEN=%q\n' "$TOKEN"
@@ -89,11 +53,8 @@ TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
   printf 'VIBE_POCKET_WORKSPACE=%q\n' "$WORKSPACE"
   printf 'VIBE_POCKET_PROFILE_PATH=%q\n' "$PROFILE_FILE"
   printf 'VIBE_POCKET_OWNED_THREADS_PATH=%q\n' "$OWNED_THREADS_FILE"
-  printf 'VIBE_POCKET_ENGINE=%q\n' "$ENGINE"
   printf 'VIBE_POCKET_CODEX_COMMAND=%q\n' "$CODEX_PATH"
   printf 'VIBE_POCKET_NODE=%q\n' "$NODE_PATH"
-  printf 'VIBE_POCKET_SWIFTC=%q\n' "$SWIFTC_PATH"
-  printf 'VIBE_POCKET_HELPER_PATH=%q\n' "$HELPER_PATH"
 } > "$TEMP_CONFIG"
 chmod 600 "$TEMP_CONFIG"
 mv "$TEMP_CONFIG" "$CONFIG_FILE"
@@ -107,7 +68,7 @@ cat > "$PLIST" <<EOF
   <string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-$PROGRAM_ARGUMENTS
+    <string>$RUNTIME_DIR/bin/run-launchd.sh</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$RUNTIME_DIR</string>
@@ -146,13 +107,6 @@ if (( ! READY )); then
 fi
 
 print "Vibe Pocket LaunchAgent installed on 127.0.0.1:$PORT."
-print "Codex control engine: $ENGINE."
+print "Codex control engine: app-server (direct JSON-RPC)."
 print "Pairing token is stored in $CONFIG_FILE with mode 0600."
-if [[ "$ENGINE" == accessibility ]]; then
-  print "Grant Accessibility permission to this signed background host:"
-  printf '  %q\n' "$HOST_APP"
-  print "Request the macOS prompt with:"
-  printf '  open -n -W -a %q --args request-accessibility\n' "$HOST_APP"
-else
-  print "Accessibility permission is not used by the app-server engine."
-fi
+print "macOS Accessibility permission is not used."

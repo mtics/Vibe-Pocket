@@ -29,11 +29,7 @@ export function loadConfig(environment = process.env, cwd = process.cwd()) {
     environment.VIBE_POCKET_OWNED_THREADS_PATH ?? join(dirname(profilePath), "owned-threads.json"),
     environment,
   );
-  const engine = environment.VIBE_POCKET_ENGINE ?? "app-server";
-  if (engine !== "app-server" && engine !== "accessibility") {
-    throw new Error("VIBE_POCKET_ENGINE must be app-server or accessibility.");
-  }
-  return { host, port, token, workspaces, codexCommand, profilePath, ownedThreadsPath, engine };
+  return { host, port, token, workspaces, codexCommand, profilePath, ownedThreadsPath };
 }
 
 function parseProfilePath(value, environment) {

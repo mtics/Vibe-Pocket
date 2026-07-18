@@ -154,13 +154,16 @@ function ownedThread(overrides = {}) {
 }
 
 function makeController(appServer = new FakeAppServer(), ownedThreadIds = []) {
+  const openedThreads = [];
   return {
     appServer,
+    openedThreads,
     ownershipStore: new FakeOwnershipStore(ownedThreadIds),
     controller: new CodexAppServerController({
       appServer,
       workspaces: { project: "/Users/lizhw/Project" },
       ownershipStore: new FakeOwnershipStore(ownedThreadIds),
+      openThread: async (threadId) => { openedThreads.push(threadId); },
     }),
   };
 }
@@ -192,6 +195,22 @@ test("maps only owned tasks and their subagents to stable Agent keys", async () 
   assert.equal(first.agents[0].focused, true);
   assert.equal(first.agents[1].label, "Scout");
   assert.equal(first.agents[1].state, "thinking");
+});
+
+test("opens the exact Codex desktop thread selected by Agent controls", async () => {
+  const appServer = new FakeAppServer();
+  appServer.threads = [
+    ownedThread({ id: "thread-a", name: "First", updatedAt: 2 }),
+    ownedThread({ id: "thread-b", name: "Second", sessionId: "session-b", updatedAt: 1 }),
+  ];
+  const { controller, openedThreads } = makeController(appServer, ["thread-a", "thread-b"]);
+
+  const snapshot = await controller.status();
+  await controller.attach();
+  await controller.navigate("down");
+  await controller.focusAgent(snapshot.agents[0].id);
+
+  assert.deepEqual(openedThreads, ["thread-a", "thread-b", "thread-a"]);
 });
 
 test("submits phone dictation with direct turn APIs and selected reasoning", async () => {

@@ -19,8 +19,7 @@ import {
   validateLayerId,
   workflowPrompt,
 } from "./controller-profile.mjs";
-import { MacCodexDesktopController } from "./macos-codex-desktop.mjs";
-import { PocketError } from "./pocket-controller-service.mjs";
+import { PocketError } from "./pocket-error.mjs";
 
 const DESKTOP_SESSION_ID = "vibe-pocket-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
@@ -46,12 +45,15 @@ export class DesktopCodexService extends EventEmitter {
   constructor({
     workspaces,
     events,
-    desktop = new MacCodexDesktopController(),
+    desktop,
     profile,
     profileStore = null,
     pollIntervalMs = 1_000,
   }) {
     super();
+    if (!desktop) {
+      throw new TypeError("DesktopCodexService requires a direct Codex app-server controller.");
+    }
     this.#workspaces = workspaces;
     this.#events = events;
     this.#desktop = desktop;

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, relative } from "node:path";
 
+import { openCodexThread } from "./codex-thread-opener.mjs";
+
 const OWNER_THREAD_SOURCE = "vibePocket";
 const AGENT_THREAD_SOURCES = [
   "subAgent",
@@ -39,6 +41,7 @@ export class CodexAppServerController {
   #appServer;
   #workspaces;
   #ownershipStore;
+  #openThread;
   #started = false;
   #threads = [];
   #rootThreads = new Map();
@@ -66,10 +69,11 @@ export class CodexAppServerController {
   #voiceActive = false;
   #draft = null;
 
-  constructor({ appServer, workspaces, ownershipStore = null }) {
+  constructor({ appServer, workspaces, ownershipStore = null, openThread = openCodexThread }) {
     this.#appServer = appServer;
     this.#workspaces = workspaces;
     this.#ownershipStore = ownershipStore;
+    this.#openThread = openThread;
     this.#appServer.on("notification", (message) => this.#onNotification(message));
     this.#appServer.on("serverRequest", (message) => this.#onServerRequest(message));
   }
@@ -121,6 +125,7 @@ export class CodexAppServerController {
     await this.#refreshThreads();
     const threadId = await this.#ensureFocusedThread();
     await this.#ensureLoaded(threadId);
+    await this.#showThread(threadId);
     return { message: "Focused the selected Vibe Pocket Codex task." };
   }
 
@@ -128,7 +133,7 @@ export class CodexAppServerController {
     await this.#ensureStarted();
     switch (control) {
       case "new-task":
-        await this.#createThread();
+        await this.#showThread(await this.#createThread());
         return { message: "Created a new Vibe Pocket Codex task." };
       case "stop":
         await this.#interruptFocusedTurn();
@@ -177,6 +182,7 @@ export class CodexAppServerController {
     const delta = direction === "up" || direction === "left" ? -1 : 1;
     const next = (Math.max(current, 0) + delta + agents.length) % agents.length;
     await this.#selectThread(this.#agentThreads.get(agents[next].id));
+    await this.#showThread(this.#focusThreadId);
     return { message: `Focused Codex task ${agents[next].label}.` };
   }
 
@@ -233,6 +239,7 @@ export class CodexAppServerController {
     const threadId = this.#agentThreads.get(agentId);
     if (!threadId) throw new Error("That Codex task is no longer available.");
     await this.#selectThread(threadId);
+    await this.#showThread(threadId);
     const thread = this.#threads.find((candidate) => candidate.id === threadId);
     return { message: `Focused Codex task ${threadLabel(thread)}.` };
   }
@@ -259,6 +266,7 @@ export class CodexAppServerController {
     await this.#ensureStarted();
     const threadId = await this.#createThread();
     await this.#startTurn(threadId, prompt);
+    await this.#showThread(threadId);
     return { message: "Started the workflow in a new Vibe Pocket Codex task." };
   }
 
@@ -476,7 +484,12 @@ export class CodexAppServerController {
     } else {
       await this.#startTurn(threadId, text);
     }
+    await this.#showThread(threadId);
     this.#draft = null;
+  }
+
+  async #showThread(threadId) {
+    await this.#openThread(threadId);
   }
 
   async #interruptFocusedTurn() {

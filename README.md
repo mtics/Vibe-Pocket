@@ -70,10 +70,10 @@ The installer copies the runtime to:
 ~/Library/Application Support/Vibe Pocket/runtime
 ```
 
-The default `app-server` engine does not request macOS Accessibility permission
-and remains available while the M5 is locked. The former UI-control engine is
-kept only as an explicit compatibility option via
-`VIBE_POCKET_ENGINE=accessibility`.
+The bridge always uses the Codex `app-server` JSON-RPC protocol. It does not
+request macOS Accessibility permission and remains available while the M5 is
+locked. Agent focus may open `codex://threads/<id>` to show that task in the
+desktop app; this deep link does not synthesize keyboard or pointer input.
 
 It stores the token in a mode-`0600` user config file and starts
 `au.edu.uts.vibepocket.bridge` with launchd. Re-running the installer upgrades
@@ -172,7 +172,7 @@ only a bounded task label and state; task execution remains inside Codex.
 - Workflow text can be edited by an authenticated phone, is strictly bounded,
   and is persisted only in the M5 profile. Normal workflow presses send only an
   ID.
-- The default path uses Codex app-server JSON-RPC and requires no macOS
+- Every control path uses Codex app-server JSON-RPC and requires no macOS
   Accessibility permission or foreground ChatGPT window.
 - The bridge does not expose task text, historical conversations, OpenAI
   credentials, raw keyboard sequences, or direct shell execution endpoints.
@@ -186,7 +186,7 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 51 Node tests cover profile and owned-task persistence, app-server
+- Bridge: 47 Node tests cover profile and owned-task persistence, app-server
   lifecycle races, permission schemas, modes, reasoning, stop, workflows,
   Codex user-input requests, gestures, layer switching, Agent focus, polling,
   idempotency, authentication, and HTTP health.

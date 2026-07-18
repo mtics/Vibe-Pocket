@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { PocketError } from "./pocket-controller-service.mjs";
+import { PocketError } from "./pocket-error.mjs";
 
 export const POCKET_PROTOCOL_VERSION = 5;
 
