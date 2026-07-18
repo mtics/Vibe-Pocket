@@ -105,7 +105,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -337,6 +336,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
             } else {
                 ControllerScreen(
                     snapshot = snapshot,
+                    statusMessage = state.error ?: snapshot.status.message,
                     hidState = hidState,
                     inFlightIds = state.inFlightIds,
                     onPairHid = {
@@ -358,14 +358,6 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                     onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
                     onLayer = onLayer,
-                )
-            }
-            state.error?.let { message ->
-                ErrorBanner(
-                    message = message,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .zIndex(1f),
                 )
             }
         }
@@ -439,6 +431,7 @@ private fun ConnectScreen(onConnect: (String, String) -> Unit, error: String?) {
 @Composable
 private fun ControllerScreen(
     snapshot: PocketSnapshot,
+    statusMessage: String?,
     hidState: HidKeyboardState,
     inFlightIds: Set<String>,
     onPairHid: () -> Unit,
@@ -501,7 +494,7 @@ private fun ControllerScreen(
             .padding(horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        TaskStatusStrip(snapshot)
+        TaskStatusStrip(snapshot, statusMessage)
         snapshot.controller?.userInput?.let { CodexQuestionPanel(it) }
         SectionLabel("Agents")
         AgentGrid(
@@ -721,7 +714,7 @@ private fun CodexQuestionPanel(question: CodexQuestion) {
 }
 
 @Composable
-private fun TaskStatusStrip(snapshot: PocketSnapshot) {
+private fun TaskStatusStrip(snapshot: PocketSnapshot, message: String?) {
     val state = snapshot.controller?.taskState ?: if (snapshot.status.state == "ready") TaskState.IDLE else TaskState.ERROR
     val color = stateColor(state)
     Row(
@@ -734,10 +727,10 @@ private fun TaskStatusStrip(snapshot: PocketSnapshot) {
         Icon(stateIcon(state), contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(9.dp))
         Text(stateLabel(state), fontWeight = FontWeight.SemiBold)
-        snapshot.status.message?.let { message ->
+        message?.let { text ->
             Spacer(Modifier.width(10.dp))
             Text(
-                message,
+                text,
                 modifier = Modifier.weight(1f),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

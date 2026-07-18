@@ -369,7 +369,7 @@ private func reasoningPopup(in index: AreaIndex) -> AXUIElement? {
 private func isReasoningLabel(_ value: String) -> Bool {
   let label = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let englishLevels = ["minimal", "low", "medium", "high", "extra high", "xhigh", "max"]
-  let chineseLevels = ["最低", "低", "中", "高", "极高", "最高"]
+  let chineseLevels = ["最小", "最低", "低", "中", "高", "极高", "最高"]
   return englishLevels.contains(where: { label.range(of: "\\b\($0)\\b", options: .regularExpression) != nil })
     || chineseLevels.contains(where: label.contains)
 }

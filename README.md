@@ -7,7 +7,7 @@ Accessibility controls and narrowly scoped virtual input.
 
 ## Controller
 
-The Android 0.7.1 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.2 controller uses protocol v5 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,
