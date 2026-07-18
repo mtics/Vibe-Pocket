@@ -45,7 +45,6 @@ class PocketViewModel(
     private val voiceScope = CoroutineScope(voiceScopeJob + ioDispatcher)
     private var voiceDrainRunning = false
     private var voiceOwner: VoiceOwner? = null
-    private var pendingDictationConfig: ConnectionConfig? = null
     private var closeVoiceScopeWhenDrained = false
     private val refreshRunning = AtomicBoolean(false)
     private val refreshRequested = AtomicBoolean(false)
@@ -141,7 +140,6 @@ class PocketViewModel(
         val shouldLaunch = synchronized(voiceStateLock) {
             if (voiceOwner != null) return@synchronized null
             voiceOwner = VoiceOwner(inputId, config)
-            pendingDictationConfig = null
             pendingVoiceCommands.addLast(VoiceCommand(PocketCommand.VoiceStart, config))
             (!voiceDrainRunning).also { launch ->
                 if (launch) voiceDrainRunning = true
@@ -152,32 +150,7 @@ class PocketViewModel(
     }
 
     fun stopVoice(inputId: String): Boolean {
-        return stopOwnedVoice(inputId, acceptDictation = true)
-    }
-
-    fun submitDictation(text: String): Boolean {
-        val normalized = text.trim()
-        if (
-            normalized.isEmpty() ||
-            normalized.length > 12_000 ||
-            normalized.any { it.isISOControl() && it != '\n' && it != '\r' && it != '\t' }
-        ) return false
-        val shouldLaunch = synchronized(voiceStateLock) {
-            val config = pendingDictationConfig ?: return@synchronized null
-            pendingDictationConfig = null
-            if (_state.value.config != config) return@synchronized null
-            pendingVoiceCommands.addLast(VoiceCommand(PocketCommand.DictationResult(normalized), config))
-            (!voiceDrainRunning).also { launch ->
-                if (launch) voiceDrainRunning = true
-            }
-        } ?: return false
-        if (shouldLaunch) launchVoiceDrain()
-        return true
-    }
-
-    fun reportDictationError(message: String) {
-        synchronized(voiceStateLock) { pendingDictationConfig = null }
-        reportLocalError(message)
+        return stopOwnedVoice(inputId)
     }
 
     fun reportLocalError(message: String) {
@@ -185,12 +158,11 @@ class PocketViewModel(
         _feedback.tryEmit(PocketFeedback.Error)
     }
 
-    private fun stopOwnedVoice(inputId: String? = null, acceptDictation: Boolean = false): Boolean {
+    private fun stopOwnedVoice(inputId: String? = null): Boolean {
         val shouldLaunch = synchronized(voiceStateLock) {
             val owner = voiceOwner?.takeIf { inputId == null || it.inputId == inputId }
                 ?: return@synchronized null
             voiceOwner = null
-            pendingDictationConfig = owner.config.takeIf { acceptDictation }
             pendingVoiceCommands.addLast(VoiceCommand(PocketCommand.VoiceStop, owner.config))
             (!voiceDrainRunning).also { launch ->
                 if (launch) voiceDrainRunning = true

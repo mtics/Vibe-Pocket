@@ -288,6 +288,16 @@ private func prompt(in index: AreaIndex) -> AXUIElement? {
   index.textAreas.first(where: { attributeBool($0, kAXFocusedAttribute as CFString) }) ?? index.textAreas.last
 }
 
+private func draftText(in index: AreaIndex) -> String {
+  guard let input = prompt(in: index) else { return "" }
+  return attributeString(input, kAXValueAttribute as CFString)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func hasDraft(in index: AreaIndex) -> Bool {
+  !draftText(in: index).isEmpty
+}
+
 private let accessModeLabels: Set<String> = [
   "只读", "自动", "请求批准", "替我审批", "完全访问", "完全访问权限", "自定义", "自定义 (config.toml)",
   "read only", "read-only", "auto", "auto approve", "approve for me",
@@ -584,17 +594,21 @@ private func controlAvailability(in index: AreaIndex, hasAgents: Bool) -> [Strin
   let direct = Dictionary(uniqueKeysWithValues: DesktopControl.allCases.map { control in
     (control.rawValue, controlButton(control, in: index) != nil)
   })
+  let hasMessageDraft = hasDraft(in: index)
+  let hasMessageInput = prompt(in: index) != nil
   let isExecuting = controlButton(.stop, in: index) != nil
   return direct.merging([
-    "approve": direct["approve"] == true || prompt(in: index) != nil,
-    "reject": true,
-    "clear-input": prompt(in: index) != nil,
+    "approve": direct["approve"] == true || hasMessageDraft,
+    // Escape is not a reliable Codex rejection primitive. Only enable Reject
+    // when ChatGPT exposes an explicit semantic rejection button.
+    "reject": direct["reject"] == true,
+    "clear-input": hasMessageDraft,
     "focus-agent": hasAgents,
-    "mode-cycle": prompt(in: index) != nil && !isExecuting,
+    "mode-cycle": hasMessageInput && !isExecuting,
     "access-cycle": accessModeButton(in: index) != nil && !isExecuting,
     "navigate": true,
     "reasoning": reasoningPopup(in: index) != nil && !isExecuting,
-    "workflow": direct[DesktopControl.newTask.rawValue] == true && prompt(in: index) != nil,
+    "workflow": direct[DesktopControl.newTask.rawValue] == true && hasMessageInput,
   ]) { _, new in new }
 }
 
@@ -671,9 +685,13 @@ private func press(_ control: DesktopControl, in area: AXUIElement) throws {
   }
   switch control {
   case .approve:
+    guard hasDraft(in: AreaIndex(area)) else {
+      throw HelperFailure.message("There is no visible Codex approval control or message draft to submit.")
+    }
+    _ = try focusPrompt(in: area)
     try postKey(36)
   case .reject:
-    try postKey(53)
+    throw HelperFailure.message(DesktopControl.reject.unavailableMessage)
   default:
     throw HelperFailure.message(control.unavailableMessage)
   }
@@ -991,19 +1009,6 @@ private func togglePlanMode(in area: AXUIElement) throws {
   usleep(180_000)
 }
 
-private func setDictationDraft(_ text: String, in area: AXUIElement) throws {
-  let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard !normalized.isEmpty, text.count <= 12_000,
-        text.rangeOfCharacter(from: .controlCharacters.subtracting(.whitespacesAndNewlines)) == nil else {
-    throw HelperFailure.message("Phone dictation must contain printable non-empty text up to 12,000 characters.")
-  }
-  let input = try focusPrompt(in: area)
-  guard AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, normalized as CFTypeRef) == .success,
-        attributeString(input, kAXValueAttribute as CFString) == normalized else {
-    throw HelperFailure.message("ChatGPT did not accept the phone dictation draft.")
-  }
-}
-
 private func clearInput(in area: AXUIElement) throws {
   let input = try focusPrompt(in: area)
   guard AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, "" as CFTypeRef) == .success else {
@@ -1177,10 +1182,6 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
     let (_, area) = try desktop(activateDesktop: true)
     try clearInput(in: area)
     return ["ok": true, "message": "Cleared the ChatGPT Codex input line."]
-  case "dictation-draft":
-    let (_, area) = try desktop(activateDesktop: true)
-    try setDictationDraft(input ?? readStandardInput(), in: area)
-    return ["ok": true, "message": "Placed phone dictation in the visible ChatGPT Codex input line."]
   case "focus-agent":
     guard let agentID = arguments.dropFirst().first,
           agentID.hasPrefix("agent-"), agentID.count <= 80 else {

@@ -57,17 +57,8 @@ export class MacCodexDesktopController {
 
   async setVoice(active) {
     if (typeof active !== "boolean") throw new TypeError("Voice state must be boolean.");
+    const result = await this.#invoke(active ? "voice-start" : "voice-stop");
     this.#voiceActive = active;
-    return {
-      message: active
-        ? "Started phone dictation for the visible Codex input."
-        : "Stopped phone dictation for the visible Codex input.",
-    };
-  }
-
-  async setDictationDraft(text) {
-    const result = await this.#invoke("dictation-draft", [], text);
-    this.#voiceActive = false;
     return result;
   }
 

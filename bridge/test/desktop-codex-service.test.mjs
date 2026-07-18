@@ -291,18 +291,20 @@ test("serializes push-to-talk target states without losing release", async () =>
   assert.equal((await service.snapshot()).controller.voice.active, false);
 });
 
-test("routes a bounded phone dictation result into the controller draft", async () => {
+test("keeps confirmed desktop push-to-talk state across a desktop refresh", async () => {
   const desktop = new FakeDesktop();
   const service = makeService(desktop);
   await service.start();
 
-  await service.command({ kind: "dictation_result", text: "Review the current change." }, "dictation-1");
+  await service.command({ kind: "voice_start" }, "voice-refresh-start");
+  assert.equal((await service.snapshot()).controller.voice.active, true);
 
-  assert.deepEqual(desktop.calls, [["setDictationDraft", "Review the current change."]]);
-  await assert.rejects(
-    () => service.command({ kind: "dictation_result", text: "" }, "dictation-empty"),
-    (error) => error.status === 400,
-  );
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  assert.equal((await service.snapshot()).controller.voice.active, true);
+
+  await service.command({ kind: "voice_stop" }, "voice-refresh-stop");
+  assert.equal((await service.snapshot()).controller.voice.active, false);
+  await service.dispose();
 });
 
 test("switches layers and rejects inputs that are not mapped on that layer", async () => {

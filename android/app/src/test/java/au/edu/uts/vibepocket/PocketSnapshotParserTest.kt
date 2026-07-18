@@ -193,14 +193,6 @@ class PocketSnapshotParserTest {
         assertEquals(setOf("kind"), reset.keys().asSequence().toSet())
         assertEquals("voice_start", PocketCommand.VoiceStart.toJson().getString("kind"))
         assertEquals("voice_stop", PocketCommand.VoiceStop.toJson().getString("kind"))
-        assertEquals(
-            "Draft from phone",
-            PocketCommand.DictationResult("Draft from phone").toJson().getString("text"),
-        )
-        assertEquals(
-            "dictation_result",
-            PocketCommand.DictationResult("Draft from phone").toJson().getString("kind"),
-        )
     }
 
     private companion object {

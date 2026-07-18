@@ -46,18 +46,17 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
   ]);
 });
 
-test("keeps phone voice local and sends only the recognized draft to Swift", async () => {
+test("routes push-to-talk to the verified desktop dictation state", async () => {
   const { calls, controller } = controllerFixture();
 
   assert.equal(controller.voiceActive, false);
   await controller.setVoice(true);
   assert.equal(controller.voiceActive, true);
-  assert.deepEqual(calls, []);
-
-  await controller.setDictationDraft("Phone transcript");
+  await controller.setVoice(false);
   assert.equal(controller.voiceActive, false);
   assert.deepEqual(calls, [
-    ["/tmp/vibe-pocket-test.sock", "dictation-draft", [], "Phone transcript"],
+    ["/tmp/vibe-pocket-test.sock", "voice-start", [], ""],
+    ["/tmp/vibe-pocket-test.sock", "voice-stop", [], ""],
   ]);
 });
 

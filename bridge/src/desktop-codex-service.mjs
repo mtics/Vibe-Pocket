@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 import {
@@ -187,25 +187,6 @@ export class DesktopCodexService extends EventEmitter {
         return;
       }
 
-      if (command.kind === "dictation_result") {
-        requireCommandKeys(command, ["kind", "text"]);
-        if (
-          typeof command.text !== "string"
-          || command.text.trim().length === 0
-          || command.text.length > 12_000
-          || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(command.text)
-        ) {
-          throw new ControllerProfileValidationError(
-            "Phone dictation must contain printable non-empty text up to 12,000 characters.",
-          );
-        }
-        await this.#perform(
-          () => this.#desktop.setDictationDraft(command.text),
-          "Stored the phone dictation draft.",
-        );
-        return;
-      }
-
       if (command.kind === "focus_agent" && Object.hasOwn(command, "agentId")) {
         requireCommandKeys(command, ["kind", "agentId"]);
         if (typeof command.agentId !== "string" || !/^agent-[a-f0-9]{24}$/.test(command.agentId)) {
@@ -345,7 +326,7 @@ export class DesktopCodexService extends EventEmitter {
         await this.#perform(() => this.#desktop.cycleAccess(), "Selected the next Codex access level.");
         return;
       case "clear_input":
-        await this.#perform(() => this.#desktop.clearInput(), "Cleared the pending phone dictation.");
+        await this.#perform(() => this.#desktop.clearInput(), "Cleared the visible Codex input.");
         return;
       case "focus_next": {
         const agents = this.#controllerState.agents;
@@ -463,10 +444,13 @@ export class DesktopCodexService extends EventEmitter {
   }
 
   async #setVoice(active) {
-    await this.#perform(
-      () => this.#desktop.setVoice(active),
-      active ? "Started phone dictation." : "Stopped phone dictation.",
-    );
+    if (active && !this.#controllerState.voice.available) {
+      throw new PocketError(409, "voice_unavailable", "The visible ChatGPT Codex dictation control is unavailable.");
+    }
+    const result = await this.#desktop.setVoice(active);
+    this.#controllerState.voice = { ...this.#controllerState.voice, active };
+    this.#recordAction(result?.message ?? (active ? "Started ChatGPT Codex dictation." : "Stopped ChatGPT Codex dictation."));
+    this.#scheduleActionRefresh();
   }
 
   async #focusAgentById(agentId) {
@@ -518,13 +502,7 @@ export class DesktopCodexService extends EventEmitter {
 }
 
 function commandFingerprint(command) {
-  if (command?.kind !== "dictation_result" || typeof command.text !== "string") {
-    return JSON.stringify(command);
-  }
-  return JSON.stringify({
-    kind: command.kind,
-    textSha256: createHash("sha256").update(command.text).digest("hex"),
-  });
+  return JSON.stringify(command);
 }
 
 function legacyAction(command) {

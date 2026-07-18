@@ -108,43 +108,6 @@ class PocketViewModelTest {
     }
 
     @Test
-    fun finalPhoneDictationIsTrimmedAndSubmittedOnce() = runTest(dispatcher) {
-        val (viewModel, client) = voiceViewModel()
-        runCurrent()
-
-        assertTrue(viewModel.startVoice("key_voice"))
-        assertTrue(viewModel.stopVoice("key_voice"))
-        assertTrue(viewModel.submitDictation("  Review the current change.  "))
-        assertFalse(viewModel.submitDictation("Do not submit twice."))
-        assertFalse(viewModel.submitDictation("   "))
-        runCurrent()
-
-        assertEquals(listOf(PocketCommand.VoiceStart), client.commands)
-        client.startRelease.complete(Unit)
-        runCurrent()
-
-        assertEquals(
-            listOf(
-                PocketCommand.VoiceStart,
-                PocketCommand.VoiceStop,
-                PocketCommand.DictationResult("Review the current change."),
-            ),
-            client.commands,
-        )
-    }
-
-    @Test
-    fun cancelledVoiceCannotSubmitAStaleDictation() = runTest(dispatcher) {
-        val (viewModel, _) = voiceViewModel()
-        runCurrent()
-
-        assertTrue(viewModel.startVoice("key_voice"))
-        viewModel.disconnect()
-
-        assertFalse(viewModel.submitDictation("This belongs to the old connection."))
-    }
-
-    @Test
     fun lifecycleStopQueuesVoiceStopForCurrentOwner() = runTest(dispatcher) {
         val (viewModel, client) = voiceViewModel()
         runCurrent()

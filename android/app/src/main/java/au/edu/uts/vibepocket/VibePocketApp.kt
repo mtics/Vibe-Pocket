@@ -3,7 +3,6 @@ package au.edu.uts.vibepocket
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -166,18 +165,6 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
     val context = LocalContext.current
-    val dictation = remember(context, viewModel) {
-        PhoneDictationController(
-            context = context.applicationContext,
-            onResult = viewModel::submitDictation,
-            onError = viewModel::reportDictationError,
-        )
-    }
-    val microphonePermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (!granted) viewModel.reportLocalError("Microphone permission is required for Voice.")
-    }
     val hidController = remember(context) { BluetoothHidKeyboardController(context) }
     val hidState by hidController.state.collectAsStateWithLifecycle()
     var pairRequested by remember { mutableStateOf(false) }
@@ -226,14 +213,11 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         if (hidController.hasPermissions()) hidController.start()
     }
 
-    DisposableEffect(lifecycleOwner, viewModel, dictation) {
+    DisposableEffect(lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> viewModel.setForeground(true)
-                Lifecycle.Event.ON_STOP -> {
-                    dictation.cancel()
-                    viewModel.setForeground(false)
-                }
+                Lifecycle.Event.ON_STOP -> viewModel.setForeground(false)
                 else -> Unit
             }
         }
@@ -244,7 +228,6 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             hidController.close()
-            dictation.destroy()
             viewModel.setForeground(false)
         }
     }
@@ -297,20 +280,12 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         }
     }
     val onVoiceStart: (String) -> Boolean = { inputId ->
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-            false
-        } else {
-            val started = viewModel.startVoice(inputId)
-            val listening = started && dictation.start()
-            if (started && !listening) viewModel.stopVoice(inputId)
-            if (listening) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            listening
+        viewModel.startVoice(inputId).also { started ->
+            if (started) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         }
     }
     val onVoiceStop: (String) -> Unit = { inputId ->
         viewModel.stopVoice(inputId)
-        dictation.stop()
     }
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -338,7 +313,6 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                         }
                     }
                     IconButton(onClick = {
-                        dictation.cancel()
                         viewModel.disconnect()
                     }) {
                         Icon(Icons.Filled.Close, contentDescription = "Disconnect bridge")

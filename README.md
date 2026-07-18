@@ -17,17 +17,18 @@ M5:
   new task, stop, collaboration mode, clear, Agent focus, navigation, and task
   resume. Mode cycles Codex Default and Plan; access permissions are a separate
   remappable action.
-  Accept resolves a pending Codex approval first and otherwise submits the
-  focused task's dictation draft. Reject declines or discards the same intent.
+  Accept resolves a visible Codex approval first and otherwise submits a
+  non-empty visible composer draft. Reject is enabled only for an explicit
+  visible rejection control.
 - Arrow navigation uses Bluetooth HID reports when a Mac is connected. Default
   direction keys repeat while held after a short delay; a custom double-tap,
   long-press, or Codex structured question keeps its own mapping instead.
   Context-sensitive commands such as Accept, Reject, Stop, New task, Clear,
   Mode, Access, and Reasoning use the authenticated Bridge, which locates the
   corresponding control in the visible Codex window before acting.
-- Voice is push-to-talk on the phone. Android recognizes speech locally through
-  the platform speech service, then places the final transcript in the visible
-  Codex composer. It does not start the Mac microphone.
+- Voice is push-to-talk for the visible ChatGPT Codex dictation control. Hold
+  the key to start the desktop dictation state and release it to stop; the M5
+  bridge verifies both transitions through macOS Accessibility.
 - A four-way joystick creates a visible Codex task and submits the built-in
   review, debug, refactor, or test workflow on release.
 - A stepped dial changes the visible Codex reasoning selector by one verified
@@ -154,8 +155,8 @@ http://192.168.31.250:4319/app-debug.apk
 The app requires an HTTPS bridge URL and stores its token with an Android
 Keystore AES-GCM key. On MIUI, unrestricted battery use is optional; the SSE
 connection and Android HID registration are active while Vibe Pocket is in the
-foreground. Android 12+ asks for Nearby devices access, and Voice asks for
-microphone access. Vibe Pocket does not request Bluetooth scanning or location.
+foreground. Android 12+ asks for Nearby devices access. Vibe Pocket does not
+request microphone, Bluetooth scanning, or location access.
 
 ## First Controller Test
 
