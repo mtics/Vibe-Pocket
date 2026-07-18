@@ -28,6 +28,12 @@ export function createPocketHttpServer({ service, events, token }) {
         events.connect(request, response);
         return;
       }
+      if (request.method === "POST" && url.pathname === "/v1/pocket/desktop/attach") {
+        const { threadId } = await readJson(request);
+        const responseBody = await service.bindDesktopThread(threadId);
+        sendJson(response, 200, responseBody);
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v1/pocket/commands") {
         const command = await readJson(request);
         const responseBody = await service.command(command, request.headers["idempotency-key"]);

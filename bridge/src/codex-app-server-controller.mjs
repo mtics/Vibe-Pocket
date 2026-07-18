@@ -36,6 +36,7 @@ const FALLBACK_COLLABORATION_MODES = [
   { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
 ];
 const FALLBACK_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const THREAD_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
 export class CodexAppServerController {
   #appServer;
@@ -127,6 +128,32 @@ export class CodexAppServerController {
     await this.#ensureLoaded(threadId);
     await this.#showThread(threadId);
     return { message: "Focused the selected Vibe Pocket Codex task." };
+  }
+
+  async bindThread(threadId) {
+    if (typeof threadId !== "string" || !THREAD_ID_PATTERN.test(threadId)) {
+      throw new Error("A valid Codex desktop task ID is required.");
+    }
+    await this.#ensureStarted();
+    const result = await this.#appServer.request("thread/read", { threadId, includeTurns: false });
+    const thread = result?.thread;
+    if (!thread || thread.id !== threadId) {
+      throw new Error("The requested Codex desktop task does not exist.");
+    }
+    if (thread.parentThreadId) {
+      throw new Error("Only a top-level Codex desktop task can be attached.");
+    }
+    if (!this.#workspaceAllows(thread.cwd)) {
+      throw new Error("The requested Codex desktop task is outside the configured Vibe Pocket workspaces.");
+    }
+
+    this.#ownedRootIds.add(threadId);
+    this.#rootThreads.set(threadId, thread);
+    await this.#ownershipStore?.add?.(threadId);
+    this.#registerOwnedThread(thread);
+    await this.#selectThread(threadId);
+    await this.#showThread(threadId);
+    return { message: `Attached the current Codex desktop task: ${threadLabel(thread)}.` };
   }
 
   async press(control) {

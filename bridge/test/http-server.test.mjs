@@ -7,8 +7,13 @@ const TOKEN = "test-token-with-at-least-24-characters";
 
 async function withServer(run) {
   const calls = [];
+  const attachedThreads = [];
   const service = {
     async snapshot() { return { revision: "r_7", controller: { taskState: "idle" } }; },
+    async bindDesktopThread(threadId) {
+      attachedThreads.push(threadId);
+      return { attached: true, revision: "r_8" };
+    },
     async command(command, idempotencyKey) {
       calls.push({ command, idempotencyKey });
       return { accepted: true, commandId: "cmd_test", revision: "r_8" };
@@ -19,7 +24,7 @@ async function withServer(run) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await run({ baseUrl: `http://127.0.0.1:${port}`, calls });
+    await run({ baseUrl: `http://127.0.0.1:${port}`, calls, attachedThreads });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -63,5 +68,30 @@ test("snapshot and commands remain authenticated", async () => {
       command: { kind: "binding", inputId: "key_voice" },
       idempotencyKey: "gesture-123",
     }]);
+  });
+});
+
+test("desktop task attachment is authenticated and forwards only the task ID", async () => {
+  await withServer(async ({ baseUrl, attachedThreads }) => {
+    const body = JSON.stringify({ threadId: "019f2ce2-e042-7ab0-a73d-9fa41d58e210" });
+    const unauthorized = await fetch(`${baseUrl}/v1/pocket/desktop/attach`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    assert.equal(unauthorized.status, 401);
+
+    const response = await fetch(`${baseUrl}/v1/pocket/desktop/attach`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { attached: true, revision: "r_8" });
+    assert.deepEqual(attachedThreads, ["019f2ce2-e042-7ab0-a73d-9fa41d58e210"]);
   });
 });

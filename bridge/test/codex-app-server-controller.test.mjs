@@ -155,14 +155,15 @@ function ownedThread(overrides = {}) {
 
 function makeController(appServer = new FakeAppServer(), ownedThreadIds = []) {
   const openedThreads = [];
+  const ownershipStore = new FakeOwnershipStore(ownedThreadIds);
   return {
     appServer,
     openedThreads,
-    ownershipStore: new FakeOwnershipStore(ownedThreadIds),
+    ownershipStore,
     controller: new CodexAppServerController({
       appServer,
       workspaces: { project: "/Users/lizhw/Project" },
-      ownershipStore: new FakeOwnershipStore(ownedThreadIds),
+      ownershipStore,
       openThread: async (threadId) => { openedThreads.push(threadId); },
     }),
   };
@@ -211,6 +212,43 @@ test("opens the exact Codex desktop thread selected by Agent controls", async ()
   await controller.focusAgent(snapshot.agents[0].id);
 
   assert.deepEqual(openedThreads, ["thread-a", "thread-b", "thread-a"]);
+});
+
+test("explicitly binds the current top-level Codex desktop task", async () => {
+  const threadId = "019f2ce2-e042-7ab0-a73d-9fa41d58e210";
+  const appServer = new FakeAppServer();
+  appServer.threads = [ownedThread({
+    id: threadId,
+    name: "Current desktop task",
+    threadSource: "codexDesktop",
+    sourceKind: "cli",
+  })];
+  const { controller, openedThreads, ownershipStore } = makeController(appServer);
+
+  const result = await controller.bindThread(threadId);
+  const status = await controller.status();
+
+  assert.match(result.message, /Current desktop task/);
+  assert.deepEqual(ownershipStore.threadIds, [threadId]);
+  assert.deepEqual(openedThreads, [threadId]);
+  assert.equal(status.agents.length, 1);
+  assert.equal(status.agents[0].focused, true);
+  assert.equal(status.agents[0].label, "Current desktop task");
+  assert.ok(appServer.calls.some(({ method, params }) => method === "thread/resume" && params.threadId === threadId));
+});
+
+test("refuses to bind a desktop task outside configured workspaces", async () => {
+  const threadId = "019f2ce2-e042-7ab0-a73d-9fa41d58e210";
+  const appServer = new FakeAppServer();
+  appServer.threads = [ownedThread({ id: threadId, cwd: "/tmp/private" })];
+  const { controller, openedThreads, ownershipStore } = makeController(appServer);
+
+  await assert.rejects(
+    controller.bindThread(threadId),
+    /outside the configured Vibe Pocket workspaces/,
+  );
+  assert.deepEqual(ownershipStore.threadIds, []);
+  assert.deepEqual(openedThreads, []);
 });
 
 test("submits phone dictation with direct turn APIs and selected reasoning", async () => {

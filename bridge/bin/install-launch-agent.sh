@@ -35,6 +35,7 @@ mkdir -p "$RUNTIME_DIR"
 rm -rf "$RUNTIME_DIR/node_modules"
 ditto "$BRIDGE_DIR" "$RUNTIME_DIR"
 chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
+chmod +x "$RUNTIME_DIR/bin/attach-current-task.sh"
 # Remove artifacts left by releases that supported macOS Accessibility control.
 rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app" "$RUNTIME_DIR/bin/vibe-pocket-codex-helper"
 rm -f \
@@ -91,6 +92,9 @@ plutil -lint "$PLIST" >/dev/null
 launchctl bootout "gui/$UID" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$UID" "$PLIST"
 launchctl kickstart -k "gui/$UID/$LABEL"
+
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$RUNTIME_DIR/bin/attach-current-task.sh" "$HOME/.local/bin/vibe-pocket-attach"
 
 READY=0
 for _ in {1..80}; do

@@ -874,43 +874,35 @@ private fun WorkflowJoystick(
     val gestureScope = rememberCoroutineScope()
     val viewConfiguration = LocalViewConfiguration.current
     val pendingTapJobs = remember { mutableMapOf<String, Job>() }
-    val pendingTapTimes = remember { mutableMapOf<String, Long>() }
+    val releaseArbiter = remember(viewConfiguration.doubleTapTimeoutMillis) {
+        GestureReleaseArbiter(viewConfiguration.doubleTapTimeoutMillis)
+    }
 
     fun dispatchRelease(inputId: String, downAt: Long, releasedAt: Long) {
-        val holdEnabled = snapshot.inputEnabled(inputId, ControllerGesture.HOLD)
-        if (holdEnabled && releasedAt - downAt >= viewConfiguration.longPressTimeoutMillis) {
-            pendingTapJobs.remove(inputId)?.cancel()
-            pendingTapTimes.remove(inputId)
-            currentOnGesture(inputId, ControllerGesture.HOLD)
-            return
-        }
-
-        val tapEnabled = snapshot.inputEnabled(inputId, ControllerGesture.TAP)
-        val doubleTapEnabled = snapshot.inputEnabled(inputId, ControllerGesture.DOUBLE_TAP)
-        if (!doubleTapEnabled) {
-            if (tapEnabled) currentOnGesture(inputId, ControllerGesture.TAP)
-            return
-        }
-
-        val previousAt = pendingTapTimes[inputId]
-        val pendingJob = pendingTapJobs[inputId]
-        if (previousAt != null && pendingJob?.isActive == true &&
-            releasedAt - previousAt <= viewConfiguration.doubleTapTimeoutMillis
-        ) {
-            pendingJob.cancel()
-            pendingTapJobs.remove(inputId)
-            pendingTapTimes.remove(inputId)
-            currentOnGesture(inputId, ControllerGesture.DOUBLE_TAP)
-            return
-        }
-
-        pendingJob?.cancel()
-        pendingTapTimes[inputId] = releasedAt
-        pendingTapJobs[inputId] = gestureScope.launch {
-            delay(viewConfiguration.doubleTapTimeoutMillis)
-            pendingTapJobs.remove(inputId)
-            pendingTapTimes.remove(inputId)
-            if (tapEnabled) currentOnGesture(inputId, ControllerGesture.TAP)
+        when (val decision = releaseArbiter.release(
+            inputId = inputId,
+            downAt = downAt,
+            releasedAt = releasedAt,
+            tapEnabled = snapshot.inputEnabled(inputId, ControllerGesture.TAP),
+            doubleTapEnabled = snapshot.inputEnabled(inputId, ControllerGesture.DOUBLE_TAP),
+            holdEnabled = snapshot.inputEnabled(inputId, ControllerGesture.HOLD),
+            longPressTimeoutMillis = viewConfiguration.longPressTimeoutMillis,
+        )) {
+            is GestureReleaseDecision.Dispatch -> {
+                pendingTapJobs.remove(inputId)?.cancel()
+                currentOnGesture(inputId, decision.gesture)
+            }
+            is GestureReleaseDecision.DeferTap -> {
+                pendingTapJobs.remove(inputId)?.cancel()
+                pendingTapJobs[inputId] = gestureScope.launch {
+                    delay(viewConfiguration.doubleTapTimeoutMillis)
+                    pendingTapJobs.remove(inputId)
+                    releaseArbiter.completeDeferredTap(inputId, decision.token)?.let { gesture ->
+                        currentOnGesture(inputId, gesture)
+                    }
+                }
+            }
+            GestureReleaseDecision.None -> pendingTapJobs.remove(inputId)?.cancel()
         }
     }
     Box(

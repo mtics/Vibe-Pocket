@@ -45,10 +45,11 @@ in-memory draft until Accept submits it or Clear/Reject discards it. A workflow
 button sends only a fixed workflow ID; the M5 expands it from the persisted
 profile and starts a new Codex app-server task.
 
-Vibe Pocket owns its Codex tasks through a private local registry. It does not
-attach to or manipulate whichever ChatGPT task happens to be visible on the
-desktop. Codex can still use its normal tools inside the selected workspace and
-access mode.
+Vibe Pocket tracks authorized Codex tasks through a private local registry. It
+can create a dedicated task or explicitly attach the current Codex Desktop task
+with `vibe-pocket-attach`. It never guesses the visible task from window focus.
+Codex can still use its normal tools inside the selected workspace and access
+mode.
 
 ## Install The M5 Bridge
 
@@ -85,6 +86,17 @@ Check the local service with:
 curl http://127.0.0.1:4320/healthz
 launchctl print gui/$UID/au.edu.uts.vibepocket.bridge
 ```
+
+From the Codex Desktop task that should receive phone controls, run:
+
+```sh
+vibe-pocket-attach
+```
+
+The command reads that task's `CODEX_THREAD_ID`, verifies that the task belongs
+to a configured workspace, persists only its opaque ID, and focuses it through
+Codex app-server. Run it once in each existing desktop task that should appear
+on an Agent key; tasks created by Vibe Pocket are registered automatically.
 
 Controller mappings are stored outside the repository at:
 
@@ -146,10 +158,11 @@ system recognition service may process audio remotely.
 
 ## First Controller Test
 
-1. Keep the M5 online; ChatGPT may remain closed or in the background.
+1. Keep the M5 online and run `vibe-pocket-attach` in the Codex Desktop task to
+   control.
 2. Open Vibe Pocket and tap Refresh. The status card should turn green and say
    `Ready`.
-3. Tap New task or select one of the six live Agent keys.
+3. Select the attached task on one of the six live Agent keys, or tap New task.
 4. Press and hold Voice, speak, then release. Accept submits the in-memory
    dictation to the focused Codex task; Clear discards it.
 5. Test Agent navigation, collaboration mode, reasoning, and workflows. Workflow
@@ -186,7 +199,8 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 47 Node tests cover profile and owned-task persistence, app-server
+- Bridge: 50 Node tests cover profile and authorized-task persistence, explicit
+  desktop task attachment, app-server
   lifecycle races, permission schemas, modes, reasoning, stop, workflows,
   Codex user-input requests, gestures, layer switching, Agent focus, polling,
   idempotency, authentication, and HTTP health.

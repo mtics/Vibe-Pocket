@@ -113,6 +113,18 @@ export class DesktopCodexService extends EventEmitter {
     };
   }
 
+  async bindDesktopThread(threadId) {
+    const execution = this.#commandQueue.then(async () => {
+      await this.#perform(
+        () => this.#desktop.bindThread(threadId),
+        "Attached the current Codex desktop task.",
+      );
+      return { attached: true, revision: `r_${this.#revision}` };
+    });
+    this.#commandQueue = execution.catch(() => {});
+    return execution;
+  }
+
   async command(command, idempotencyKey) {
     if (!idempotencyKey || idempotencyKey.length > 160) {
       throw new PocketError(400, "idempotency_key_required", "Every controller action needs an Idempotency-Key header.");
