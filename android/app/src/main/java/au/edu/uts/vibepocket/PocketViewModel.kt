@@ -128,7 +128,6 @@ class PocketViewModel(
     ): Boolean {
         val snapshot = _state.value.snapshot ?: return false
         if (!snapshot.inputEnabled(inputId, gesture)) return false
-        if (gesture == ControllerGesture.TAP && snapshot.voiceTapEnabled(inputId)) return false
         return submit(snapshot.commandForInput(inputId, gesture), "input:$inputId:${gesture.wireValue}")
     }
 

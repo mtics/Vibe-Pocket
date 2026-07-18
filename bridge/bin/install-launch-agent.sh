@@ -10,10 +10,15 @@ CONFIG_FILE="$CONFIG_DIR/bridge.env"
 PROFILE_FILE="$CONFIG_DIR/controller-profile.json"
 OWNED_THREADS_FILE="$CONFIG_DIR/owned-threads.json"
 RUNTIME_DIR="$CONFIG_DIR/runtime"
+HOST_APP="$CONFIG_DIR/Vibe Pocket Bridge Host.app"
+HOST_CONTENTS="$HOST_APP/Contents"
+HOST_PATH="$HOST_CONTENTS/MacOS/Vibe Pocket Bridge Host"
+HOST_HASH_FILE="$CONFIG_DIR/bridge-host.sha256"
 LOG_DIR="$HOME/Library/Logs/Vibe Pocket"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NODE_PATH=${VIBE_POCKET_NODE:-$(command -v node)}
 CODEX_PATH=${VIBE_POCKET_CODEX_COMMAND:-$(command -v codex)}
+SWIFTC_PATH=${VIBE_POCKET_SWIFTC:-/usr/bin/swiftc}
 TOKEN=${VIBE_POCKET_TOKEN:-}
 PORT=${VIBE_POCKET_PORT:-4320}
 WORKSPACE=${VIBE_POCKET_WORKSPACE:-${BRIDGE_DIR:h}}
@@ -38,16 +43,55 @@ chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
 chmod +x "$RUNTIME_DIR/bin/attach-current-task.sh"
 chmod +x "$RUNTIME_DIR/bin/report-codex-hook.sh"
 chmod +x "$RUNTIME_DIR/bin/install-codex-hooks.mjs"
-# Remove artifacts left by releases that supported macOS Accessibility control.
+# Remove obsolete direct-control artifacts from earlier releases.
 rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app" "$RUNTIME_DIR/bin/vibe-pocket-codex-helper"
 rm -f \
-  "$RUNTIME_DIR/src/macos-bridge-host.swift" \
   "$RUNTIME_DIR/src/macos-codex-desktop.mjs" \
   "$RUNTIME_DIR/src/macos-codex-helper.swift" \
   "$RUNTIME_DIR/src/pocket-controller-service.mjs" \
   "$RUNTIME_DIR/src/pocket-service.mjs" \
   "$RUNTIME_DIR/test/pocket-controller-service.test.mjs" \
   "$RUNTIME_DIR/test/pocket-service.test.mjs"
+
+HOST_SOURCE="$RUNTIME_DIR/src/macos-bridge-host.swift"
+HOST_SOURCE_HASH=$(shasum -a 256 "$HOST_SOURCE" | awk '{print $1}')
+INSTALLED_HOST_HASH=$(cat "$HOST_HASH_FILE" 2>/dev/null || true)
+if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; then
+  HOST_TEMP="$CONFIG_DIR/Vibe Pocket Bridge Host.app.$$.tmp"
+  rm -rf "$HOST_TEMP"
+  mkdir -p "$HOST_TEMP/Contents/MacOS"
+  "$SWIFTC_PATH" "$HOST_SOURCE" -O -o "$HOST_TEMP/Contents/MacOS/Vibe Pocket Bridge Host"
+  cat > "$HOST_TEMP/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>Vibe Pocket Bridge Host</string>
+  <key>CFBundleIdentifier</key>
+  <string>au.edu.uts.vibepocket.bridge-host</string>
+  <key>CFBundleName</key>
+  <string>Vibe Pocket Bridge Host</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.7.0</string>
+  <key>CFBundleVersion</key>
+  <string>12</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+EOF
+  plutil -lint "$HOST_TEMP/Contents/Info.plist" >/dev/null
+  codesign --force --deep --sign - --identifier au.edu.uts.vibepocket.bridge-host "$HOST_TEMP" >/dev/null
+  rm -rf "$HOST_APP"
+  mv "$HOST_TEMP" "$HOST_APP"
+  printf '%s\n' "$HOST_SOURCE_HASH" > "$HOST_HASH_FILE.tmp"
+  mv "$HOST_HASH_FILE.tmp" "$HOST_HASH_FILE"
+fi
 TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
 {
   printf 'VIBE_POCKET_TOKEN=%q\n' "$TOKEN"
@@ -58,6 +102,7 @@ TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
   printf 'VIBE_POCKET_OWNED_THREADS_PATH=%q\n' "$OWNED_THREADS_FILE"
   printf 'VIBE_POCKET_CODEX_COMMAND=%q\n' "$CODEX_PATH"
   printf 'VIBE_POCKET_NODE=%q\n' "$NODE_PATH"
+  printf 'VIBE_POCKET_SWIFTC=%q\n' "$SWIFTC_PATH"
 } > "$TEMP_CONFIG"
 chmod 600 "$TEMP_CONFIG"
 mv "$TEMP_CONFIG" "$CONFIG_FILE"
@@ -76,6 +121,8 @@ cat > "$PLIST" <<EOF
   <string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
+    <string>$HOST_PATH</string>
+    <string>run</string>
     <string>$RUNTIME_DIR/bin/run-launchd.sh</string>
   </array>
   <key>WorkingDirectory</key>
@@ -118,7 +165,10 @@ if (( ! READY )); then
 fi
 
 print "Vibe Pocket LaunchAgent installed on 127.0.0.1:$PORT."
-print "Codex control engine: app-server (direct JSON-RPC)."
+print "Codex control engine: virtual-hardware compatibility (app-server + macOS Accessibility)."
 print "Codex lifecycle hooks: $HOOKS_RESULT."
 print "Pairing token is stored in $CONFIG_FILE with mode 0600."
-print "macOS Accessibility permission is not used."
+print "Grant Accessibility permission to this signed background host:"
+printf '  %q\n' "$HOST_APP"
+print "Request the macOS prompt with:"
+printf '  open -n -W -a %q --args request-accessibility\n' "$HOST_APP"

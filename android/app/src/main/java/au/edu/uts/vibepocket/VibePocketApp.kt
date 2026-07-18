@@ -1,7 +1,8 @@
 package au.edu.uts.vibepocket
 
 import android.Manifest
-import android.content.pm.PackageManager
+import android.bluetooth.BluetoothAdapter
+import android.content.Intent
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -38,6 +39,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
@@ -162,27 +165,59 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
     val context = LocalContext.current
-    val dictation = remember(context, viewModel) {
-        PhoneDictationController(
-            context = context.applicationContext,
-            onResult = viewModel::submitDictation,
-            onError = viewModel::reportDictationError,
+    val hidController = remember(context) { BluetoothHidKeyboardController(context) }
+    val hidState by hidController.state.collectAsStateWithLifecycle()
+    var pairRequested by remember { mutableStateOf(false) }
+    val discoverableLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        pairRequested = false
+        hidController.refreshHosts()
+    }
+    val launchDiscoverable = {
+        hidController.start()
+        discoverableLauncher.launch(
+            Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
+                .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300),
         )
     }
-    val microphonePermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (!granted) viewModel.reportLocalError("Microphone permission is required for Voice.")
+    val bluetoothEnableLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        hidController.start()
+        if (pairRequested && hidController.state.value.enabled) launchDiscoverable()
+    }
+    val bluetoothPermissions = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
+        } else {
+            emptyArray()
+        }
+    }
+    val nearbyPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (bluetoothPermissions.all { grants[it] == true }) {
+            hidController.start()
+            if (pairRequested) {
+                if (hidController.state.value.enabled) launchDiscoverable()
+                else bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            }
+        } else {
+            pairRequested = false
+            viewModel.reportLocalError("Nearby devices permission is required for Bluetooth keyboard.")
+        }
     }
 
-    DisposableEffect(lifecycleOwner, viewModel, dictation) {
+    LaunchedEffect(hidController) {
+        if (hidController.hasPermissions()) hidController.start()
+    }
+
+    DisposableEffect(lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> viewModel.setForeground(true)
-                Lifecycle.Event.ON_STOP -> {
-                    dictation.cancel()
-                    viewModel.setForeground(false)
-                }
+                Lifecycle.Event.ON_STOP -> viewModel.setForeground(false)
                 else -> Unit
             }
         }
@@ -192,7 +227,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            dictation.destroy()
+            hidController.close()
             viewModel.setForeground(false)
         }
     }
@@ -220,24 +255,17 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         return
     }
 
+    val dispatchInput: (String, ControllerGesture) -> Boolean = { inputId, gesture ->
+        val snapshot = state.snapshot
+        val action = snapshot?.let { CodexHidMapping.actionFor(it, inputId, gesture) }
+        if (hidController.send(action)) true else viewModel.activateInput(inputId, gesture)
+    }
     val onInput: (String, ControllerGesture) -> Unit = { inputId, gesture ->
-        if (viewModel.activateInput(inputId, gesture)) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        if (dispatchInput(inputId, gesture)) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
-    val onVoiceStart: (String) -> Boolean = { inputId ->
-        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-            false
-        } else {
-            val started = viewModel.startVoice(inputId)
-            val listening = started && dictation.start()
-            if (started && !listening) viewModel.stopVoice(inputId)
-            if (listening) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            listening
-        }
-    }
+    val onVoiceStart: (String) -> Boolean = { inputId -> dispatchInput(inputId, ControllerGesture.TAP) }
     val onVoiceStop: (String) -> Unit = { inputId ->
-        viewModel.stopVoice(inputId)
-        dictation.stop()
+        Unit
     }
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -265,7 +293,6 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                         }
                     }
                     IconButton(onClick = {
-                        dictation.cancel()
                         viewModel.disconnect()
                     }) {
                         Icon(Icons.Filled.Close, contentDescription = "Disconnect bridge")
@@ -287,7 +314,21 @@ fun VibePocketApp(viewModel: PocketViewModel) {
             } else {
                 ControllerScreen(
                     snapshot = snapshot,
+                    hidState = hidState,
                     inFlightId = state.inFlightId,
+                    onPairHid = {
+                        pairRequested = true
+                        when {
+                            !hidController.hasPermissions() -> nearbyPermissionLauncher.launch(bluetoothPermissions)
+                            !hidState.enabled -> bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                            else -> launchDiscoverable()
+                        }
+                    },
+                    onConnectHid = hidController::connect,
+                    onRefreshHid = {
+                        if (hidController.hasPermissions()) hidController.start()
+                        hidController.refreshHosts()
+                    },
                     onInput = onInput,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
@@ -366,7 +407,11 @@ private fun ConnectScreen(onConnect: (String, String) -> Unit, error: String?) {
 @Composable
 private fun ControllerScreen(
     snapshot: PocketSnapshot,
+    hidState: HidKeyboardState,
     inFlightId: String?,
+    onPairHid: () -> Unit,
+    onConnectHid: (String) -> Boolean,
+    onRefreshHid: () -> Unit,
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -392,6 +437,12 @@ private fun ControllerScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TaskStatusStrip(snapshot)
+        VirtualHardwarePanel(
+            state = hidState,
+            onPair = onPairHid,
+            onConnect = onConnectHid,
+            onRefresh = onRefreshHid,
+        )
         snapshot.controller?.userInput?.let { CodexQuestionPanel(it) }
         SectionLabel("Agents")
         AgentGrid(
@@ -453,6 +504,78 @@ private fun ControllerScreen(
             )
         }
         Spacer(Modifier.height(18.dp))
+    }
+}
+
+@Composable
+private fun VirtualHardwarePanel(
+    state: HidKeyboardState,
+    onPair: () -> Unit,
+    onConnect: (String) -> Boolean,
+    onRefresh: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
+            .padding(11.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (state.connected) Icons.Default.BluetoothConnected else Icons.Default.Bluetooth,
+                contentDescription = null,
+                tint = if (state.connected) CompleteColor else MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(21.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Virtual hardware", fontWeight = FontWeight.SemiBold)
+                Text(
+                    state.message,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            IconButton(onClick = onRefresh) {
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh Bluetooth hosts")
+            }
+            FilledTonalButton(
+                onClick = onPair,
+                enabled = state.supported,
+                shape = RoundedCornerShape(6.dp),
+                contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+            ) {
+                Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Pair")
+            }
+        }
+        state.pairedHosts.take(4).forEach { host ->
+            val connected = host.address == state.connectedHostAddress
+            val connecting = host.address == state.connectingHostAddress
+            FilledTonalButton(
+                onClick = { onConnect(host.address) },
+                enabled = state.registered && !connected && !connecting,
+                modifier = Modifier.fillMaxWidth().height(42.dp),
+                shape = RoundedCornerShape(6.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = if (connected) CompleteColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            ) {
+                if (connecting) {
+                    CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        if (connected) Icons.Default.Check else Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(host.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
     }
 }
 

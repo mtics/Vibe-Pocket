@@ -1,9 +1,11 @@
 # Vibe Pocket control transport
 
-Select exactly one implementation target before the next feature phase.
+The selected implementation is split into a strict hardware target and a compatible control path.
 
 - `direct-task`: supported Codex app-server and hooks; controls tasks, not Codex window commands.
-- `virtual-hardware`: emulate the Work Louder device protocol over BLE; highest Micro fidelity, hardware feasibility unproven.
-- `desktop-ui`: invoke visible Codex commands through macOS UI automation; rejected for the current product direction.
+- `virtual-hardware`: selected. Xiaomi 13 exposes Android HID Device and BLE GATT capabilities.
+- `strict-project2077`: blocked by the official USB-only VID/PID/usage-page discovery and private RPC protocol.
+- `compatibility`: generic Bluetooth HID for standard keys plus macOS Accessibility for Codex window commands.
 
-Selected target: `TODO`
+Selected target: `virtual-hardware`
+Compatibility path: `macOS Accessibility`
