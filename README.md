@@ -33,7 +33,10 @@ M5:
   review, debug, refactor, or test workflow on release.
 - A stepped dial changes the visible Codex reasoning selector by one verified
   UI step.
-- Six programmable layers persist across bridge restarts.
+- Six programmable layers persist across bridge restarts. Hold the phone's L1
+  control with Accept, Reject, Voice, New task, Up, or Down to select layers
+  1 through 6, respectively. A 750 ms guard prevents the layer chord from
+  leaking into a newly selected mapping.
 - A mapped input can switch directly to any of the six layers. Layer names,
   colors, and the four workflow prompts are editable on the phone and persist
   in the M5 profile.
@@ -169,7 +172,9 @@ request microphone, Bluetooth scanning, or location access.
 4. Select a visible Agent key, or tap New task.
 5. Test Agent navigation, collaboration mode, reasoning, and workflows.
    Workflow directions deliberately create and submit a new visible task.
-6. Open the Settings icon to edit mappings, layer colors, and workflow prompts.
+6. Hold L1 with Accept, Reject, Voice, New task, Up, or Down to switch to
+   layers 1 through 6. Open the Settings icon to edit mappings, layer colors,
+   and workflow prompts.
    Map any gesture to `Select layer 1` through `Select layer 6` to make layer
    switching part of the controller surface. `Next access level` independently
    cycles Read only, Workspace, and Full access.
@@ -191,7 +196,8 @@ only a bounded task label and state; task execution remains inside Codex.
 - The bridge does not expose task text, historical conversations, OpenAI
   credentials, raw keyboard sequences, or direct shell execution endpoints.
 - Android delegates Bluetooth pairing keys and trust decisions to the platform;
-  Vibe Pocket stores only the selected host address in process memory.
+  Vibe Pocket stores only the user-selected host address in private app storage
+  so it can restore that explicit HID connection after an app or Bluetooth restart.
 - Idempotency keys are request-bound and bounded; duplicate rapid presses on
   the same Android control are suppressed while Bridge desktop actions remain
   ordered.

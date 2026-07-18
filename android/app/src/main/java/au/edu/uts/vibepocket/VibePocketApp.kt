@@ -290,8 +290,10 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
-    val onLayer: (String) -> Unit = { layerId ->
-        if (viewModel.selectLayer(layerId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+    val onLayer: (String) -> Boolean = { layerId ->
+        viewModel.selectLayer(layerId).also { selected ->
+            if (selected) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
     }
 
     Scaffold(
@@ -438,7 +440,7 @@ private fun ControllerScreen(
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     onAgent: (String) -> Unit,
-    onLayer: (String) -> Unit,
+    onLayer: (String) -> Boolean,
 ) {
     val controller = snapshot.controller
     val inputs = controller?.profile?.inputs.orEmpty()
@@ -449,6 +451,40 @@ private fun ControllerScreen(
     val touchInput = inputs.firstOrNull { it.kind == InputKind.TOUCH }
     val joystickInputs = inputs.filter { it.kind == InputKind.JOYSTICK }
     val dialInputs = inputs.filter { it.kind == InputKind.DIAL }
+    val layerScope = rememberCoroutineScope()
+    var layerModifierPressed by remember { mutableStateOf(false) }
+    var layerGuardActive by remember { mutableStateOf(false) }
+
+    fun armLayerGuard() {
+        layerGuardActive = true
+        layerScope.launch {
+            delay(LAYER_SHIFT_GUARD_MILLIS)
+            layerGuardActive = false
+        }
+    }
+
+    fun routeLayerInput(inputId: String, gesture: ControllerGesture): Boolean = when (
+        val route = routeLayerShift(inputId, gesture, layerModifierPressed, layerGuardActive)
+    ) {
+        LayerShiftRoute.Pass -> false
+        LayerShiftRoute.Suppress -> true
+        is LayerShiftRoute.Select -> {
+            if (onLayer(route.layerId)) armLayerGuard()
+            true
+        }
+    }
+
+    val routedInput: (String, ControllerGesture) -> Unit = { inputId, gesture ->
+        if (!routeLayerInput(inputId, gesture)) onInput(inputId, gesture)
+    }
+    val routedVoiceStart: (String) -> Boolean = { inputId ->
+        if (routeLayerInput(inputId, ControllerGesture.TAP)) false else onVoiceStart(inputId)
+    }
+    val routedNavigationRepeat: (String, Boolean) -> Unit = { inputId, initial ->
+        if (!initial || !routeLayerInput(inputId, ControllerGesture.TAP)) {
+            onNavigationRepeat(inputId, initial)
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -457,12 +493,6 @@ private fun ControllerScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TaskStatusStrip(snapshot)
-        VirtualHardwarePanel(
-            state = hidState,
-            onPair = onPairHid,
-            onConnect = onConnectHid,
-            onRefresh = onRefreshHid,
-        )
         snapshot.controller?.userInput?.let { CodexQuestionPanel(it) }
         SectionLabel("Agents")
         AgentGrid(
@@ -478,6 +508,8 @@ private fun ControllerScreen(
                 inFlightIds = inFlightIds,
                 enabled = snapshot.status.state == "ready",
                 onLayer = onLayer,
+                modifierPressed = layerModifierPressed,
+                onModifierPressed = { layerModifierPressed = it },
             )
         }
         ModeAndFocus(
@@ -486,9 +518,11 @@ private fun ControllerScreen(
             touchInput = touchInput,
             snapshot = snapshot,
             inFlightIds = inFlightIds,
-            onInput = onInput,
-            onVoiceStart = onVoiceStart,
+            onInput = routedInput,
+            onVoiceStart = routedVoiceStart,
             onVoiceStop = onVoiceStop,
+            layerModifierPressed = layerModifierPressed,
+            inputBlocked = layerGuardActive,
         )
         SectionLabel("Command keys")
         CommandKeyGrid(
@@ -496,10 +530,13 @@ private fun ControllerScreen(
             snapshot = snapshot,
             hidNavigationAvailable = hidState.connected,
             inFlightIds = inFlightIds,
-            onInput = onInput,
-            onNavigationRepeat = onNavigationRepeat,
-            onVoiceStart = onVoiceStart,
+            onInput = routedInput,
+            onNavigationRepeat = routedNavigationRepeat,
+            onVoiceStart = routedVoiceStart,
             onVoiceStop = onVoiceStop,
+            layerModifierPressed = layerModifierPressed,
+            inputBlocked = layerGuardActive,
+            onLayerChord = { inputId -> routeLayerInput(inputId, ControllerGesture.TAP) },
         )
         if (joystickInputs.isNotEmpty()) {
             SectionLabel("Workflows")
@@ -507,9 +544,10 @@ private fun ControllerScreen(
                 inputs = joystickInputs,
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
-                onGesture = onInput,
-                onVoiceStart = onVoiceStart,
+                onGesture = routedInput,
+                onVoiceStart = routedVoiceStart,
                 onVoiceStop = onVoiceStop,
+                inputBlocked = layerGuardActive,
             )
         }
         if (dialInputs.isNotEmpty()) {
@@ -519,11 +557,18 @@ private fun ControllerScreen(
                 reasoning = controller?.reasoning ?: SelectorStatus(false, "Unavailable"),
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
-                onInput = onInput,
-                onVoiceStart = onVoiceStart,
+                onInput = routedInput,
+                onVoiceStart = routedVoiceStart,
                 onVoiceStop = onVoiceStop,
+                inputBlocked = layerGuardActive,
             )
         }
+        VirtualHardwarePanel(
+            state = hidState,
+            onPair = onPairHid,
+            onConnect = onConnectHid,
+            onRefresh = onRefreshHid,
+        )
         Spacer(Modifier.height(18.dp))
     }
 }
@@ -775,9 +820,17 @@ private fun LayerSelector(
     activeLayerId: String?,
     inFlightIds: Set<String>,
     enabled: Boolean,
-    onLayer: (String) -> Unit,
+    onLayer: (String) -> Boolean,
+    modifierPressed: Boolean,
+    onModifierPressed: (Boolean) -> Unit,
 ) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LayerModifierKey(
+            pressed = modifierPressed,
+            enabled = enabled,
+            onPressed = onModifierPressed,
+            modifier = Modifier.weight(1f),
+        )
         layers.forEachIndexed { index, layer ->
             val selected = layer.id == activeLayerId
             val layerColor = parseProfileColor(layer.color)
@@ -803,6 +856,42 @@ private fun LayerSelector(
 }
 
 @Composable
+private fun LayerModifierKey(
+    pressed: Boolean,
+    enabled: Boolean,
+    onPressed: (Boolean) -> Unit,
+    modifier: Modifier,
+) {
+    Box(
+        modifier = modifier
+            .height(42.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (pressed) MaterialTheme.colorScheme.secondary.copy(alpha = 0.28f) else MaterialTheme.colorScheme.surfaceVariant)
+            .border(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = if (pressed) 1f else 0.52f), RoundedCornerShape(6.dp))
+            .semantics { contentDescription = "Layer shift modifier" }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    onPressed(true)
+                    try {
+                        var stillPressed = true
+                        while (stillPressed) {
+                            val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                            stillPressed = change?.pressed == true
+                        }
+                    } finally {
+                        onPressed(false)
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("L1", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+    }
+}
+
+@Composable
 private fun ModeAndFocus(
     mode: SelectorStatus,
     access: SelectorStatus,
@@ -812,6 +901,8 @@ private fun ModeAndFocus(
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    layerModifierPressed: Boolean,
+    inputBlocked: Boolean,
 ) {
     Row(
         modifier = Modifier
@@ -846,6 +937,8 @@ private fun ModeAndFocus(
                 onInput = onInput,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
+                layerModifierPressed = layerModifierPressed,
+                inputBlocked = inputBlocked,
                 modifier = Modifier.width(142.dp).height(54.dp),
             )
         }
@@ -862,6 +955,9 @@ private fun CommandKeyGrid(
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    layerModifierPressed: Boolean,
+    inputBlocked: Boolean,
+    onLayerChord: (String) -> Boolean,
 ) {
     inputs.chunked(3).forEach { rowInputs ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -875,6 +971,9 @@ private fun CommandKeyGrid(
                     onNavigationRepeat = onNavigationRepeat,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
+                    layerModifierPressed = layerModifierPressed,
+                    inputBlocked = inputBlocked,
+                    onLayerChord = onLayerChord,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -893,6 +992,9 @@ private fun CommandKey(
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    layerModifierPressed: Boolean,
+    inputBlocked: Boolean,
+    onLayerChord: (String) -> Boolean,
     modifier: Modifier,
 ) {
     GestureControl(
@@ -904,6 +1006,9 @@ private fun CommandKey(
         onNavigationRepeat = onNavigationRepeat,
         onVoiceStart = onVoiceStart,
         onVoiceStop = onVoiceStop,
+        layerModifierPressed = layerModifierPressed,
+        inputBlocked = inputBlocked,
+        onLayerChord = onLayerChord,
         modifier = modifier.height(66.dp),
     )
 }
@@ -918,6 +1023,9 @@ private fun GestureControl(
     onNavigationRepeat: (String, Boolean) -> Unit = { _, _ -> },
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    layerModifierPressed: Boolean = false,
+    inputBlocked: Boolean = false,
+    onLayerChord: (String) -> Boolean = { false },
     modifier: Modifier,
 ) {
     val enabledGestures = ControllerGesture.entries.filter { snapshot.inputEnabled(input.id, it) }
@@ -926,13 +1034,16 @@ private fun GestureControl(
     val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
     val holdEnabled = ControllerGesture.HOLD in enabledGestures
     val inputPending = inFlightIds.any { it.startsWith("input:${input.id}:") }
-    val voicePressEnabled = voiceTap && !inputPending
-    val interactive = !inputPending && (voiceTap || enabledGestures.isNotEmpty())
+    val effectiveVoiceTap = voiceTap && !layerModifierPressed
+    val voicePressEnabled = effectiveVoiceTap && !inputPending && !inputBlocked
+    val interactive = !inputBlocked && !inputPending && (effectiveVoiceTap || enabledGestures.isNotEmpty())
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     val currentNavigationRepeat by rememberUpdatedState(onNavigationRepeat)
+    val currentLayerChord by rememberUpdatedState(onLayerChord)
     val loading = inputPending
-    val repeatNavigation = navigationRepeatEnabled && !inputPending
+    val repeatNavigation = navigationRepeatEnabled && !inputPending && !inputBlocked && !layerModifierPressed
+    val layerChordEnabled = layerModifierPressed && !inputBlocked && isLayerShiftTarget(input.id)
     val container = when (input.id) {
         "key_accept" -> MaterialTheme.colorScheme.primaryContainer
         "key_reject", "key_stop" -> ErrorColor.copy(alpha = 0.18f)
@@ -943,6 +1054,20 @@ private fun GestureControl(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
             .background(container)
+            .pointerInput(input.id, layerChordEnabled) {
+                if (!layerChordEnabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (!currentLayerChord(input.id)) return@awaitEachGesture
+                    down.consume()
+                    var pressed = true
+                    while (pressed) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                        pressed = change?.pressed == true
+                        change?.consume()
+                    }
+                }
+            }
             .pointerInput(input.id, voicePressEnabled) {
                 if (!voicePressEnabled) return@pointerInput
                 awaitEachGesture {
@@ -978,9 +1103,9 @@ private fun GestureControl(
                 }
             }
             .combinedClickable(
-                enabled = !voiceTap && enabledGestures.isNotEmpty() && !inputPending && !repeatNavigation,
+                enabled = !effectiveVoiceTap && enabledGestures.isNotEmpty() && !inputPending && !inputBlocked && !repeatNavigation,
                 onClick = {
-                    if (!voiceTap && tapEnabled) {
+                    if (!effectiveVoiceTap && tapEnabled) {
                         onInput(input.id, ControllerGesture.TAP)
                     }
                 },
@@ -1030,14 +1155,15 @@ private fun WorkflowJoystick(
     onGesture: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    inputBlocked: Boolean,
 ) {
     val byDirection = remember(inputs) { inputs.associateBy { it.id.substringAfterLast('_') } }
     val enabledIds = inputs.filter { input ->
-        !inFlightIds.any { it.startsWith("input:${input.id}:") }
+        !inputBlocked && !inFlightIds.any { it.startsWith("input:${input.id}:") }
             && ControllerGesture.entries.any { snapshot.inputEnabled(input.id, it) }
     }.mapTo(mutableSetOf(), ControllerInput::id)
     val voiceIds = inputs.filter {
-        snapshot.voiceTapEnabled(it.id) && !inFlightIds.any { pending -> pending.startsWith("input:${it.id}:") }
+        !inputBlocked && snapshot.voiceTapEnabled(it.id) && !inFlightIds.any { pending -> pending.startsWith("input:${it.id}:") }
     }.mapTo(mutableSetOf(), ControllerInput::id)
     var selectedId by remember { mutableStateOf<String?>(null) }
     val currentOnGesture by rememberUpdatedState(onGesture)
@@ -1089,7 +1215,8 @@ private fun WorkflowJoystick(
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surface)
                 .border(1.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-                .pointerInput(enabledIds, voiceIds, inputs) {
+                .pointerInput(enabledIds, voiceIds, inputs, inputBlocked) {
+                    if (inputBlocked) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val downAt = down.uptimeMillis
@@ -1187,6 +1314,7 @@ private fun ReasoningDial(
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    inputBlocked: Boolean,
 ) {
     val counterClockwise = inputs.firstOrNull { it.id.endsWith("ccw") }
     val clockwise = inputs.firstOrNull { it.id.endsWith("cw") && !it.id.endsWith("ccw") }
@@ -1206,6 +1334,7 @@ private fun ReasoningDial(
             onInput,
             onVoiceStart,
             onVoiceStop,
+            inputBlocked,
         )
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Box(
@@ -1234,6 +1363,7 @@ private fun ReasoningDial(
             onInput,
             onVoiceStart,
             onVoiceStop,
+            inputBlocked,
         )
     }
 }
@@ -1247,6 +1377,7 @@ private fun DialStepButton(
     onInput: (String, ControllerGesture) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    inputBlocked: Boolean,
 ) {
     val enabledGestures = if (input == null) emptyList() else {
         ControllerGesture.entries.filter { snapshot.inputEnabled(input.id, it) }
@@ -1254,7 +1385,7 @@ private fun DialStepButton(
     val inputPending = input?.let { candidate ->
         inFlightIds.any { it.startsWith("input:${candidate.id}:") }
     } == true
-    val enabled = input != null && enabledGestures.isNotEmpty() && !inputPending
+    val enabled = !inputBlocked && input != null && enabledGestures.isNotEmpty() && !inputPending
     val voiceTap = input?.let { snapshot.voiceTapEnabled(it.id) } == true
     val tapEnabled = ControllerGesture.TAP in enabledGestures
     val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
