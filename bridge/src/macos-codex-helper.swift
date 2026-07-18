@@ -579,7 +579,8 @@ private func stableAgentID(for element: AXUIElement, fallbackPath: String) -> St
 }
 
 private let activeVoiceLabels: Set<String> = [
-  "停止听写", "停止语音输入", "stop dictation", "stop voice input", "stop recording",
+  "停止听写", "结束听写", "停止语音输入", "结束语音输入", "停止录音", "结束录音",
+  "stop dictation", "stop voice input", "stop recording",
 ]
 
 private func voiceIsActive(in index: AreaIndex) -> Bool {
@@ -612,7 +613,7 @@ private func controlAvailability(in index: AreaIndex, hasAgents: Bool) -> [Strin
     "mode-cycle": hasMessageInput && !isExecuting,
     "access-cycle": accessModeButton(in: index) != nil && !isExecuting,
     "navigate": true,
-    "reasoning": reasoningPopup(in: index) != nil && !isExecuting,
+    "reasoning": reasoningPopup(in: index) != nil,
     "workflow": direct[DesktopControl.newTask.rawValue] == true && hasMessageInput,
   ]) { _, new in new }
 }
@@ -1158,8 +1159,7 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       throw HelperFailure.message("Reasoning depth must move by one step.")
     }
     let (application, area) = try desktop(activateDesktop: true)
-    guard controlButton(.stop, in: area) == nil,
-          let popup = reasoningPopup(in: area) else {
+    guard let popup = reasoningPopup(in: area) else {
       throw HelperFailure.message("The ChatGPT Codex reasoning level is not currently adjustable.")
     }
     let beforeTitle = attributeString(popup, kAXTitleAttribute as CFString)

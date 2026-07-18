@@ -460,7 +460,12 @@ export class DesktopCodexService extends EventEmitter {
     }
     const result = await this.#desktop.setVoice(active);
     this.#controllerState.voice = { ...this.#controllerState.voice, active };
-    this.#recordAction(result?.message ?? (active ? "Started ChatGPT Codex dictation." : "Stopped ChatGPT Codex dictation."));
+    // A press-to-talk release can enqueue the matching stop immediately after
+    // start. Let the common delayed scan publish the stable final state once.
+    this.#recordAction(
+      result?.message ?? (active ? "Started ChatGPT Codex dictation." : "Stopped ChatGPT Codex dictation."),
+      { publish: false },
+    );
     this.#scheduleActionRefresh();
   }
 

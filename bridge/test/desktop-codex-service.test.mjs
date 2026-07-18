@@ -304,6 +304,22 @@ test("serializes push-to-talk target states without losing release", async () =>
   assert.equal((await service.snapshot()).controller.voice.active, false);
 });
 
+test("does not publish transient push-to-talk snapshots", async () => {
+  const events = new FakeEvents();
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop, events);
+  await service.start();
+  const publishedBeforeVoice = events.published.length;
+
+  await service.command({ kind: "voice_start" }, "voice-no-flash-down");
+  await service.command({ kind: "voice_stop" }, "voice-no-flash-up");
+  await new Promise((resolve) => setTimeout(resolve, 220));
+
+  assert.equal(events.published.length, publishedBeforeVoice);
+  assert.equal((await service.snapshot()).controller.voice.active, false);
+  await service.dispose();
+});
+
 test("keeps confirmed desktop push-to-talk state across a desktop refresh", async () => {
   const desktop = new FakeDesktop();
   const service = makeService(desktop);
