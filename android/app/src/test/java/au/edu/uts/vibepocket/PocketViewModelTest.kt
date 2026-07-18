@@ -64,6 +64,31 @@ class PocketViewModelTest {
     }
 
     @Test
+    fun repeatableControlsQueueEveryPhysicalStep() = runTest(dispatcher) {
+        val config = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
+        val client = BlockingClient()
+        val viewModel = PocketViewModel(
+            store = FakeStore(config),
+            client = client,
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.activateInput("key_mode"))
+        assertTrue(viewModel.activateInput("key_mode"))
+        runCurrent()
+
+        assertEquals(
+            listOf(
+                PocketCommand.Binding("key_mode", ControllerGesture.TAP),
+                PocketCommand.Binding("key_mode", ControllerGesture.TAP),
+            ),
+            client.commands,
+        )
+        assertEquals(2, viewModel.state.value.inFlightIds.size)
+    }
+
+    @Test
     fun backgroundRefreshKeepsAnAlreadyLoadedControllerInteractive() = runTest(dispatcher) {
         val config = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
         val client = BlockingRefreshClient()
@@ -248,13 +273,14 @@ class PocketViewModelTest {
         val VOICE_SNAPSHOT = PocketSnapshot(
             revision = "r_test",
             status = BridgeStatus("ready", null),
-            controls = DesktopControls(voice = true, approve = true),
+            controls = DesktopControls(voice = true, approve = true, modeCycle = true),
             controller = ControllerState(
                 profile = ControllerProfile(
                     version = 2,
                     inputs = listOf(
                         ControllerInput("key_accept", InputKind.KEY, "Accept", "check"),
                         ControllerInput("key_voice", InputKind.KEY, "Voice", "mic"),
+                        ControllerInput("key_mode", InputKind.KEY, "Mode", "cycle"),
                     ),
                     workflows = emptyList(),
                     layers = listOf(
@@ -269,6 +295,9 @@ class PocketViewModelTest {
                                 "key_voice" to BindingDescriptor(
                                     mapOf(ControllerGesture.TAP to ControllerAction("voice")),
                                 ),
+                                "key_mode" to BindingDescriptor(
+                                    mapOf(ControllerGesture.TAP to ControllerAction("mode_cycle")),
+                                ),
                             ),
                         ),
                     ),
@@ -277,6 +306,7 @@ class PocketViewModelTest {
                 actionCatalog = listOf(
                     ActionCatalogEntry("approve", "Approve", ControllerAction("approve")),
                     ActionCatalogEntry("voice", "Voice", ControllerAction("voice")),
+                    ActionCatalogEntry("mode", "Mode", ControllerAction("mode_cycle")),
                 ),
                 activeLayerId = "layer-1",
                 taskState = TaskState.IDLE,

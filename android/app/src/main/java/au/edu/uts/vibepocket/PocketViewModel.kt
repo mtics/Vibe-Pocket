@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 class PocketViewModel(
     private val store: ConfigStore,
@@ -39,6 +40,7 @@ class PocketViewModel(
     val feedback: SharedFlow<PocketFeedback> = _feedback.asSharedFlow()
 
     private val pendingCommandIds = ConcurrentHashMap.newKeySet<String>()
+    private val queuedCommandSequence = AtomicLong(0)
     private val voiceStateLock = Any()
     private val pendingVoiceCommands = ArrayDeque<VoiceCommand>()
     private val voiceScopeJob = SupervisorJob()
@@ -50,6 +52,7 @@ class PocketViewModel(
     private val refreshRequested = AtomicBoolean(false)
     @Volatile private var foreground = false
     @Volatile private var lastEventId: String? = null
+    @Volatile private var eventConnectionError: String? = null
     private var events: PocketEventStream? = null
 
     init {
@@ -69,6 +72,7 @@ class PocketViewModel(
         store.save(config)
         stopEvents()
         lastEventId = null
+        eventConnectionError = null
         _state.value = PocketUiState(config = config)
         if (foreground) startEvents(config)
         refresh()
@@ -78,6 +82,7 @@ class PocketViewModel(
         stopOwnedVoice()
         stopEvents()
         lastEventId = null
+        eventConnectionError = null
         store.clear()
         _state.value = PocketUiState()
     }
@@ -139,7 +144,13 @@ class PocketViewModel(
     ): Boolean {
         val snapshot = _state.value.snapshot ?: return false
         if (!snapshot.inputEnabled(inputId, gesture)) return false
-        return submit(snapshot.commandForInput(inputId, gesture), "input:$inputId:${gesture.wireValue}")
+        val repeatable = snapshot.actionFor(inputId, gesture)?.allowsQueuedRepeat() == true
+        val inFlightId = if (repeatable) {
+            "input:$inputId:${gesture.wireValue}:${queuedCommandSequence.incrementAndGet()}"
+        } else {
+            "input:$inputId:${gesture.wireValue}"
+        }
+        return submit(snapshot.commandForInput(inputId, gesture), inFlightId)
     }
 
     fun startVoice(inputId: String): Boolean {
@@ -314,10 +325,20 @@ class PocketViewModel(
         events = PocketEventStream(
             config = config,
             lastEventId = lastEventId,
+            onConnected = {
+                val recoveredError = eventConnectionError
+                eventConnectionError = null
+                if (recoveredError != null && foreground && _state.value.config == config) {
+                    _state.update { current ->
+                        if (current.error == recoveredError) current.copy(error = null) else current
+                    }
+                }
+            },
             onSnapshotChanged = ::refresh,
             onEventId = { lastEventId = it },
             onDisconnected = { message ->
                 if (foreground && _state.value.config == config) {
+                    eventConnectionError = message
                     _state.update { it.copy(error = message) }
                 }
             },

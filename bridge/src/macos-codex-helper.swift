@@ -391,11 +391,16 @@ private func taskList(in root: AXUIElement) -> AXUIElement? {
   let lists = descendants(of: root, maxDepth: 22) {
     attributeString($0, kAXRoleAttribute as CFString) == "AXList"
   }
-  let matching = lists.filter {
-    taskListLabels.contains(normalizedAttribute($0, kAXDescriptionAttribute as CFString))
-      || taskListLabels.contains(normalizedAttribute($0, kAXTitleAttribute as CFString))
+  let candidates = lists.compactMap { list -> (list: AXUIElement, rows: Int, named: Bool)? in
+    let rows = taskRows(in: list).count
+    guard rows > 0 else { return nil }
+    let named = taskListLabels.contains(normalizedAttribute(list, kAXDescriptionAttribute as CFString))
+      || taskListLabels.contains(normalizedAttribute(list, kAXTitleAttribute as CFString))
+    return (list, rows, named)
   }
-  return matching.max(by: { taskRows(in: $0).count < taskRows(in: $1).count })
+  let namedCandidates = candidates.filter(\.named)
+  return (namedCandidates.isEmpty ? candidates : namedCandidates)
+    .max(by: { $0.rows < $1.rows })?.list
 }
 
 private func taskLabel(in button: AXUIElement) -> String? {

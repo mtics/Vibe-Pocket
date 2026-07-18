@@ -66,6 +66,7 @@ class PocketBridgeClient : PocketClient {
 class PocketEventStream(
     private val config: ConnectionConfig,
     lastEventId: String?,
+    private val onConnected: () -> Unit,
     private val onSnapshotChanged: () -> Unit,
     private val onEventId: (String) -> Unit,
     private val onDisconnected: (String) -> Unit,
@@ -115,6 +116,7 @@ class PocketEventStream(
             stream.disconnect()
             throw BridgeException("The controller event connection was rejected.")
         }
+        onConnected()
         var event = ""
         var eventId = ""
         stream.inputStream.bufferedReader().useLines { lines ->

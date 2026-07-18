@@ -224,6 +224,17 @@ data class ControllerAction(
     }
 }
 
+/** Physical controls that represent a sequence of discrete steps, not one idempotent command. */
+internal fun ControllerAction.allowsQueuedRepeat(): Boolean = type in setOf(
+    "navigate",
+    "mode_cycle",
+    "access_cycle",
+    "reasoning_depth",
+)
+
+internal fun PocketSnapshot.inputAllowsQueuedRepeat(inputId: String): Boolean =
+    actionFor(inputId, ControllerGesture.TAP)?.allowsQueuedRepeat() == true
+
 data class ActionCatalogEntry(
     val id: String,
     val label: String,

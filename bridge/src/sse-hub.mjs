@@ -21,6 +21,16 @@ export class SseHub {
     this.#ensureHeartbeat();
 
     const lastId = Number.parseInt(request.headers["last-event-id"] ?? "0", 10);
+    const latestId = this.#history.at(-1)?.id ?? 0;
+    if (!Number.isNaN(lastId) && lastId > latestId) {
+      // A bridge restart resets its in-memory sequence. The caller's cursor
+      // cannot be replayed, so force exactly one fresh controller snapshot.
+      const reset = { id: this.#nextId++, type: "snapshot_changed", data: { reason: "history_reset" } };
+      this.#history.push(reset);
+      if (this.#history.length > this.historyLimit) this.#history.shift();
+      response.write(formatEvent(reset));
+      return;
+    }
     for (const event of this.#history) {
       if (!Number.isNaN(lastId) && event.id > lastId) {
         response.write(formatEvent(event));

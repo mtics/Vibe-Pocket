@@ -1034,7 +1034,8 @@ private fun GestureControl(
     val tapEnabled = ControllerGesture.TAP in enabledGestures
     val doubleTapEnabled = ControllerGesture.DOUBLE_TAP in enabledGestures
     val holdEnabled = ControllerGesture.HOLD in enabledGestures
-    val inputPending = inFlightIds.any { it.startsWith("input:${input.id}:") }
+    val inputPending = inFlightIds.any { it.startsWith("input:${input.id}:") } &&
+        !snapshot.inputAllowsQueuedRepeat(input.id)
     val effectiveVoiceTap = voiceTap && !layerModifierPressed
     val voicePressEnabled = effectiveVoiceTap && !inputPending && !inputBlocked
     val interactive = !inputBlocked && !inputPending && (effectiveVoiceTap || enabledGestures.isNotEmpty())
@@ -1321,7 +1322,10 @@ private fun ReasoningDial(
     val clockwise = inputs.firstOrNull { it.id.endsWith("cw") && !it.id.endsWith("ccw") }
     val counterClockwiseEnabled = counterClockwise?.let { snapshot.inputEnabled(it.id, ControllerGesture.TAP) } == true
     val clockwiseEnabled = clockwise?.let { snapshot.inputEnabled(it.id, ControllerGesture.TAP) } == true
-    val inputPending = inputs.any { input -> inFlightIds.any { pending -> pending.startsWith("input:${input.id}:") } }
+    val inputPending = inputs.any { input ->
+        inFlightIds.any { pending -> pending.startsWith("input:${input.id}:") } &&
+            !snapshot.inputAllowsQueuedRepeat(input.id)
+    }
     val rotationEnabled = !inputBlocked && !inputPending && (counterClockwiseEnabled || clockwiseEnabled)
     val currentOnInput by rememberUpdatedState(onInput)
     val view = LocalView.current
@@ -1448,7 +1452,8 @@ private fun DialStepButton(
         ControllerGesture.entries.filter { snapshot.inputEnabled(input.id, it) }
     }
     val inputPending = input?.let { candidate ->
-        inFlightIds.any { it.startsWith("input:${candidate.id}:") }
+        inFlightIds.any { it.startsWith("input:${candidate.id}:") } &&
+            !snapshot.inputAllowsQueuedRepeat(candidate.id)
     } == true
     val enabled = !inputBlocked && input != null && enabledGestures.isNotEmpty() && !inputPending
     val voiceTap = input?.let { snapshot.voiceTapEnabled(it.id) } == true
