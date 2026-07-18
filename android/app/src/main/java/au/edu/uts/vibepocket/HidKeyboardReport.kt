@@ -41,30 +41,7 @@ internal object HidKeyboardReport {
 }
 
 internal object CodexHidMapping {
-    fun actionFor(
-        snapshot: PocketSnapshot,
-        inputId: String,
-        gesture: ControllerGesture,
-    ): ControllerAction? = snapshot.actionFor(inputId, gesture)
-        ?: if (gesture == ControllerGesture.TAP && snapshot.controller?.profile == null) {
-            when (inputId) {
-                "key_accept" -> ControllerAction("approve")
-                "key_reject" -> ControllerAction("reject")
-                "key_voice" -> ControllerAction("voice")
-                "key_stop" -> ControllerAction("stop")
-                "key_mode" -> ControllerAction("mode_cycle")
-                "key_clear" -> ControllerAction("clear_input")
-                "key_up" -> ControllerAction("navigate", direction = "up")
-                "key_down" -> ControllerAction("navigate", direction = "down")
-                "key_left" -> ControllerAction("navigate", direction = "left")
-                "key_right" -> ControllerAction("navigate", direction = "right")
-                else -> null
-            }
-        } else {
-            null
-        }
-
-    fun chords(action: ControllerAction?): List<HidChord>? = when (action?.type) {
+    fun chords(action: ControllerAction): List<HidChord>? = when (action.type) {
         "approve" -> listOf(HidChord(usage = HidKeyboardReport.USAGE_ENTER))
         "reject", "stop" -> listOf(HidChord(usage = HidKeyboardReport.USAGE_ESCAPE))
         "new_task" -> listOf(
@@ -106,28 +83,6 @@ internal object CodexHidMapping {
         }
         else -> null
     }
-
-    fun shouldUseHid(
-        action: ControllerAction?,
-        hasUserInput: Boolean,
-        desktopFocused: Boolean,
-    ): Boolean {
-        if (!desktopFocused || hasUserInput || chords(action) == null) return false
-        return action?.type in setOf(
-            "approve",
-            "reject",
-            "stop",
-            "mode_cycle",
-            "navigate",
-            "reasoning_depth",
-        )
-    }
-
-    fun shouldHoldOverHid(
-        action: ControllerAction?,
-        hasUserInput: Boolean,
-        desktopFocused: Boolean,
-    ): Boolean = desktopFocused && !hasUserInput && action?.type == "voice" && chords(action)?.size == 1
 
     private const val semanticCommandModifiers =
         HidKeyboardReport.MODIFIER_LEFT_CONTROL or

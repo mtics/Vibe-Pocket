@@ -78,7 +78,7 @@ internal fun inferredComputerHostToReconnect(
     registered && connectedAddress == null && connectingAddress == null && it in bondedAddresses
 }
 
-class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
+class BluetoothHidKeyboardController(context: Context) : AutoCloseable, ControllerHidTransport {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
@@ -264,7 +264,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     }
 
     @SuppressLint("MissingPermission")
-    fun send(action: ControllerAction?): Boolean {
+    override fun send(action: ControllerAction): Boolean {
         val chords = CodexHidMapping.chords(action) ?: return false
         if (!hasPermissions()) return false
         val device = connectedHost ?: return false
@@ -291,7 +291,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     }
 
     @SuppressLint("MissingPermission")
-    fun pressAndHold(action: ControllerAction?): Boolean {
+    override fun pressAndHold(action: ControllerAction): Boolean {
         val chord = CodexHidMapping.chords(action)?.singleOrNull() ?: return false
         if (!hasPermissions()) return false
         val device = connectedHost ?: return false
@@ -313,7 +313,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     }
 
     @SuppressLint("MissingPermission")
-    fun releaseHeld(action: ControllerAction?): Boolean {
+    override fun releaseHeld(action: ControllerAction): Boolean {
         val chord = CodexHidMapping.chords(action)?.singleOrNull() ?: return false
         val shouldRelease = synchronized(heldKeyLock) {
             if (heldChord != chord) false else {
@@ -331,7 +331,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     }
 
     @SuppressLint("MissingPermission")
-    fun releaseAnyHeld(): Boolean {
+    override fun releaseAnyHeld(): Boolean {
         val shouldRelease = synchronized(heldKeyLock) {
             (heldChord != null).also { heldChord = null }
         }
@@ -344,8 +344,8 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         return true
     }
 
-    fun startNavigationRepeat(action: ControllerAction?): Boolean {
-        if (action?.type != "navigate" || !send(action)) return false
+    override fun startNavigationRepeat(action: ControllerAction): Boolean {
+        if (action.type != "navigate" || !send(action)) return false
         synchronized(repeatLock) {
             navigationRepeat?.cancel(false)
             navigationRepeat = repeatExecutor.scheduleAtFixedRate(
@@ -358,7 +358,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         return true
     }
 
-    fun stopNavigationRepeat() {
+    override fun stopNavigationRepeat() {
         synchronized(repeatLock) {
             navigationRepeat?.cancel(false)
             navigationRepeat = null

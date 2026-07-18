@@ -2,9 +2,7 @@ package au.edu.uts.vibepocket
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HidKeyboardReportTest {
@@ -65,83 +63,4 @@ class HidKeyboardReportTest {
         assertNull(CodexHidMapping.chords(ControllerAction("workflow", workflowId = "review")))
     }
 
-    @Test
-    fun routesVerifiedFrontmostActionsDirectlyOverHid() {
-        val left = ControllerAction("navigate", direction = "left")
-
-        assertEquals(
-            true,
-            CodexHidMapping.shouldUseHid(left, hasUserInput = false, desktopFocused = true),
-        )
-        assertEquals(
-            false,
-            CodexHidMapping.shouldUseHid(left, hasUserInput = true, desktopFocused = true),
-        )
-        assertEquals(
-            false,
-            CodexHidMapping.shouldUseHid(left, hasUserInput = false, desktopFocused = false),
-        )
-        listOf(
-            ControllerAction("approve"),
-            ControllerAction("reject"),
-            ControllerAction("stop"),
-            ControllerAction("mode_cycle"),
-            ControllerAction("reasoning_depth", delta = 1),
-        ).forEach { action ->
-            assertEquals(
-                true,
-                CodexHidMapping.shouldUseHid(action, hasUserInput = false, desktopFocused = true),
-            )
-        }
-        assertEquals(
-            false,
-            CodexHidMapping.shouldUseHid(
-                ControllerAction("approve"),
-                hasUserInput = true,
-                desktopFocused = true,
-            ),
-        )
-        assertEquals(
-            false,
-            CodexHidMapping.shouldUseHid(
-                ControllerAction("voice"),
-                hasUserInput = false,
-                desktopFocused = true,
-            ),
-        )
-    }
-
-    @Test
-    fun holdsVoiceShortcutOnlyForAnUnambiguousFrontmostCodexAction() {
-        val voice = ControllerAction("voice")
-
-        assertTrue(
-            CodexHidMapping.shouldHoldOverHid(
-                voice,
-                hasUserInput = false,
-                desktopFocused = true,
-            ),
-        )
-        assertFalse(
-            CodexHidMapping.shouldHoldOverHid(
-                voice,
-                hasUserInput = true,
-                desktopFocused = true,
-            ),
-        )
-        assertFalse(
-            CodexHidMapping.shouldHoldOverHid(
-                voice,
-                hasUserInput = false,
-                desktopFocused = false,
-            ),
-        )
-        assertFalse(
-            CodexHidMapping.shouldHoldOverHid(
-                ControllerAction("stop"),
-                hasUserInput = false,
-                desktopFocused = true,
-            ),
-        )
-    }
 }

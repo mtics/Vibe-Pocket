@@ -167,9 +167,14 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val view = LocalView.current
     val context = LocalContext.current
     val hidController = remember(context) { BluetoothHidKeyboardController(context) }
+    val inputOrchestrator = remember(hidController, viewModel) {
+        ControllerInputOrchestrator(
+            hid = hidController,
+            bridge = PocketViewModelBridgeTransport(viewModel),
+        )
+    }
     val hidState by hidController.state.collectAsStateWithLifecycle()
     var pairRequested by remember { mutableStateOf(false) }
-    var hidVoiceOwner by remember { mutableStateOf<Pair<String, ControllerAction>?>(null) }
     val discoverableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
@@ -215,13 +220,12 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         if (hidController.hasPermissions()) hidController.start()
     }
 
-    DisposableEffect(lifecycleOwner, viewModel) {
+    DisposableEffect(lifecycleOwner, viewModel, inputOrchestrator) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> viewModel.setForeground(true)
                 Lifecycle.Event.ON_STOP -> {
-                    hidVoiceOwner = null
-                    hidController.releaseAnyHeld()
+                    inputOrchestrator.releaseHeldInput()
                     viewModel.setForeground(false)
                 }
                 else -> Unit
@@ -233,7 +237,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            hidVoiceOwner = null
+            inputOrchestrator.releaseHeldInput()
             hidController.close()
             viewModel.setForeground(false)
         }
@@ -263,58 +267,28 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     }
 
     val dispatchInput: (String, ControllerGesture) -> Boolean = { inputId, gesture ->
-        val snapshot = state.snapshot
-        val action = snapshot?.let { CodexHidMapping.actionFor(it, inputId, gesture) }
-        val useHid = CodexHidMapping.shouldUseHid(
-            action = action,
-            hasUserInput = snapshot?.controller?.userInput != null,
-            desktopFocused = snapshot?.controller?.desktopFocused == true,
-        )
-        if (useHid && hidController.send(action)) true else viewModel.activateInput(inputId, gesture)
+        inputOrchestrator.activate(state.snapshot, inputId, gesture)
     }
     val onInput: (String, ControllerGesture) -> Unit = { inputId, gesture ->
         if (dispatchInput(inputId, gesture)) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
     }
     val onNavigationRepeat: (String, Boolean) -> Unit = { inputId, initial ->
-        val action = state.snapshot?.let { snapshot ->
-            CodexHidMapping.actionFor(snapshot, inputId, ControllerGesture.TAP)
-        }
         if (initial) {
-            if (hidController.startNavigationRepeat(action)) {
+            if (inputOrchestrator.startNavigationRepeat(state.snapshot, inputId)) {
                 view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             }
         } else {
-            hidController.stopNavigationRepeat()
+            inputOrchestrator.stopNavigationRepeat()
         }
     }
     val onVoiceStart: (String) -> Boolean = { inputId ->
-        val snapshot = state.snapshot
-        val action = snapshot?.let {
-            CodexHidMapping.actionFor(it, inputId, ControllerGesture.TAP)
-        }
-        val useHid = CodexHidMapping.shouldHoldOverHid(
-            action = action,
-            hasUserInput = snapshot?.controller?.userInput != null,
-            desktopFocused = snapshot?.controller?.desktopFocused == true,
-        )
-        val started = if (useHid && action != null && hidController.pressAndHold(action)) {
-            hidVoiceOwner = inputId to action
-            true
-        } else {
-            viewModel.startVoice(inputId)
-        }
+        val started = inputOrchestrator.startVoice(state.snapshot, inputId)
         started.also {
             if (it) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         }
     }
     val onVoiceStop: (String) -> Unit = { inputId ->
-        val owner = hidVoiceOwner
-        if (owner?.first == inputId) {
-            hidVoiceOwner = null
-            hidController.releaseHeld(owner.second)
-        } else {
-            viewModel.stopVoice(inputId)
-        }
+        inputOrchestrator.stopVoice(inputId)
     }
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)

@@ -7,7 +7,7 @@ scoped semantic operations.
 
 ## Controller
 
-The Android 0.7.3 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.4 controller uses protocol v5 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,
@@ -55,6 +55,13 @@ The phone sends only fixed keyboard chords or whitelisted controller actions
 and bounded configuration updates. It does not expose a raw-keyboard or shell
 endpoint on the M5. A workflow button sends only a fixed workflow ID; the M5
 expands it from the persisted profile and starts a new visible Codex task.
+
+Input execution is split into three functional units. The planner resolves a
+profile gesture and checks its current capability. The orchestrator chooses a
+preferred HID tap or hold with an explicit Bridge fallback and owns push-to-talk
+release. The HID and Bridge transports contain only their respective side
+effects. Compose renders controls and feedback without deciding transport
+policy.
 
 Bluetooth HID is Vibe Pocket's supported virtual-hardware transport. The stock
 Android app does not claim USB-C HID keyboard mode: Android's public USB model
@@ -232,8 +239,9 @@ only a bounded task label and state; task execution remains inside Codex.
   modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,
   polling, idempotency, authentication, and HTTP health.
 - Android JVM tests cover profile parsing, protocol v5 data, structured command
-  serialization, capability gating, HID boot-keyboard reports, repeat policy,
-  fixed Codex key mappings, and Bridge-only semantic actions.
+  serialization, capability gating, input planning, HID-to-Bridge fallback,
+  push-to-talk ownership, HID boot-keyboard reports, repeat policy, fixed Codex
+  key mappings, and Bridge-only semantic actions.
 - Android `lintDebug` and `assembleDebug` pass under Java 17.
 - The M5 LaunchAgent, local health endpoint, and Tailnet HTTPS health endpoint
   are verified live.
