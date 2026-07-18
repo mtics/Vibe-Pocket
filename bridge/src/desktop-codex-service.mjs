@@ -614,6 +614,7 @@ function normalizeControls(value) {
 
 function emptyControllerState() {
   return {
+    foreground: false,
     taskState: "idle",
     agents: [],
     focusedAgentIndex: -1,
@@ -621,7 +622,13 @@ function emptyControllerState() {
     voice: { available: false, active: false },
     mode: { available: false, label: "" },
     access: { available: false, label: "" },
-    reasoning: { available: false, label: "" },
+    reasoning: {
+      available: false,
+      label: "",
+      level: null,
+      canIncrease: false,
+      canDecrease: false,
+    },
     userInput: null,
   };
 }
@@ -643,6 +650,7 @@ function normalizeControllerState(result) {
   const focusedAgentId = reportedFocused;
   const agentsWithFocus = agents.map((agent) => ({ ...agent, focused: agent.id === focusedAgentId }));
   return {
+    foreground: result.foreground === true,
     taskState: TASK_STATES.has(result.taskState) ? result.taskState : "idle",
     agents: agentsWithFocus,
     focusedAgentIndex: focusedAgentId ? agentsWithFocus.findIndex((agent) => agent.id === focusedAgentId) : -1,
@@ -650,7 +658,7 @@ function normalizeControllerState(result) {
     voice: normalizeVoice(result.voice),
     mode: normalizeSelector(result.mode),
     access: normalizeSelector(result.access),
-    reasoning: normalizeSelector(result.reasoning),
+    reasoning: normalizeReasoning(result.reasoning),
     userInput: normalizeUserInput(result.userInput),
   };
 }
@@ -691,5 +699,21 @@ function normalizeSelector(value) {
   return {
     available: value?.available === true,
     label: typeof value?.label === "string" ? value.label.slice(0, 80) : "",
+  };
+}
+
+function normalizeReasoning(value) {
+  const available = value?.available === true;
+  const level = ["minimal", "low", "medium", "high", "xhigh"].includes(value?.level)
+    ? value.level
+    : null;
+  return {
+    available,
+    label: typeof value?.label === "string" ? value.label.slice(0, 80) : "",
+    level,
+    // Additive protocol fields: an older host still leaves both directions
+    // usable, while a current host can express the minimum/maximum boundary.
+    canIncrease: available && value?.canIncrease !== false,
+    canDecrease: available && value?.canDecrease !== false,
   };
 }

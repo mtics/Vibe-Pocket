@@ -188,18 +188,25 @@ private func runBridge(_ scriptPath: String) throws -> Int32 {
   environment["VIBE_POCKET_HOST_SOCKET"] = controlSocketPath()
   child.environment = environment
 
+  // Spawn before changing this process's dispositions so Node inherits the
+  // default termination behavior across zsh's exec.
+  try child.run()
   signal(SIGTERM, SIG_IGN)
   signal(SIGINT, SIG_IGN)
   let terminationSignals = [SIGTERM, SIGINT].map { signalNumber in
     let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
     source.setEventHandler {
-      if child.isRunning { child.terminate() }
+      guard child.isRunning else { return }
+      child.terminate()
+      let childPID = child.processIdentifier
+      DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+        if child.isRunning { Darwin.kill(childPID, SIGKILL) }
+      }
     }
     source.resume()
     return source
   }
 
-  try child.run()
   child.waitUntilExit()
   terminationSignals.forEach { $0.cancel() }
   return child.terminationStatus

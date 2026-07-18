@@ -194,6 +194,7 @@ private fun parseController(value: JSONObject?): ControllerState? {
         actionCatalog = parseActionCatalog(value.optJSONArray("actionCatalog")),
         activeLayerId = value.safeString("activeLayerId")
             ?.takeIf { id -> profile?.layers?.any { it.id == id } == true },
+        desktopFocused = value.optBoolean("foreground", false),
         taskState = TaskState.fromWire(value.safeString("taskState").orEmpty()),
         agents = agents,
         focusedAgentIndex = focused,
@@ -201,7 +202,7 @@ private fun parseController(value: JSONObject?): ControllerState? {
         voice = parseVoice(value.optJSONObject("voice")),
         mode = parseSelector(value.optJSONObject("mode")),
         access = parseSelector(value.optJSONObject("access")),
-        reasoning = parseSelector(value.optJSONObject("reasoning")),
+        reasoning = parseReasoning(value.optJSONObject("reasoning")),
         userInput = parseCodexQuestion(value.optJSONObject("userInput")),
     )
 }
@@ -330,6 +331,19 @@ private fun parseSelector(value: JSONObject?): SelectorStatus = SelectorStatus(
     available = value?.optBoolean("available", false) == true,
     label = value?.safeString("label")?.take(64).orEmpty(),
 )
+
+private fun parseReasoning(value: JSONObject?): ReasoningStatus {
+    val available = value?.optBoolean("available", false) == true
+    return ReasoningStatus(
+        available = available,
+        label = value?.safeString("label")?.take(64).orEmpty(),
+        level = ReasoningLevel.fromWire(value?.safeString("level")),
+        // These fields were added after protocol v5. Defaulting to the overall
+        // capability keeps a rolling bridge/app upgrade interactive.
+        canIncrease = available && value.optBoolean("canIncrease", true),
+        canDecrease = available && value.optBoolean("canDecrease", true),
+    )
+}
 
 private fun parseVoice(value: JSONObject?): VoiceStatus? = value?.let {
     VoiceStatus(

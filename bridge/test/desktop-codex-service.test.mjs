@@ -13,6 +13,13 @@ class FakeDesktop {
   calls = [];
   taskState = "waiting";
   voice = { available: true, active: false };
+  reasoning = {
+    available: true,
+    label: "High",
+    level: "high",
+    canIncrease: true,
+    canDecrease: true,
+  };
   agents = [
     { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true },
     { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false },
@@ -21,6 +28,7 @@ class FakeDesktop {
   async status() {
     return {
       available: true,
+      foreground: true,
       message: "Desktop task ready.",
       taskState: this.taskState,
       controls: {
@@ -41,7 +49,7 @@ class FakeDesktop {
       voice: this.voice,
       mode: { available: true, label: "Codex" },
       access: { available: true, label: "Workspace" },
-      reasoning: { available: true, label: "High" },
+      reasoning: this.reasoning,
     };
   }
 
@@ -107,11 +115,51 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
     { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false },
   ]);
   assert.equal(snapshot.controller.focusedAgentId, "agent-111111111111111111111111");
+  assert.equal(snapshot.controller.foreground, true);
   assert.deepEqual(snapshot.controller.voice, { available: true, active: false });
   assert.equal(snapshot.controller.mode.label, "Codex");
   assert.equal(snapshot.controller.access.label, "Workspace");
   assert.equal(snapshot.controller.reasoning.label, "High");
+  assert.equal(snapshot.controller.reasoning.level, "high");
+  assert.equal(snapshot.controller.reasoning.canIncrease, true);
+  assert.equal(snapshot.controller.reasoning.canDecrease, true);
   assert.equal(snapshot.controls.reasoning, true);
+});
+
+test("keeps reasoning adjustable upward at the minimum level", async () => {
+  const desktop = new FakeDesktop();
+  desktop.reasoning = {
+    available: true,
+    label: "5.6 Sol 最小",
+    level: "minimal",
+    canIncrease: true,
+    canDecrease: false,
+  };
+  const service = makeService(desktop);
+  await service.start();
+
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.controls.reasoning, true);
+  assert.deepEqual(snapshot.controller.reasoning, desktop.reasoning);
+});
+
+test("keeps both reasoning directions available when the host sees an unknown label", async () => {
+  const desktop = new FakeDesktop();
+  desktop.reasoning = {
+    available: true,
+    label: "5.7 Preview",
+    level: "",
+    canIncrease: true,
+    canDecrease: true,
+  };
+  const service = makeService(desktop);
+  await service.start();
+
+  const reasoning = (await service.snapshot()).controller.reasoning;
+  assert.equal(reasoning.available, true);
+  assert.equal(reasoning.level, null);
+  assert.equal(reasoning.canIncrease, true);
+  assert.equal(reasoning.canDecrease, true);
 });
 
 test("clears a stale agent focus when the desktop no longer reports a selected task", async () => {

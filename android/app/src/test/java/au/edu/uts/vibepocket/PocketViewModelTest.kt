@@ -309,13 +309,14 @@ class PocketViewModelTest {
                     ActionCatalogEntry("mode", "Mode", ControllerAction("mode_cycle")),
                 ),
                 activeLayerId = "layer-1",
+                desktopFocused = true,
                 taskState = TaskState.IDLE,
                 agents = emptyList(),
                 focusedAgentIndex = -1,
                 focusedAgentId = null,
                 voice = VoiceStatus(available = true, active = false),
                 mode = SelectorStatus(false, ""),
-                reasoning = SelectorStatus(false, ""),
+                reasoning = ReasoningStatus.Unavailable,
             ),
         )
     }

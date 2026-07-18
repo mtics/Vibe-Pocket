@@ -14,12 +14,16 @@ class PocketSnapshotParserTest {
 
         assertEquals("r_42", snapshot.revision)
         assertEquals(TaskState.WAITING, snapshot.controller?.taskState)
+        assertTrue(snapshot.controller?.desktopFocused == true)
         assertEquals("agent-0123456789abcdef01234567", snapshot.controller?.focusedAgentId)
         assertEquals(0, snapshot.controller?.focusedAgentIndex)
         assertEquals(VoiceStatus(available = true, active = false), snapshot.controller?.voice)
         assertEquals("Codex", snapshot.controller?.mode?.label)
         assertEquals("Workspace", snapshot.controller?.access?.label)
         assertEquals("High", snapshot.controller?.reasoning?.label)
+        assertEquals(ReasoningLevel.HIGH, snapshot.controller?.reasoning?.level)
+        assertTrue(snapshot.controller?.reasoning?.canIncrease == true)
+        assertTrue(snapshot.controller?.reasoning?.canDecrease == true)
         assertEquals("Scope", snapshot.controller?.userInput?.header)
         assertEquals(2, snapshot.controller?.userInput?.options?.size)
         assertEquals("Broad", snapshot.controller?.userInput?.options?.get(1)?.label)
@@ -207,6 +211,7 @@ class PocketSnapshotParserTest {
               },
               "controller":{
                 "activeLayerId":"layer-1",
+                "foreground":true,
                 "taskState":"waiting",
                 "focusedAgentIndex":0,
                 "focusedAgentId":"agent-0123456789abcdef01234567",
@@ -217,7 +222,10 @@ class PocketSnapshotParserTest {
                 ],
                 "mode":{"available":true,"label":"Codex"},
                 "access":{"available":true,"label":"Workspace"},
-                "reasoning":{"available":true,"label":"High"},
+                "reasoning":{
+                  "available":true,"label":"High","level":"high",
+                  "canIncrease":true,"canDecrease":true
+                },
                 "userInput":{
                   "questionIndex":0,"questionCount":1,"header":"Scope",
                   "question":"Which scope should Codex use?",

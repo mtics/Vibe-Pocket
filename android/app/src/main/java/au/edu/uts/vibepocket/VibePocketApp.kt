@@ -169,6 +169,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     val hidController = remember(context) { BluetoothHidKeyboardController(context) }
     val hidState by hidController.state.collectAsStateWithLifecycle()
     var pairRequested by remember { mutableStateOf(false) }
+    var hidVoiceOwner by remember { mutableStateOf<Pair<String, ControllerAction>?>(null) }
     val discoverableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) {
@@ -218,7 +219,11 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> viewModel.setForeground(true)
-                Lifecycle.Event.ON_STOP -> viewModel.setForeground(false)
+                Lifecycle.Event.ON_STOP -> {
+                    hidVoiceOwner = null
+                    hidController.releaseAnyHeld()
+                    viewModel.setForeground(false)
+                }
                 else -> Unit
             }
         }
@@ -228,6 +233,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            hidVoiceOwner = null
             hidController.close()
             viewModel.setForeground(false)
         }
@@ -262,6 +268,7 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         val useHid = CodexHidMapping.shouldUseHid(
             action = action,
             hasUserInput = snapshot?.controller?.userInput != null,
+            desktopFocused = snapshot?.controller?.desktopFocused == true,
         )
         if (useHid && hidController.send(action)) true else viewModel.activateInput(inputId, gesture)
     }
@@ -281,12 +288,33 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         }
     }
     val onVoiceStart: (String) -> Boolean = { inputId ->
-        viewModel.startVoice(inputId).also { started ->
-            if (started) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        val snapshot = state.snapshot
+        val action = snapshot?.let {
+            CodexHidMapping.actionFor(it, inputId, ControllerGesture.TAP)
+        }
+        val useHid = CodexHidMapping.shouldHoldOverHid(
+            action = action,
+            hasUserInput = snapshot?.controller?.userInput != null,
+            desktopFocused = snapshot?.controller?.desktopFocused == true,
+        )
+        val started = if (useHid && action != null && hidController.pressAndHold(action)) {
+            hidVoiceOwner = inputId to action
+            true
+        } else {
+            viewModel.startVoice(inputId)
+        }
+        started.also {
+            if (it) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         }
     }
     val onVoiceStop: (String) -> Unit = { inputId ->
-        viewModel.stopVoice(inputId)
+        val owner = hidVoiceOwner
+        if (owner?.first == inputId) {
+            hidVoiceOwner = null
+            hidController.releaseHeld(owner.second)
+        } else {
+            viewModel.stopVoice(inputId)
+        }
     }
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -556,7 +584,7 @@ private fun ControllerScreen(
             SectionLabel("Reasoning")
             ReasoningDial(
                 inputs = dialInputs,
-                reasoning = controller?.reasoning ?: SelectorStatus(false, "Unavailable"),
+                reasoning = controller?.reasoning ?: ReasoningStatus.Unavailable,
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
                 onInput = routedInput,
@@ -1306,7 +1334,7 @@ private fun BoxScope.JoystickDirection(
 @Composable
 private fun ReasoningDial(
     inputs: List<ControllerInput>,
-    reasoning: SelectorStatus,
+    reasoning: ReasoningStatus,
     snapshot: PocketSnapshot,
     inFlightIds: Set<String>,
     onInput: (String, ControllerGesture) -> Unit,
@@ -1414,7 +1442,7 @@ private fun ReasoningDial(
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                reasoning.label.ifBlank { "Unavailable" },
+                reasoning.label.ifBlank { if (reasoning.available) "Reasoning" else "Unavailable" },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 fontWeight = FontWeight.Medium,

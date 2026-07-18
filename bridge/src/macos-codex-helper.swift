@@ -346,32 +346,91 @@ private func accessModeButton(in index: AreaIndex) -> AXUIElement? {
   })
 }
 
-private func reasoningPopup(in area: AXUIElement) -> AXUIElement? {
-  reasoningPopup(in: AreaIndex(area))
-}
+private enum ReasoningLevel: String, CaseIterable {
+  case minimal
+  case low
+  case medium
+  case high
+  case xhigh
 
-private func reasoningPopup(in index: AreaIndex) -> AXUIElement? {
-  guard let inputIndex = index.roles.lastIndex(of: "AXTextArea") else { return nil }
-  let end = min(index.elements.count, inputIndex + 24)
-  guard inputIndex + 1 < end else { return nil }
-  for candidateIndex in (inputIndex + 1)..<end {
-    let candidate = index.elements[candidateIndex]
-    let title = attributeString(candidate, kAXTitleAttribute as CFString)
-    if index.roles[candidateIndex] == "AXPopUpButton",
-       attributeBool(candidate, kAXEnabledAttribute as CFString),
-       isReasoningLabel(title) {
-      return candidate
+  private static let aliases: [(ReasoningLevel, [String])] = [
+    (.xhigh, ["extra high", "xhigh", "max", "极高", "最高"]),
+    (.minimal, ["minimal", "最小", "最低"]),
+    (.medium, ["medium", "中"]),
+    (.high, ["high", "高"]),
+    (.low, ["low", "轻度", "低"]),
+  ]
+
+  static func parse(from label: String) -> ReasoningLevel? {
+    let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    for (level, candidates) in aliases {
+      for candidate in candidates.sorted(by: { $0.count > $1.count }) {
+        if normalized == candidate || normalized.hasSuffix(" \(candidate)") { return level }
+      }
     }
+    return nil
   }
-  return nil
+
+  func shifted(by delta: Int) -> ReasoningLevel? {
+    guard delta == -1 || delta == 1,
+          let currentIndex = Self.allCases.firstIndex(of: self) else { return nil }
+    let targetIndex = currentIndex + delta
+    return Self.allCases.indices.contains(targetIndex) ? Self.allCases[targetIndex] : nil
+  }
+
+  var canIncrease: Bool { self != .xhigh }
+  var canDecrease: Bool { self != .minimal }
 }
 
-private func isReasoningLabel(_ value: String) -> Bool {
-  let label = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  let englishLevels = ["minimal", "low", "medium", "high", "extra high", "xhigh", "max"]
-  let chineseLevels = ["最小", "最低", "低", "中", "高", "极高", "最高"]
-  return englishLevels.contains(where: { label.range(of: "\\b\($0)\\b", options: .regularExpression) != nil })
-    || chineseLevels.contains(where: label.contains)
+private struct ReasoningControl {
+  let element: AXUIElement
+  let label: String
+  let level: ReasoningLevel?
+}
+
+private let reasoningRoleHints = ["reasoning", "reasoning effort", "推理", "推理强度"]
+
+private func reasoningControlLabel(_ element: AXUIElement) -> String {
+  [
+    attributeString(element, kAXTitleAttribute as CFString),
+    attributeString(element, kAXValueAttribute as CFString),
+    attributeString(element, kAXDescriptionAttribute as CFString),
+  ].lazy.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .first(where: { !$0.isEmpty }) ?? ""
+}
+
+private func hasReasoningRoleHint(_ element: AXUIElement) -> Bool {
+  let semantics = [
+    attributeString(element, kAXDescriptionAttribute as CFString),
+    attributeString(element, kAXHelpAttribute as CFString),
+    attributeString(element, kAXIdentifierAttribute as CFString),
+    scalarAttributeString(element, "AXDOMIdentifier" as CFString),
+  ].joined(separator: " ").lowercased()
+  return reasoningRoleHints.contains(where: semantics.contains)
+}
+
+private func reasoningControl(in area: AXUIElement) -> ReasoningControl? {
+  reasoningControl(in: AreaIndex(area))
+}
+
+private func reasoningControl(in index: AreaIndex) -> ReasoningControl? {
+  guard let inputIndex = index.roles.lastIndex(of: "AXTextArea") else { return nil }
+  let end = min(index.elements.count, inputIndex + 32)
+  guard inputIndex + 1 < end else { return nil }
+  let candidates = ((inputIndex + 1)..<end).compactMap { candidateIndex -> ReasoningControl? in
+    let element = index.elements[candidateIndex]
+    guard index.roles[candidateIndex] == "AXPopUpButton",
+          attributeBool(element, kAXEnabledAttribute as CFString) else { return nil }
+    let label = reasoningControlLabel(element)
+    return ReasoningControl(element: element, label: label, level: ReasoningLevel.parse(from: label))
+  }
+  if let parsed = candidates.first(where: { $0.level != nil }) { return parsed }
+  let hinted = candidates.filter { hasReasoningRoleHint($0.element) }
+  if hinted.count == 1 { return hinted[0] }
+  // The composer currently exposes one popup for model + reasoning. Its role
+  // and position establish capability even while Electron republishes an
+  // empty or localized title during a selector transition.
+  return candidates.count == 1 ? candidates[0] : nil
 }
 
 private struct AgentTarget {
@@ -616,7 +675,7 @@ private func controlAvailability(in index: AreaIndex, hasAgents: Bool) -> [Strin
     "mode-cycle": hasMessageInput && !isExecuting,
     "access-cycle": accessModeButton(in: index) != nil && !isExecuting,
     "navigate": true,
-    "reasoning": reasoningPopup(in: index) != nil,
+    "reasoning": reasoningControl(in: index) != nil && !isExecuting,
     "workflow": direct[DesktopControl.newTask.rawValue] == true && hasMessageInput,
   ]) { _, new in new }
 }
@@ -660,11 +719,13 @@ private func statusReply(application: NSRunningApplication, area: AXUIElement) -
   let currentState = taskState(in: index)
   let root = AXUIElementCreateApplication(application.processIdentifier)
   let agents = agentTargets(in: root, currentTaskState: currentState)
-  let reasoning = reasoningPopup(in: index)
+  let reasoning = reasoningControl(in: index)
   let controls = controlAvailability(in: index, hasAgents: !agents.isEmpty)
+  let reasoningAvailable = controls["reasoning"] == true
   return [
     "ok": true,
     "available": true,
+    "foreground": NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier,
     "message": "Ready to control the visible ChatGPT Codex task.",
     "taskState": currentState,
     "controls": controls,
@@ -678,8 +739,11 @@ private func statusReply(application: NSRunningApplication, area: AXUIElement) -
       "label": accessModeLabel(in: index) ?? "",
     ],
     "reasoning": [
-      "available": controls["reasoning"] == true,
-      "label": reasoning.map { attributeString($0, kAXTitleAttribute as CFString) } ?? "",
+      "available": reasoningAvailable,
+      "label": reasoning?.label ?? "",
+      "level": reasoning?.level?.rawValue ?? "",
+      "canIncrease": reasoningAvailable && (reasoning?.level?.canIncrease ?? true),
+      "canDecrease": reasoningAvailable && (reasoning?.level?.canDecrease ?? true),
     ],
     "agents": agents.enumerated().map { index, agent in
       ["id": agent.id, "label": agent.label, "state": agent.state, "focused": agent.focused]
@@ -689,7 +753,7 @@ private func statusReply(application: NSRunningApplication, area: AXUIElement) -
 
 private func press(_ control: DesktopControl, in area: AXUIElement) throws {
   if let button = controlButton(control, in: area) {
-    try clickElement(button)
+    try performPress(button)
     return
   }
   switch control {
@@ -757,45 +821,11 @@ private func elementFrame(_ element: AXUIElement) throws -> CGRect {
   return CGRect(origin: position, size: size)
 }
 
-private func clickElement(_ element: AXUIElement) throws {
-  AXUIElementPerformAction(element, "AXScrollToVisible" as CFString)
-  let frame = try elementFrame(element)
-  let point = CGPoint(x: frame.midX, y: frame.midY)
-  let previousLocation = CGEvent(source: nil)?.location
-  guard let source = CGEventSource(stateID: .hidSystemState),
-        let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left),
-        let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
-        let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
-    throw HelperFailure.message("macOS could not create the requested pointer event.")
+private func performPress(_ element: AXUIElement) throws {
+  let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
+  guard result == .success else {
+    throw HelperFailure.message("ChatGPT did not accept the requested semantic control action.")
   }
-  CGWarpMouseCursorPosition(point)
-  move.post(tap: .cghidEventTap)
-  usleep(100_000)
-  down.post(tap: .cghidEventTap)
-  usleep(80_000)
-  up.post(tap: .cghidEventTap)
-  usleep(180_000)
-  if let previousLocation { CGWarpMouseCursorPosition(previousLocation) }
-}
-
-private func hoverElement(_ element: AXUIElement) throws -> CGPoint? {
-  AXUIElementPerformAction(element, "AXScrollToVisible" as CFString)
-  let frame = try elementFrame(element)
-  let point = CGPoint(x: frame.midX, y: frame.midY)
-  let previousLocation = CGEvent(source: nil)?.location
-  guard let source = CGEventSource(stateID: .hidSystemState),
-        let move = CGEvent(
-          mouseEventSource: source,
-          mouseType: .mouseMoved,
-          mouseCursorPosition: point,
-          mouseButton: .left
-        ) else {
-    throw HelperFailure.message("macOS could not move the pointer to the requested menu item.")
-  }
-  CGWarpMouseCursorPosition(point)
-  move.post(tap: .cghidEventTap)
-  usleep(350_000)
-  return previousLocation
 }
 
 private func keyCode(for direction: String) throws -> CGKeyCode {
@@ -814,7 +844,7 @@ private func selectNextAccessMode(
   currentLabel: String
 ) throws {
   let buttonFrame = try elementFrame(button)
-  try clickElement(button)
+  try performPress(button)
   usleep(200_000)
   let root = AXUIElementCreateApplication(application.processIdentifier)
   let menus = descendants(of: root) {
@@ -844,160 +874,46 @@ private func selectNextAccessMode(
     try? postKey(53)
     throw HelperFailure.message("ChatGPT did not expose another access mode in its menu.")
   }
-  try clickElement(target)
+  try performPress(target)
   usleep(180_000)
 }
 
-private func menuItemLabel(_ item: AXUIElement) -> String {
-  [
-    attributeString(item, kAXTitleAttribute as CFString),
-    attributeString(item, kAXDescriptionAttribute as CFString),
-    attributeString(item, kAXValueAttribute as CFString),
-  ].lazy.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    .first(where: { !$0.isEmpty }) ?? ""
-}
-
-private func selectCompactMenuOption(
-  from popup: AXUIElement,
-  in application: NSRunningApplication,
-  categoryPrefixes: [String],
-  targetIndex: ([String]) throws -> Int
-) throws -> String {
-  try clickElement(popup)
-  usleep(200_000)
-  var shouldCancelMenu = true
-  defer {
-    if shouldCancelMenu { try? postKey(53) }
-  }
-  let initialRoot = AXUIElementCreateApplication(application.processIdentifier)
-  guard let categoryItem = descendant(of: initialRoot, where: { candidate in
-    guard attributeString(candidate, kAXRoleAttribute as CFString) == "AXMenuItem" else { return false }
-    let description = attributeString(candidate, kAXDescriptionAttribute as CFString).lowercased()
-    return categoryPrefixes.contains(where: description.hasPrefix)
-  }) else {
-    throw HelperFailure.message("ChatGPT did not expose the requested compact selector category.")
-  }
-  let categoryFrame = try elementFrame(categoryItem)
-  let previousLocation = try hoverElement(categoryItem)
-  defer {
-    if let previousLocation { CGWarpMouseCursorPosition(previousLocation) }
-  }
-  usleep(500_000)
-  let root = AXUIElementCreateApplication(application.processIdentifier)
-  let submenus = descendants(of: root) {
-    attributeString($0, kAXRoleAttribute as CFString) == "AXMenu"
-  }.compactMap { menu -> (AXUIElement, CGFloat)? in
-    guard let frame = try? elementFrame(menu),
-          frame.maxX <= categoryFrame.minX + 8 || frame.minX >= categoryFrame.maxX - 8 else { return nil }
-    return (menu, hypot(frame.midX - categoryFrame.midX, frame.midY - categoryFrame.midY))
-  }
-  guard let submenu = submenus.min(by: { $0.1 < $1.1 })?.0 else {
-    throw HelperFailure.message("ChatGPT did not open the requested compact selector submenu.")
-  }
-  let options = children(of: submenu).filter {
-    attributeString($0, kAXRoleAttribute as CFString) == "AXMenuItem" && !menuItemLabel($0).isEmpty
-  }
-  let labels = options.map(menuItemLabel)
-  let selectedIndex = try targetIndex(labels)
-  guard options.indices.contains(selectedIndex) else {
-    throw HelperFailure.message("The requested compact selector option is unavailable.")
-  }
-  try postKey(124)
-  usleep(120_000)
-  try postKey(115)
-  usleep(80_000)
-  for _ in 0..<selectedIndex {
-    try postKey(125)
-    usleep(60_000)
-  }
-  try postKey(36)
-  // Let the selector commit before a queued dial step opens it again. The
-  // bridge's follow-up status scan verifies the visible result asynchronously.
-  usleep(260_000)
-  shouldCancelMenu = false
-  return labels[selectedIndex]
-}
-
-private func reasoningLevelKey(for label: String) -> String? {
-  let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  if normalized == "最小" || normalized == "minimal" { return "minimal" }
-  if normalized == "轻度" || normalized == "低" || normalized == "low" { return "low" }
-  if normalized == "中" || normalized == "medium" { return "medium" }
-  if normalized == "高" || normalized == "high" { return "high" }
-  if normalized == "极高" || normalized.hasPrefix("极高 ")
-    || normalized == "xhigh" || normalized == "extra high" || normalized.hasPrefix("extra high ") {
-    return "xhigh"
+private func waitForValue<Value>(
+  attempts: Int = 6,
+  intervalMicroseconds: UInt32 = 80_000,
+  find: () -> Value?
+) -> Value? {
+  for attempt in 0..<attempts {
+    if let value = find() { return value }
+    if attempt + 1 < attempts { usleep(intervalMicroseconds) }
   }
   return nil
 }
 
-private struct ReasoningSelection {
-  let model: String
-  let level: String
-}
-
-private func reasoningSelection(from title: String) -> ReasoningSelection? {
-  let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-  let suffixes = ["extra high", "minimal", "medium", "xhigh", "high", "low", "轻度", "最小", "极高", "中", "高", "低"]
-  let lowered = trimmed.lowercased()
-  for suffix in suffixes.sorted(by: { $0.count > $1.count }) {
-    guard lowered == suffix || lowered.hasSuffix(" \(suffix)") else { continue }
-    let cutoff = trimmed.index(trimmed.endIndex, offsetBy: -suffix.count)
-    let model = trimmed[..<cutoff].trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !model.isEmpty, let level = reasoningLevelKey(for: suffix) else { return nil }
-    return ReasoningSelection(model: model, level: level)
-  }
-  return nil
-}
-
-private func selectReasoningLevel(
-  from popup: AXUIElement,
+private func adjustReasoningLevel(
+  from control: ReasoningControl,
   in application: NSRunningApplication,
-  currentLevel: String,
   delta: Int
 ) throws {
-  _ = try selectCompactMenuOption(
-    from: popup,
-    in: application,
-    categoryPrefixes: ["推理强度", "reasoning"],
-    targetIndex: { labels in
-      var unique = [(index: Int, key: String)]()
-      for (index, label) in labels.enumerated() {
-        guard let key = reasoningLevelKey(for: label), !unique.contains(where: { $0.key == key }) else { continue }
-        unique.append((index, key))
-      }
-      guard let currentIndex = unique.firstIndex(where: { $0.key == currentLevel }) else {
-        throw HelperFailure.message("ChatGPT did not expose the current reasoning level in its submenu.")
-      }
-      let nextIndex = currentIndex + delta
-      guard unique.indices.contains(nextIndex) else {
-        throw HelperFailure.message(delta > 0
-          ? "Codex reasoning is already at its highest level."
-          : "Codex reasoning is already at its lowest level.")
-      }
-      return unique[nextIndex].index
-    }
-  )
-}
-
-private func selectModel(
-  _ model: String,
-  from popup: AXUIElement,
-  in application: NSRunningApplication
-) throws {
-  _ = try selectCompactMenuOption(
-    from: popup,
-    in: application,
-    categoryPrefixes: ["模型", "model"],
-    targetIndex: { labels in
-      guard let index = labels.firstIndex(where: {
-        $0.caseInsensitiveCompare(model) == .orderedSame
-      }) else {
-        throw HelperFailure.message("ChatGPT did not expose the requested model in its submenu.")
-      }
-      return index
-    }
-  )
+  let requestedLevel = control.level?.shifted(by: delta)
+  if control.level != nil && requestedLevel == nil {
+    throw HelperFailure.message(delta > 0
+      ? "Codex reasoning is already at its highest level."
+      : "Codex reasoning is already at its lowest level.")
+  }
+  let shortcutKey: CGKeyCode = delta > 0 ? 32 : 38
+  try postChord(shortcutKey, flags: [.maskControl, .maskAlternate, .maskShift])
+  let confirmed = waitForValue(attempts: 16, intervalMicroseconds: 100_000) { () -> Bool? in
+    guard let area = try? codexArea(for: application),
+          let observed = reasoningControl(in: area) else { return nil }
+    if let requestedLevel { return observed.level == requestedLevel ? true : nil }
+    return !observed.label.isEmpty && observed.label != control.label ? true : nil
+  }
+  guard confirmed != nil else {
+    throw HelperFailure.message(
+      "Codex did not confirm the reasoning shortcut. Reload ChatGPT once so it reads the Vibe Pocket keybindings."
+    )
+  }
 }
 
 private func focusPrompt(in area: AXUIElement) throws -> AXUIElement {
@@ -1005,23 +921,21 @@ private func focusPrompt(in area: AXUIElement) throws -> AXUIElement {
     throw HelperFailure.message("The current Codex task has no accessible message input.")
   }
   let result = AXUIElementSetAttributeValue(input, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-  if result != .success || !attributeBool(input, kAXFocusedAttribute as CFString) {
-    try clickElement(input)
-    guard attributeBool(input, kAXFocusedAttribute as CFString) else {
-      throw HelperFailure.message("ChatGPT did not focus the current Codex input line.")
-    }
+  guard result == .success && attributeBool(input, kAXFocusedAttribute as CFString) else {
+    throw HelperFailure.message("ChatGPT did not focus the current Codex input line semantically.")
   }
   return input
 }
 
-private func togglePlanMode(in area: AXUIElement) throws {
-  _ = try focusPrompt(in: area)
+private func togglePlanMode() throws {
   try postChord(35, flags: [.maskControl, .maskAlternate, .maskShift])
   usleep(180_000)
 }
 
 private func clearInput(in area: AXUIElement) throws {
-  let input = try focusPrompt(in: area)
+  guard let input = prompt(in: area) else {
+    throw HelperFailure.message("The current Codex task has no accessible message input.")
+  }
   guard AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, "" as CFTypeRef) == .success else {
     throw HelperFailure.message("ChatGPT did not clear the current input line.")
   }
@@ -1031,7 +945,8 @@ private func launchWorkflow(_ text: String) throws {
   guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 4_000 else {
     throw HelperFailure.message("The configured Vibe Pocket workflow is invalid.")
   }
-  let (application, area) = try desktop(activateDesktop: true)
+  let (application, area) = try desktop(activateDesktop: false)
+  try verifyForeground(application)
   try press(.newTask, in: area)
   usleep(500_000)
   let nextArea = try codexArea(for: application)
@@ -1085,13 +1000,16 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
           let control = DesktopControl(rawValue: rawControl) else {
       throw HelperFailure.message("Unsupported Vibe Pocket desktop control.")
     }
-    let (_, area) = try desktop(activateDesktop: true)
+    let (application, area) = try desktop(activateDesktop: false)
+    if control == .approve && controlButton(.approve, in: area) == nil {
+      try verifyForeground(application)
+    }
     try press(control, in: area)
     usleep(120_000)
     return ["ok": true, "message": "Pressed the ChatGPT Codex \(control.rawValue) control."]
   case "voice-start", "voice-stop":
     let desiredActive = action == "voice-start"
-    let (application, area) = try desktop(activateDesktop: true)
+    let (application, area) = try desktop(activateDesktop: false)
     guard controlButton(.voice, in: area) != nil else {
       throw HelperFailure.message(DesktopControl.voice.unavailableMessage)
     }
@@ -1117,11 +1035,12 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
     guard let direction = arguments.dropFirst().first else {
       throw HelperFailure.message("A navigation direction is required.")
     }
-    _ = try desktop(activateDesktop: true)
+    let (application, _) = try desktop(activateDesktop: false)
+    try verifyForeground(application)
     try postKey(try keyCode(for: direction))
     return ["ok": true, "message": "Navigated \(direction) in ChatGPT Codex."]
   case "access-cycle":
-    let (application, area) = try desktop(activateDesktop: true)
+    let (application, area) = try desktop(activateDesktop: false)
     guard controlButton(.stop, in: area) == nil,
           let button = accessModeButton(in: area) else {
       throw HelperFailure.message("The ChatGPT Codex access mode is not currently adjustable.")
@@ -1130,29 +1049,31 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
     try selectNextAccessMode(from: button, in: application, currentLabel: before)
     return ["ok": true, "message": "Requested the next ChatGPT Codex access mode."]
   case "plan-mode":
-    let (_, area) = try desktop(activateDesktop: true)
+    let (application, area) = try desktop(activateDesktop: false)
+    try verifyForeground(application)
     guard controlButton(.stop, in: area) == nil else {
       throw HelperFailure.message("Plan mode cannot be changed while the visible Codex task is running.")
     }
-    try togglePlanMode(in: area)
+    try togglePlanMode()
     return ["ok": true, "message": "Requested the next Codex collaboration mode."]
   case "reasoning":
     guard let rawDelta = arguments.dropFirst().first,
           let delta = Int(rawDelta), delta == -1 || delta == 1 else {
       throw HelperFailure.message("Reasoning depth must move by one step.")
     }
-    let (application, area) = try desktop(activateDesktop: true)
-    guard let popup = reasoningPopup(in: area) else {
+    let (application, area) = try desktop(activateDesktop: false)
+    try verifyForeground(application)
+    guard let control = reasoningControl(in: area) else {
       throw HelperFailure.message("The ChatGPT Codex reasoning level is not currently adjustable.")
     }
-    let beforeTitle = attributeString(popup, kAXTitleAttribute as CFString)
-    guard let before = reasoningSelection(from: beforeTitle) else {
-      throw HelperFailure.message("ChatGPT exposed an unrecognized model and reasoning selection.")
-    }
-    try selectReasoningLevel(from: popup, in: application, currentLevel: before.level, delta: delta)
+    try adjustReasoningLevel(
+      from: control,
+      in: application,
+      delta: delta
+    )
     return ["ok": true, "message": "Requested the next ChatGPT Codex reasoning level."]
   case "clear-input":
-    let (_, area) = try desktop(activateDesktop: true)
+    let (_, area) = try desktop(activateDesktop: false)
     try clearInput(in: area)
     return ["ok": true, "message": "Cleared the ChatGPT Codex input line."]
   case "focus-agent":
@@ -1160,7 +1081,7 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
           agentID.hasPrefix("agent-"), agentID.count <= 80 else {
       throw HelperFailure.message("A valid Codex agent ID is required.")
     }
-    let (application, area) = try desktop(activateDesktop: true)
+    let (application, area) = try desktop(activateDesktop: false)
     let root = AXUIElementCreateApplication(application.processIdentifier)
     let agents = agentTargets(in: root, currentTaskState: taskState(in: AreaIndex(area)))
     guard let agent = agents.first(where: { $0.id == agentID }) else {
@@ -1190,12 +1111,8 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       } else {
         semanticPressWorked = false
       }
-      if !semanticPressWorked {
-        try clickElement(agent.element)
-      }
-      let taskIsNowFocused = semanticPressWorked ? true : try taskBecameFocused(attempts: 8)
-      guard taskIsNowFocused else {
-        throw HelperFailure.message("ChatGPT did not switch to the selected Codex task.")
+      guard semanticPressWorked else {
+        throw HelperFailure.message("ChatGPT did not accept the selected Codex task through Accessibility.")
       }
     }
     return ["ok": true, "message": "Focused Codex task \(agent.label)."]

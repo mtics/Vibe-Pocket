@@ -89,10 +89,12 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val receiverRegistered = AtomicBoolean(false)
     private val repeatLock = Any()
+    private val heldKeyLock = Any()
     private val reconnectLock = Any()
     private var hidDevice: BluetoothHidDevice? = null
     private var connectedHost: BluetoothDevice? = null
     private var navigationRepeat: ScheduledFuture<*>? = null
+    private var heldChord: HidChord? = null
     private var reconnectFuture: ScheduledFuture<*>? = null
     private var autoReconnectAttempted = false
     private var reconnectAttempts = 0
@@ -120,6 +122,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         override fun onServiceDisconnected(profile: Int) {
             if (profile != BluetoothProfile.HID_DEVICE) return
             stopNavigationRepeat()
+            synchronized(heldKeyLock) { heldChord = null }
             hidDevice = null
             connectedHost = null
             autoReconnectAttempted = false
@@ -175,6 +178,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     stopNavigationRepeat()
+                    synchronized(heldKeyLock) { heldChord = null }
                     if (connectedHost?.address == device.address) connectedHost = null
                     _state.value = _state.value.copy(
                         connectedHostAddress = null,
@@ -286,6 +290,60 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         return true
     }
 
+    @SuppressLint("MissingPermission")
+    fun pressAndHold(action: ControllerAction?): Boolean {
+        val chord = CodexHidMapping.chords(action)?.singleOrNull() ?: return false
+        if (!hasPermissions()) return false
+        val device = connectedHost ?: return false
+        val proxy = hidDevice ?: return false
+        synchronized(heldKeyLock) {
+            if (heldChord != null) return false
+            heldChord = chord
+        }
+        reportExecutor.execute {
+            try {
+                if (!proxy.sendReport(device, REPORT_ID, HidKeyboardReport.encode(chord))) {
+                    synchronized(heldKeyLock) { if (heldChord == chord) heldChord = null }
+                }
+            } catch (_: SecurityException) {
+                synchronized(heldKeyLock) { heldChord = null }
+            }
+        }
+        return true
+    }
+
+    @SuppressLint("MissingPermission")
+    fun releaseHeld(action: ControllerAction?): Boolean {
+        val chord = CodexHidMapping.chords(action)?.singleOrNull() ?: return false
+        val shouldRelease = synchronized(heldKeyLock) {
+            if (heldChord != chord) false else {
+                heldChord = null
+                true
+            }
+        }
+        if (!shouldRelease) return false
+        val device = connectedHost ?: return true
+        val proxy = hidDevice ?: return true
+        reportExecutor.execute {
+            runCatching { proxy.sendReport(device, REPORT_ID, HidKeyboardReport.release) }
+        }
+        return true
+    }
+
+    @SuppressLint("MissingPermission")
+    fun releaseAnyHeld(): Boolean {
+        val shouldRelease = synchronized(heldKeyLock) {
+            (heldChord != null).also { heldChord = null }
+        }
+        if (!shouldRelease) return false
+        val device = connectedHost ?: return true
+        val proxy = hidDevice ?: return true
+        reportExecutor.execute {
+            runCatching { proxy.sendReport(device, REPORT_ID, HidKeyboardReport.release) }
+        }
+        return true
+    }
+
     fun startNavigationRepeat(action: ControllerAction?): Boolean {
         if (action?.type != "navigate" || !send(action)) return false
         synchronized(repeatLock) {
@@ -329,6 +387,16 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         stopNavigationRepeat()
+        synchronized(heldKeyLock) { heldChord = null }
+        val device = connectedHost
+        val proxy = hidDevice
+        if (device != null && proxy != null && hasPermissions()) {
+            runCatching {
+                reportExecutor.submit {
+                    proxy.sendReport(device, REPORT_ID, HidKeyboardReport.release)
+                }.get(FINAL_RELEASE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+            }
+        }
         resetPreferredReconnect()
         runCatching { hidDevice?.unregisterApp() }
         runCatching { hidDevice?.let { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, it) } }
@@ -466,6 +534,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
         private const val REPORT_ID = 0
         private const val KEY_HOLD_MILLIS = 24L
         private const val KEY_GAP_MILLIS = 12L
+        private const val FINAL_RELEASE_TIMEOUT_MILLIS = 250L
         private const val NAVIGATION_REPEAT_INITIAL_DELAY_MILLIS = 280L
         private const val NAVIGATION_REPEAT_INTERVAL_MILLIS = 90L
 

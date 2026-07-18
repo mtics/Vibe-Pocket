@@ -62,15 +62,16 @@ data class PocketSnapshot(
         "voice" -> controller?.voice?.available ?: controls.voice
         "stop" -> controls.stop
         "new_task" -> controls.newTask
-        "mode_cycle" -> controls.modeCycle
-        "access_cycle" -> controls.accessCycle
+        "mode_cycle" -> controls.modeCycle && controller?.desktopFocused == true
+        "access_cycle" -> controls.accessCycle && controller?.desktopFocused == true
         "clear_input" -> controls.clearInput
         "focus_next" -> controls.focusAgent || status.state == "ready"
         "focus_agent" -> controls.focusAgent
         "select_layer" -> controller?.profile?.layers?.any { it.id == action.layerId } == true
-        "navigate" -> controls.navigate
-        "reasoning_depth" -> controls.reasoning
-        "workflow" -> controls.workflow
+        "navigate" -> controls.navigate && controller?.desktopFocused == true
+        "reasoning_depth" -> controls.reasoning && controller?.desktopFocused == true &&
+            controller.reasoning.allows(action.delta)
+        "workflow" -> controls.workflow && controller?.desktopFocused == true
         "attach" -> status.state == "ready"
         else -> false
     }
@@ -120,6 +121,7 @@ data class ControllerState(
     val gestures: List<GestureOption>,
     val actionCatalog: List<ActionCatalogEntry>,
     val activeLayerId: String?,
+    val desktopFocused: Boolean,
     val taskState: TaskState,
     val agents: List<AgentStatus>,
     val focusedAgentIndex: Int,
@@ -127,7 +129,7 @@ data class ControllerState(
     val voice: VoiceStatus?,
     val mode: SelectorStatus,
     val access: SelectorStatus = SelectorStatus(false, ""),
-    val reasoning: SelectorStatus,
+    val reasoning: ReasoningStatus,
     val userInput: CodexQuestion? = null,
 )
 
@@ -278,6 +280,43 @@ data class SelectorStatus(
     val available: Boolean,
     val label: String,
 )
+
+enum class ReasoningLevel(val wireValue: String) {
+    MINIMAL("minimal"),
+    LOW("low"),
+    MEDIUM("medium"),
+    HIGH("high"),
+    XHIGH("xhigh"),
+    ;
+
+    companion object {
+        fun fromWire(value: String?): ReasoningLevel? = entries.firstOrNull { it.wireValue == value }
+    }
+}
+
+data class ReasoningStatus(
+    val available: Boolean,
+    val label: String,
+    val level: ReasoningLevel?,
+    val canIncrease: Boolean,
+    val canDecrease: Boolean,
+) {
+    fun allows(delta: Int?): Boolean = available && when (delta) {
+        1 -> canIncrease
+        -1 -> canDecrease
+        else -> false
+    }
+
+    companion object {
+        val Unavailable = ReasoningStatus(
+            available = false,
+            label = "",
+            level = null,
+            canIncrease = false,
+            canDecrease = false,
+        )
+    }
+}
 
 enum class TaskState(val wireValue: String) {
     IDLE("idle"),

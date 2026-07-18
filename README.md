@@ -1,13 +1,13 @@
 # Vibe Pocket
 
 Vibe Pocket turns an Android phone into a private Codex Micro-style controller.
-It combines a Bluetooth HID keyboard for context-free navigation with a local
-M5 bridge that operates the visible Codex task through semantic macOS
-Accessibility controls and narrowly scoped virtual input.
+It combines a Bluetooth HID keyboard for stable frontmost shortcuts with a
+local M5 bridge that discovers the visible Codex task and performs narrowly
+scoped semantic operations.
 
 ## Controller
 
-The Android 0.7.2 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.3 controller uses protocol v5 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,
@@ -20,22 +20,25 @@ M5:
   Accept resolves a visible Codex approval first and otherwise submits a
   non-empty visible composer draft. Reject is enabled only for an explicit
   visible rejection control.
-- Arrow navigation uses Bluetooth HID reports when a Mac is connected. Default
-  direction keys repeat while held after a short delay; a custom double-tap,
-  long-press, or Codex structured question keeps its own mapping instead.
-  Context-sensitive commands such as Accept, Reject, Stop, New task, Clear,
-  Mode, Access, and Reasoning use the authenticated Bridge, which locates the
-  corresponding control in the visible Codex window before acting.
+- When the Mac is connected as a Bluetooth keyboard and ChatGPT is confirmed
+  frontmost, Accept, Reject, Stop, Mode, Reasoning, Voice, and navigation use
+  fixed HID chords. Direction keys repeat while held. Custom mappings that
+  carry structured user input continue through the authenticated Bridge.
+- New task, Clear, Access, Agent focus, and workflows use narrow Bridge
+  operations. Clear writes only the visible Codex composer's AX value. Access
+  uses a semantic AX press and reports unavailable when macOS cannot expose the
+  menu reliably; it never falls back to moving the pointer.
 - Voice is push-to-talk for the visible ChatGPT Codex dictation control. Hold
-  the key to start the desktop dictation state and release it to stop; the M5
-  bridge performs the semantic Accessibility action immediately, then
-  reconciles the resulting desktop state through its status scan.
+  the key to hold ChatGPT's own dictation shortcut and release it to send a
+  zero-key HID report. The Bridge uses the same semantic control only when HID
+  is unavailable.
 - A four-way joystick creates a visible Codex task and submits the built-in
   review, debug, refactor, or test workflow on release.
 - Rotate the center dial clockwise or counterclockwise to change the visible
   Codex reasoning selector by one verified UI step for every quarter turn.
-  The adjacent minus and plus keys remain available for precise accessible
-  stepping.
+  Structural control discovery is independent from localized level labels.
+  The adjacent minus and plus keys expose directional capability separately,
+  so the minimum disables only minus and the maximum disables only plus.
 - Six programmable layers persist across bridge restarts. Hold the phone's L1
   control with Accept, Reject, Voice, New task, Up, or Down to select layers
   1 through 6, respectively. A 750 ms guard prevents the layer chord from
@@ -68,8 +71,9 @@ by ID before focusing its composer.
 
 The M5 needs the Codex CLI, Node.js 22 or newer, a signed-in Codex account, and
 the Codex view in ChatGPT. Visible controls require an unlocked user session;
-the Bridge activates ChatGPT when an action is requested. Install dependencies
-once, then install the user LaunchAgent:
+ordinary controller actions never activate ChatGPT or steal focus. Only the
+explicit Attach action opens and activates a task. Install dependencies once,
+then install the user LaunchAgent:
 
 ```sh
 cd /Users/lizhw/Documents/Codex/2026-07-04/new-chat-3/bridge
@@ -86,11 +90,12 @@ The installer copies the runtime to:
 ```
 
 The bridge uses a narrowly scoped Swift Accessibility driver compiled into the
-signed Bridge Host. It finds the visible Codex composer, buttons, access
-selector, and reasoning selector, performs a whitelisted semantic action, and
-verifies state changes where the UI exposes a result. Node handles authenticated
-phone commands, controller profiles, and event delivery without creating a
-hidden Codex session.
+signed Bridge Host. It reads the visible Codex structure, performs whitelisted
+AXPress or AXValue operations where needed, and verifies state changes where
+the UI exposes a result. Mode and Reasoning use installed Codex semantic
+shortcuts. The helper never synthesizes pointer movement. Node handles
+authenticated phone commands, controller profiles, and event delivery without
+creating a hidden Codex session.
 
 After installation, add **Vibe Pocket Bridge Host** once under **System
 Settings > Privacy & Security > Accessibility**. The background service checks
@@ -203,9 +208,10 @@ only a bounded task label and state; task execution remains inside Codex.
 - Workflow text can be edited by an authenticated phone, is strictly bounded,
   and is persisted only in the M5 profile. Normal workflow presses send only an
   ID.
-- Visible task commands use a whitelist of semantic AX operations inside the
-  signed Bridge Host and require an unlocked Codex desktop session. Only
-  context-free arrows bypass the bridge as Bluetooth HID reports.
+- Fixed frontmost keyboard actions use Bluetooth HID. Remaining visible task
+  commands use a whitelist of AXPress and AXValue operations inside the signed
+  Bridge Host. The helper never moves the pointer, and only explicit Attach may
+  activate ChatGPT.
 - The bridge does not expose task text, historical conversations, OpenAI
   credentials, raw keyboard sequences, or direct shell execution endpoints.
 - Android delegates Bluetooth pairing keys and trust decisions to the platform;
@@ -221,7 +227,7 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 76 Node tests cover semantic Accessibility routing, controller
+- Bridge: 82 Node tests cover semantic Accessibility routing, controller
   profiles, desktop task focusing, compatibility modules, permission schemas,
   modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,
   polling, idempotency, authentication, and HTTP health.

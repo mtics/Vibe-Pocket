@@ -107,9 +107,27 @@ internal object CodexHidMapping {
         else -> null
     }
 
-    fun shouldUseHid(action: ControllerAction?, hasUserInput: Boolean): Boolean {
-        return action?.type == "navigate" && chords(action) != null && !hasUserInput
+    fun shouldUseHid(
+        action: ControllerAction?,
+        hasUserInput: Boolean,
+        desktopFocused: Boolean,
+    ): Boolean {
+        if (!desktopFocused || hasUserInput || chords(action) == null) return false
+        return action?.type in setOf(
+            "approve",
+            "reject",
+            "stop",
+            "mode_cycle",
+            "navigate",
+            "reasoning_depth",
+        )
     }
+
+    fun shouldHoldOverHid(
+        action: ControllerAction?,
+        hasUserInput: Boolean,
+        desktopFocused: Boolean,
+    ): Boolean = desktopFocused && !hasUserInput && action?.type == "voice" && chords(action)?.size == 1
 
     private const val semanticCommandModifiers =
         HidKeyboardReport.MODIFIER_LEFT_CONTROL or
