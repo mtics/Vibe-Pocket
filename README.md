@@ -52,6 +52,12 @@ and bounded configuration updates. It does not expose a raw-keyboard or shell
 endpoint on the M5. A workflow button sends only a fixed workflow ID; the M5
 expands it from the persisted profile and starts a new visible Codex task.
 
+Bluetooth HID is Vibe Pocket's supported virtual-hardware transport. The stock
+Android app does not claim USB-C HID keyboard mode: Android's public USB model
+documents host and Android Accessory modes, not a generic application-provided
+USB keyboard-gadget profile. A USB-C cable can still charge the phone or carry
+ADB/accessory traffic, but it is not a replacement for the Bluetooth HID link.
+
 Visible command keys operate the Codex task currently shown on the M5. Agent
 keys use stable opaque IDs for Agent controls exposed by that visible task.
 `vibe-pocket-attach` is an optional shortcut for opening a known desktop task
