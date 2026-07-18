@@ -31,8 +31,10 @@ M5:
   bridge verifies both transitions through macOS Accessibility.
 - A four-way joystick creates a visible Codex task and submits the built-in
   review, debug, refactor, or test workflow on release.
-- A stepped dial changes the visible Codex reasoning selector by one verified
-  UI step.
+- Rotate the center dial clockwise or counterclockwise to change the visible
+  Codex reasoning selector by one verified UI step for every quarter turn.
+  The adjacent minus and plus keys remain available for precise accessible
+  stepping.
 - Six programmable layers persist across bridge restarts. Hold the phone's L1
   control with Accept, Reject, Voice, New task, Up, or Down to select layers
   1 through 6, respectively. A 750 ms guard prevents the layer chord from
@@ -170,7 +172,9 @@ request microphone, Bluetooth scanning, or location access.
    entry in Vibe Pocket.
 3. In Virtual hardware, tap the M5 host and wait for the band to say connected.
    Open an idle Codex task and test arrows, Clear, Mode, Reasoning, New task,
-   and push-to-talk Voice. Hold a default direction key to repeat navigation.
+   and push-to-talk Voice. Drag around the center reasoning dial: each clockwise
+   or counterclockwise quarter turn changes one available reasoning level. Hold
+   a default direction key to repeat navigation.
 4. Select a visible Agent key, or tap New task.
 5. Test Agent navigation, collaboration mode, reasoning, and workflows.
    Workflow directions deliberately create and submit a new visible task.

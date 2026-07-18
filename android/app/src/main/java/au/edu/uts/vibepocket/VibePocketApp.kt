@@ -98,6 +98,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
@@ -1318,6 +1319,13 @@ private fun ReasoningDial(
 ) {
     val counterClockwise = inputs.firstOrNull { it.id.endsWith("ccw") }
     val clockwise = inputs.firstOrNull { it.id.endsWith("cw") && !it.id.endsWith("ccw") }
+    val counterClockwiseEnabled = counterClockwise?.let { snapshot.inputEnabled(it.id, ControllerGesture.TAP) } == true
+    val clockwiseEnabled = clockwise?.let { snapshot.inputEnabled(it.id, ControllerGesture.TAP) } == true
+    val inputPending = inputs.any { input -> inFlightIds.any { pending -> pending.startsWith("input:${input.id}:") } }
+    val rotationEnabled = !inputBlocked && !inputPending && (counterClockwiseEnabled || clockwiseEnabled)
+    val currentOnInput by rememberUpdatedState(onInput)
+    val view = LocalView.current
+    var rotationDegrees by remember { mutableStateOf(0f) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1345,7 +1353,61 @@ private fun ReasoningDial(
                     .border(2.dp, MaterialTheme.colorScheme.secondary, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .semantics { contentDescription = "Reasoning dial. Rotate clockwise to increase or counterclockwise to decrease." }
+                        .pointerInput(rotationEnabled, clockwise?.id, counterClockwise?.id) {
+                            if (!rotationEnabled) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                var dialState = beginDialRotation(
+                                    down.position.x,
+                                    down.position.y,
+                                    size.width / 2f,
+                                    size.height / 2f,
+                                )
+                                try {
+                                    var pressed = true
+                                    while (pressed) {
+                                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                        val update = advanceDialRotation(
+                                            dialState,
+                                            change.position.x,
+                                            change.position.y,
+                                            size.width / 2f,
+                                            size.height / 2f,
+                                        )
+                                        dialState = update.state
+                                        rotationDegrees += Math.toDegrees(update.deltaRadians).toFloat()
+                                        when (update.step) {
+                                            1 -> clockwise?.id?.let { inputId ->
+                                                currentOnInput(inputId, ControllerGesture.TAP)
+                                            }
+                                            -1 -> counterClockwise?.id?.let { inputId ->
+                                                currentOnInput(inputId, ControllerGesture.TAP)
+                                            }
+                                        }
+                                        if (update.step != 0) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        pressed = change.pressed
+                                        change.consume()
+                                    }
+                                } finally {
+                                    rotationDegrees %= 360f
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .graphicsLayer { rotationZ = rotationDegrees },
+                    )
+                }
             }
             Spacer(Modifier.height(6.dp))
             Text(
