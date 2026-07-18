@@ -165,7 +165,9 @@ request microphone, Bluetooth scanning, or location access.
 
 1. Keep the M5 online with an idle Codex task visible.
 2. Open Vibe Pocket, tap Pair, and allow Nearby devices. In macOS Bluetooth
-   settings, pair the Xiaomi 13, then tap its Mac entry in Vibe Pocket.
+   settings, pair the Xiaomi 13. When exactly one paired device is classified
+   as a computer, Vibe Pocket selects it automatically; otherwise tap its Mac
+   entry in Vibe Pocket.
 3. In Virtual hardware, tap the M5 host and wait for the band to say connected.
    Open an idle Codex task and test arrows, Clear, Mode, Reasoning, New task,
    and push-to-talk Voice. Hold a default direction key to repeat navigation.
@@ -198,6 +200,8 @@ only a bounded task label and state; task execution remains inside Codex.
 - Android delegates Bluetooth pairing keys and trust decisions to the platform;
   Vibe Pocket stores only the user-selected host address in private app storage
   so it can restore that explicit HID connection after an app or Bluetooth restart.
+  With no stored choice, it may select one uniquely classified, already paired
+  computer; it never guesses among multiple computers or non-computer devices.
 - Idempotency keys are request-bound and bounded; duplicate rapid presses on
   the same Android control are suppressed while Bridge desktop actions remain
   ordered.

@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHidDevice
 import android.bluetooth.BluetoothHidDeviceAppQosSettings
@@ -53,6 +54,30 @@ internal fun preferredHostToReconnect(
     registered && connectedAddress == null && connectingAddress == null && it in bondedAddresses
 }
 
+internal fun preferredReconnectDelayMillis(attempt: Int): Long? = when (attempt) {
+    0 -> 500L
+    1 -> 1_200L
+    2 -> 2_500L
+    else -> null
+}
+
+internal fun inferredComputerHostToReconnect(
+    registered: Boolean,
+    connectedAddress: String?,
+    connectingAddress: String?,
+    preferredAddress: String?,
+    bondedAddresses: Set<String>,
+    computerAddresses: Set<String>,
+): String? = preferredHostToReconnect(
+    registered = registered,
+    connectedAddress = connectedAddress,
+    connectingAddress = connectingAddress,
+    preferredAddress = preferredAddress,
+    bondedAddresses = bondedAddresses,
+) ?: computerAddresses.singleOrNull()?.takeIf {
+    registered && connectedAddress == null && connectingAddress == null && it in bondedAddresses
+}
+
 class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -64,10 +89,13 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val receiverRegistered = AtomicBoolean(false)
     private val repeatLock = Any()
+    private val reconnectLock = Any()
     private var hidDevice: BluetoothHidDevice? = null
     private var connectedHost: BluetoothDevice? = null
     private var navigationRepeat: ScheduledFuture<*>? = null
+    private var reconnectFuture: ScheduledFuture<*>? = null
     private var autoReconnectAttempted = false
+    private var reconnectAttempts = 0
 
     private val _state = MutableStateFlow(
         HidKeyboardState(
@@ -95,6 +123,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
             hidDevice = null
             connectedHost = null
             autoReconnectAttempted = false
+            resetPreferredReconnect()
             _state.value = _state.value.copy(
                 registered = false,
                 connectedHostAddress = null,
@@ -106,7 +135,10 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-            if (registered) autoReconnectAttempted = false
+            if (registered) {
+                autoReconnectAttempted = false
+                resetPreferredReconnect()
+            }
             connectedHost = pluggedDevice.takeIf { registered }
             _state.value = _state.value.copy(
                 registered = registered,
@@ -128,6 +160,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connectedHost = device
                     rememberPreferredHost(device.address)
+                    resetPreferredReconnect()
                     _state.value = _state.value.copy(
                         connectedHostAddress = device.address,
                         connectingHostAddress = null,
@@ -148,6 +181,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
                         connectingHostAddress = null,
                         message = "Disconnected from ${safeName(device)}. Bridge fallback remains available.",
                     )
+                    schedulePreferredReconnect()
                 }
             }
         }
@@ -163,7 +197,10 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
                         enabled = enabled,
                         message = if (enabled) _state.value.message else "Bluetooth is off. Enable it to use virtual hardware.",
                     )
-                    if (!enabled) autoReconnectAttempted = false
+                    if (!enabled) {
+                        autoReconnectAttempted = false
+                        resetPreferredReconnect()
+                    }
                     if (enabled) {
                         start()
                         reconnectPreferredHost()
@@ -203,13 +240,23 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     private fun connect(address: String, rememberHost: Boolean): Boolean {
         if (!hasPermissions() || !_state.value.registered) return false
         val device = adapter?.bondedDevices?.firstOrNull { it.address == address } ?: return false
-        if (rememberHost) rememberPreferredHost(address)
+        if (rememberHost) {
+            rememberPreferredHost(address)
+            resetPreferredReconnect()
+        }
         stopNavigationRepeat()
         _state.value = _state.value.copy(
             connectingHostAddress = address,
             message = "Connecting Bluetooth keyboard to ${safeName(device)}...",
         )
-        return hidDevice?.connect(device) == true
+        val requested = hidDevice?.connect(device) == true
+        if (!requested) {
+            _state.value = _state.value.copy(
+                connectingHostAddress = null,
+                message = "Could not connect Bluetooth keyboard to ${safeName(device)}. Bridge fallback remains available.",
+            )
+        }
+        return requested
     }
 
     @SuppressLint("MissingPermission")
@@ -282,6 +329,7 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         stopNavigationRepeat()
+        resetPreferredReconnect()
         runCatching { hidDevice?.unregisterApp() }
         runCatching { hidDevice?.let { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, it) } }
         if (receiverRegistered.compareAndSet(true, false)) runCatching { appContext.unregisterReceiver(bluetoothReceiver) }
@@ -349,22 +397,57 @@ class BluetoothHidKeyboardController(context: Context) : AutoCloseable {
                 connectingHostAddress = null,
                 message = "Bluetooth keyboard ready. Pair or connect a Mac.",
             )
+            schedulePreferredReconnect()
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun reconnectPreferredHost() {
         if (autoReconnectAttempted) return
+        val address = preferredReconnectAddress() ?: return
+        autoReconnectAttempted = true
+        if (!connect(address, rememberHost = false)) schedulePreferredReconnect()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun preferredReconnectAddress(): String? {
         val bondedDevices = adapter?.bondedDevices.orEmpty()
-        val address = preferredHostToReconnect(
+        val address = inferredComputerHostToReconnect(
             registered = _state.value.registered,
             connectedAddress = _state.value.connectedHostAddress,
             connectingAddress = _state.value.connectingHostAddress,
             preferredAddress = preferences.getString(PREFERRED_HOST_ADDRESS_KEY, null),
             bondedAddresses = bondedDevices.mapTo(mutableSetOf()) { it.address },
-        ) ?: return
-        autoReconnectAttempted = true
-        connect(address, rememberHost = false)
+            computerAddresses = bondedDevices
+                .filter { it.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER }
+                .mapTo(mutableSetOf()) { it.address },
+        )
+        if (address != null && preferences.getString(PREFERRED_HOST_ADDRESS_KEY, null) == null) {
+            rememberPreferredHost(address)
+        }
+        return address
+    }
+
+    private fun schedulePreferredReconnect() {
+        if (closed.get() || !hasPermissions() || preferredReconnectAddress() == null) return
+        synchronized(reconnectLock) {
+            if (reconnectFuture != null) return
+            val delay = preferredReconnectDelayMillis(reconnectAttempts) ?: return
+            reconnectAttempts += 1
+            reconnectFuture = repeatExecutor.schedule({
+                synchronized(reconnectLock) { reconnectFuture = null }
+                autoReconnectAttempted = false
+                reconnectPreferredHost()
+            }, delay, TimeUnit.MILLISECONDS)
+        }
+    }
+
+    private fun resetPreferredReconnect() {
+        synchronized(reconnectLock) {
+            reconnectFuture?.cancel(false)
+            reconnectFuture = null
+            reconnectAttempts = 0
+        }
     }
 
     private fun rememberPreferredHost(address: String) {
