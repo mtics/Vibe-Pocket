@@ -1,26 +1,14 @@
-import { CodexAppServer } from "./codex-app-server.mjs";
-import { CodexAppServerController } from "./codex-app-server-controller.mjs";
-import { CodexAccessibilityController } from "./codex-accessibility-controller.mjs";
 import { loadConfig } from "./config.mjs";
 import { ControllerProfileStore } from "./controller-profile-store.mjs";
 import { DesktopCodexService } from "./desktop-codex-service.mjs";
-import { HybridCodexController } from "./hybrid-codex-controller.mjs";
+import { MacCodexDesktopController } from "./macos-codex-desktop.mjs";
 import { createPocketHttpServer } from "./http-server.mjs";
-import { OwnedThreadStore } from "./owned-thread-store.mjs";
 import { SseHub } from "./sse-hub.mjs";
 
 const config = loadConfig();
 const events = new SseHub();
 const profileStore = new ControllerProfileStore({ profilePath: config.profilePath });
-const taskController = new CodexAppServerController({
-  appServer: new CodexAppServer({ command: config.codexCommand }),
-  workspaces: config.workspaces,
-  ownershipStore: new OwnedThreadStore({ path: config.ownedThreadsPath }),
-});
-const desktop = new HybridCodexController({
-  taskController,
-  accessibilityController: new CodexAccessibilityController(),
-});
+const desktop = new MacCodexDesktopController();
 const service = new DesktopCodexService({
   workspaces: config.workspaces,
   events,
@@ -34,8 +22,7 @@ server.listen(config.port, config.host, () => {
   console.log(`Vibe Pocket bridge listening on http://${config.host}:${config.port}`);
   console.log(`Configured workspaces: ${Object.keys(config.workspaces).join(", ")}`);
   console.log(`Controller profile: ${config.profilePath}`);
-  console.log(`Owned Codex tasks: ${config.ownedThreadsPath}`);
-  console.log("Codex control engine: virtual-hardware compatibility (app-server + macOS Accessibility)");
+  console.log("Codex control engine: current visible task (macOS Accessibility)");
 });
 
 async function close() {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { CODEX_HOOK_EVENTS, installCodexHooks } from "../src/codex-hooks-installer.mjs";
+import { CODEX_HOOK_EVENTS, installCodexHooks, removeCodexHooks } from "../src/codex-hooks-installer.mjs";
 
 test("atomically merges Codex hooks, preserves foreign groups, and avoids unchanged rewrites", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "vibe-pocket-hooks-"));
@@ -30,6 +30,15 @@ test("atomically merges Codex hooks, preserves foreign groups, and avoids unchan
   assert.equal(await installCodexHooks({ hooksPath, reporterPath }), "unchanged");
   const after = await stat(hooksPath, { bigint: true });
   assert.equal(after.mtimeNs, before.mtimeNs);
+
+  assert.equal(await removeCodexHooks({ hooksPath }), "changed");
+  const removed = JSON.parse(await readFile(hooksPath, "utf8"));
+  assert.equal(removed.custom, true);
+  assert.deepEqual(removed.hooks, { PreToolUse: [foreign] });
+  const removedBefore = await stat(hooksPath, { bigint: true });
+  assert.equal(await removeCodexHooks({ hooksPath }), "unchanged");
+  const removedAfter = await stat(hooksPath, { bigint: true });
+  assert.equal(removedAfter.mtimeNs, removedBefore.mtimeNs);
 });
 
 test("refuses to replace malformed Codex hook configuration", async (t) => {

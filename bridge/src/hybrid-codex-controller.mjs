@@ -11,21 +11,33 @@ export class HybridCodexController {
   }
 
   async status() {
-    const status = await this.#task.status();
+    const [status, visible] = await Promise.all([
+      this.#task.status(),
+      this.#visible.status(),
+    ]);
+    const structuredInput = Boolean(status.userInput);
     return {
       ...status,
-      message: "Ready to control the visible Codex window with macOS Accessibility.",
+      taskState: visible.taskState ?? status.taskState,
+      message: visible.message ?? "Ready to control the visible Codex window with macOS Accessibility.",
       controls: {
         ...status.controls,
         voice: true,
-        stop: true,
-        "new-task": true,
-        approve: true,
-        reject: true,
-        "clear-input": true,
-        "mode-cycle": true,
-        navigate: true,
+        stop: visible.controls.stop === true,
+        "new-task": visible.controls["new-task"] === true,
+        approve: structuredInput ? status.controls.approve === true : visible.controls.approve === true,
+        reject: structuredInput ? status.controls.reject === true : visible.controls.reject === true,
+        "clear-input": structuredInput
+          ? status.controls["clear-input"] === true
+          : visible.controls["clear-input"] === true,
+        "mode-cycle": visible.controls["plan-mode"] === true,
+        "access-cycle": visible.controls["mode-cycle"] === true,
+        navigate: structuredInput ? status.controls.navigate === true : visible.controls.navigate === true,
+        reasoning: visible.controls.reasoning === true,
       },
+      mode: { available: true, label: "Codex" },
+      access: visible.mode ?? status.access,
+      reasoning: visible.reasoning ?? status.reasoning,
       voice: { available: true, active: this.#visible.voiceActive },
     };
   }
@@ -48,9 +60,7 @@ export class HybridCodexController {
 
   async press(control) {
     if (control === "new-task") {
-      const result = await this.#task.press(control);
-      await this.#visible.activate();
-      return result;
+      return this.#visible.press(control);
     }
 
     if (["approve", "reject"].includes(control)) {
@@ -60,8 +70,7 @@ export class HybridCodexController {
     }
 
     if (control === "stop") {
-      const status = await this.#task.status();
-      return status.controls.stop ? this.#task.press(control) : this.#visible.press(control);
+      return this.#visible.press(control);
     }
 
     throw new Error(`Unsupported hybrid Codex control: ${control}.`);
@@ -79,22 +88,26 @@ export class HybridCodexController {
     return result;
   }
 
-  navigate(direction) {
-    return this.#visible.navigate(direction);
+  async navigate(direction) {
+    const status = await this.#task.status();
+    return status.userInput
+      ? this.#task.navigate(direction)
+      : this.#visible.navigate(direction);
   }
 
-  cycleMode() {
+  async cycleMode() {
     return this.#visible.cycleMode();
   }
 
   async cycleAccess() {
-    const result = await this.#task.cycleAccess();
-    await this.#task.attach();
-    return result;
+    return this.#visible.cycleAccess();
   }
 
-  clearInput() {
-    return this.#visible.clearInput();
+  async clearInput() {
+    const status = await this.#task.status();
+    return status.userInput && status.controls["clear-input"]
+      ? this.#task.clearInput()
+      : this.#visible.clearInput();
   }
 
   focusAgent(agentId) {
@@ -102,13 +115,11 @@ export class HybridCodexController {
   }
 
   async adjustReasoning(delta) {
-    const result = await this.#task.adjustReasoning(delta);
-    await this.#task.attach();
-    return result;
+    return this.#visible.adjustReasoning(delta);
   }
 
   workflow(prompt) {
-    return this.#task.workflow(prompt);
+    return this.#visible.workflow(prompt);
   }
 
   async dispose() {

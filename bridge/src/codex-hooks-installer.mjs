@@ -13,6 +13,15 @@ const COMMAND_MARKER = "VIBE_POCKET_CODEX_HOOK=1";
 
 export async function installCodexHooks({ hooksPath, reporterPath }) {
   if (!hooksPath || !reporterPath) throw new TypeError("Codex hook paths are required.");
+  return updateCodexHooks({ hooksPath, reporterPath });
+}
+
+export async function removeCodexHooks({ hooksPath }) {
+  if (!hooksPath) throw new TypeError("The Codex hooks path is required.");
+  return updateCodexHooks({ hooksPath, reporterPath: null });
+}
+
+async function updateCodexHooks({ hooksPath, reporterPath }) {
 
   let settings = {};
   let existingMode = 0o600;
@@ -45,9 +54,11 @@ export async function installCodexHooks({ hooksPath, reporterPath }) {
     else delete settings.hooks[event];
   }
 
-  for (const event of CODEX_HOOK_EVENTS) {
-    const groups = settings.hooks[event] ?? [];
-    settings.hooks[event] = [...groups, desiredGroup(event, reporterPath)];
+  if (reporterPath) {
+    for (const event of CODEX_HOOK_EVENTS) {
+      const groups = settings.hooks[event] ?? [];
+      settings.hooks[event] = [...groups, desiredGroup(event, reporterPath)];
+    }
   }
 
   if (JSON.stringify(settings) === before) return "unchanged";

@@ -37,30 +37,56 @@ fi
 umask 077
 mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents"
 mkdir -p "$RUNTIME_DIR"
+
+# Stop the previous job before replacing its runtime. Older releases launched
+# the Host through `open`, so clean up only that exact detached command line.
+launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+LEGACY_COMMAND="$HOST_PATH run $RUNTIME_DIR/bin/run-launchd.sh"
+LEGACY_PIDS=$(ps -axo pid=,command= | awk -v expected="$LEGACY_COMMAND" '{
+  pid = $1
+  sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
+  if ($0 == expected) print pid
+}')
+if [[ -n "$LEGACY_PIDS" ]]; then
+  kill $=LEGACY_PIDS 2>/dev/null || true
+  sleep 2
+  REMAINING_PIDS=$(ps -axo pid=,command= | awk -v expected="$LEGACY_COMMAND" '{
+    pid = $1
+    sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
+    if ($0 == expected) print pid
+  }')
+  [[ -z "$REMAINING_PIDS" ]] || kill -KILL $=REMAINING_PIDS 2>/dev/null || true
+fi
+
 rm -rf "$RUNTIME_DIR/node_modules"
 ditto "$BRIDGE_DIR" "$RUNTIME_DIR"
 chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
 chmod +x "$RUNTIME_DIR/bin/attach-current-task.sh"
 chmod +x "$RUNTIME_DIR/bin/report-codex-hook.sh"
 chmod +x "$RUNTIME_DIR/bin/install-codex-hooks.mjs"
+chmod +x "$RUNTIME_DIR/bin/install-codex-keybindings.mjs"
 # Remove obsolete direct-control artifacts from earlier releases.
-rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app" "$RUNTIME_DIR/bin/vibe-pocket-codex-helper"
+rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app"
 rm -f \
-  "$RUNTIME_DIR/src/macos-codex-desktop.mjs" \
-  "$RUNTIME_DIR/src/macos-codex-helper.swift" \
   "$RUNTIME_DIR/src/pocket-controller-service.mjs" \
   "$RUNTIME_DIR/src/pocket-service.mjs" \
   "$RUNTIME_DIR/test/pocket-controller-service.test.mjs" \
   "$RUNTIME_DIR/test/pocket-service.test.mjs"
 
 HOST_SOURCE="$RUNTIME_DIR/src/macos-bridge-host.swift"
-HOST_SOURCE_HASH=$(shasum -a 256 "$HOST_SOURCE" | awk '{print $1}')
+CONTROL_SOURCE="$RUNTIME_DIR/src/macos-codex-helper.swift"
+HOST_SOURCE_HASH=$(
+  {
+    shasum -a 256 "$HOST_SOURCE" "$CONTROL_SOURCE"
+    printf '%s\n' 'signing-profile:stable-designated-requirement-v1'
+  } | shasum -a 256 | awk '{print $1}'
+)
 INSTALLED_HOST_HASH=$(cat "$HOST_HASH_FILE" 2>/dev/null || true)
 if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; then
   HOST_TEMP="$CONFIG_DIR/Vibe Pocket Bridge Host.app.$$.tmp"
   rm -rf "$HOST_TEMP"
   mkdir -p "$HOST_TEMP/Contents/MacOS"
-  "$SWIFTC_PATH" "$HOST_SOURCE" -O -o "$HOST_TEMP/Contents/MacOS/Vibe Pocket Bridge Host"
+  "$SWIFTC_PATH" "$HOST_SOURCE" "$CONTROL_SOURCE" -O -o "$HOST_TEMP/Contents/MacOS/Vibe Pocket Bridge Host"
   cat > "$HOST_TEMP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -75,9 +101,9 @@ if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; the
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.7.0</string>
+  <string>0.8.0</string>
   <key>CFBundleVersion</key>
-  <string>12</string>
+  <string>13</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
@@ -86,7 +112,13 @@ if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; the
 </plist>
 EOF
   plutil -lint "$HOST_TEMP/Contents/Info.plist" >/dev/null
-  codesign --force --deep --sign - --identifier au.edu.uts.vibepocket.bridge-host "$HOST_TEMP" >/dev/null
+  codesign \
+    --force \
+    --deep \
+    --sign - \
+    --identifier au.edu.uts.vibepocket.bridge-host \
+    --requirements '=designated => identifier "au.edu.uts.vibepocket.bridge-host"' \
+    "$HOST_TEMP" >/dev/null
   rm -rf "$HOST_APP"
   mv "$HOST_TEMP" "$HOST_APP"
   printf '%s\n' "$HOST_SOURCE_HASH" > "$HOST_HASH_FILE.tmp"
@@ -109,8 +141,11 @@ mv "$TEMP_CONFIG" "$CONFIG_FILE"
 
 HOOKS_RESULT=$("$NODE_PATH" \
   "$RUNTIME_DIR/bin/install-codex-hooks.mjs" \
-  "$HOME/.codex/hooks.json" \
-  "$RUNTIME_DIR/bin/report-codex-hook.sh")
+  --remove \
+  "$HOME/.codex/hooks.json")
+KEYBINDINGS_RESULT=$("$NODE_PATH" \
+  "$RUNTIME_DIR/bin/install-codex-keybindings.mjs" \
+  "$HOME/.codex/keybindings.json")
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -165,8 +200,10 @@ if (( ! READY )); then
 fi
 
 print "Vibe Pocket LaunchAgent installed on 127.0.0.1:$PORT."
-print "Codex control engine: virtual-hardware compatibility (app-server + macOS Accessibility)."
-print "Codex lifecycle hooks: $HOOKS_RESULT."
+print "Codex control engine: current visible task (macOS Accessibility + virtual input)."
+print "Legacy Codex lifecycle hooks: $HOOKS_RESULT."
+print "Codex semantic shortcuts: $KEYBINDINGS_RESULT."
+print "Reload Codex once after the first shortcut installation."
 print "Pairing token is stored in $CONFIG_FILE with mode 0600."
 print "Grant Accessibility permission to this signed background host:"
 printf '  %q\n' "$HOST_APP"

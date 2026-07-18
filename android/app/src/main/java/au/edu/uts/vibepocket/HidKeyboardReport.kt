@@ -8,10 +8,15 @@ internal data class HidChord(
 internal object HidKeyboardReport {
     const val MODIFIER_LEFT_CONTROL = 0x01
     const val MODIFIER_LEFT_SHIFT = 0x02
+    const val MODIFIER_LEFT_ALT = 0x04
     const val MODIFIER_LEFT_GUI = 0x08
 
     const val USAGE_A = 0x04
     const val USAGE_D = 0x07
+    const val USAGE_J = 0x0D
+    const val USAGE_N = 0x11
+    const val USAGE_P = 0x13
+    const val USAGE_U = 0x18
     const val USAGE_ENTER = 0x28
     const val USAGE_ESCAPE = 0x29
     const val USAGE_BACKSPACE = 0x2A
@@ -62,6 +67,12 @@ internal object CodexHidMapping {
     fun chords(action: ControllerAction?): List<HidChord>? = when (action?.type) {
         "approve" -> listOf(HidChord(usage = HidKeyboardReport.USAGE_ENTER))
         "reject", "stop" -> listOf(HidChord(usage = HidKeyboardReport.USAGE_ESCAPE))
+        "new_task" -> listOf(
+            HidChord(
+                modifier = HidKeyboardReport.MODIFIER_LEFT_GUI,
+                usage = HidKeyboardReport.USAGE_N,
+            ),
+        )
         "voice" -> listOf(
             HidChord(
                 modifier = HidKeyboardReport.MODIFIER_LEFT_CONTROL or HidKeyboardReport.MODIFIER_LEFT_SHIFT,
@@ -70,10 +81,15 @@ internal object CodexHidMapping {
         )
         "mode_cycle" -> listOf(
             HidChord(
-                modifier = HidKeyboardReport.MODIFIER_LEFT_SHIFT,
-                usage = HidKeyboardReport.USAGE_TAB,
+                modifier = semanticCommandModifiers,
+                usage = HidKeyboardReport.USAGE_P,
             ),
         )
+        "reasoning_depth" -> when (action.delta) {
+            1 -> listOf(HidChord(modifier = semanticCommandModifiers, usage = HidKeyboardReport.USAGE_U))
+            -1 -> listOf(HidChord(modifier = semanticCommandModifiers, usage = HidKeyboardReport.USAGE_J))
+            else -> null
+        }
         "clear_input" -> listOf(
             HidChord(
                 modifier = HidKeyboardReport.MODIFIER_LEFT_GUI,
@@ -90,4 +106,13 @@ internal object CodexHidMapping {
         }
         else -> null
     }
+
+    fun shouldUseHid(action: ControllerAction?, hasUserInput: Boolean): Boolean {
+        return action?.type == "navigate" && chords(action) != null && !hasUserInput
+    }
+
+    private const val semanticCommandModifiers =
+        HidKeyboardReport.MODIFIER_LEFT_CONTROL or
+            HidKeyboardReport.MODIFIER_LEFT_SHIFT or
+            HidKeyboardReport.MODIFIER_LEFT_ALT
 }

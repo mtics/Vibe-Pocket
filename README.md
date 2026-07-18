@@ -1,8 +1,9 @@
 # Vibe Pocket
 
 Vibe Pocket turns an Android phone into a private Codex Micro-style controller.
-It combines a Bluetooth HID keyboard for visible-window controls with a local
-M5 bridge for Codex task, Agent, workflow, access, and reasoning operations.
+It combines a Bluetooth HID keyboard for context-free navigation with a local
+M5 bridge that operates the visible Codex task through semantic macOS
+Accessibility controls and narrowly scoped virtual input.
 
 ## Controller
 
@@ -18,39 +19,41 @@ M5:
   remappable action.
   Accept resolves a pending Codex approval first and otherwise submits the
   focused task's dictation draft. Reject declines or discards the same intent.
-- Return, Escape, arrows, Clear, Mode, and Voice use Bluetooth keyboard reports
-  when a Mac is connected. Voice emits Codex's Ctrl+Shift+D shortcut once per
-  tap. Each action automatically falls back to the authenticated Bridge when
-  HID is unavailable.
-- A four-way joystick starts the built-in review, debug, refactor, and test
-  workflows on release.
-- A stepped dial writes the focused thread's reasoning effort through
-  `thread/settings/update`.
+- Arrow navigation uses Bluetooth HID reports when a Mac is connected.
+  Context-sensitive commands such as Accept, Reject, Stop, New task, Clear,
+  Mode, Access, and Reasoning use the authenticated Bridge, which locates the
+  corresponding control in the visible Codex window before acting.
+- Voice is push-to-talk on the phone. Android recognizes speech locally through
+  the platform speech service, then places the final transcript in the visible
+  Codex composer. It does not start the Mac microphone.
+- A four-way joystick creates a visible Codex task and submits the built-in
+  review, debug, refactor, or test workflow on release.
+- A stepped dial changes the visible Codex reasoning selector by one verified
+  UI step.
 - Six programmable layers persist across bridge restarts.
 - A mapped input can switch directly to any of the six layers. Layer names,
   colors, and the four workflow prompts are editable on the phone and persist
   in the M5 profile.
-- When Codex requests user input, the question and bounded choices appear on
-  the phone. Left/right changes question, up/down changes the selected option,
-  Accept answers through JSON-RPC, and Reject dismisses it.
+- When Codex exposes an approval or choice control in the visible task, the
+  phone's Accept, Reject, and navigation actions operate that same interface.
 - Every input has independent tap, double-tap, and hold mappings. The phone's
   mapping sheet can only select actions advertised by the bridge.
 
 The phone sends only fixed keyboard chords or whitelisted controller actions
 and bounded configuration updates. It does not expose a raw-keyboard or shell
 endpoint on the M5. A workflow button sends only a fixed workflow ID; the M5
-expands it from the persisted profile and starts a new Codex app-server task.
+expands it from the persisted profile and starts a new visible Codex task.
 
-Vibe Pocket tracks authorized Codex tasks through a private local registry. It
-can create a dedicated task or explicitly attach the current Codex Desktop task
-with `vibe-pocket-attach`. It never guesses the visible task from window focus.
-Codex can still use its normal tools inside the selected workspace and access
-mode.
+Visible command keys operate the Codex task currently shown on the M5. Agent
+keys use stable opaque IDs for Agent controls exposed by that visible task.
+`vibe-pocket-attach` is an optional shortcut for opening a known desktop task
+by ID before focusing its composer.
 
 ## Install The M5 Bridge
 
-The M5 needs the Codex CLI, Node.js 22 or newer, and a signed-in Codex account.
-ChatGPT does not need to remain open or in the foreground. Install dependencies
+The M5 needs the Codex CLI, Node.js 22 or newer, a signed-in Codex account, and
+the Codex view in ChatGPT. Visible controls require an unlocked user session;
+the Bridge activates ChatGPT when an action is requested. Install dependencies
 once, then install the user LaunchAgent:
 
 ```sh
@@ -67,17 +70,17 @@ The installer copies the runtime to:
 ~/Library/Application Support/Vibe Pocket/runtime
 ```
 
-The bridge combines the Codex `app-server` JSON-RPC protocol with a narrowly
-scoped macOS Accessibility driver. Task creation, Agent focus, lifecycle,
-access, and reasoning use structured app-server calls. Return, Escape,
-direction keys, composer clearing, dictation, and Shift+Tab are sent to the
-visible Codex window after activating bundle `com.openai.codex`.
+The bridge uses a narrowly scoped Swift Accessibility driver compiled into the
+signed Bridge Host. It finds the visible Codex composer, buttons, access
+selector, and reasoning selector, performs a whitelisted semantic action, and
+verifies state changes where the UI exposes a result. Node handles authenticated
+phone commands, controller profiles, and event delivery without creating a
+hidden Codex session.
 
-On the first visible-window action, macOS may ask whether **Vibe Pocket Bridge
-Host** can control the computer. Allow that fixed background host under **System
-Settings > Privacy & Security > Accessibility**. Visible
-window controls require an unlocked user session; app-server lifecycle and
-status tracking continue without a foreground window.
+After installation, add **Vibe Pocket Bridge Host** once under **System
+Settings > Privacy & Security > Accessibility**. The background service checks
+this permission silently and never opens repeated authorization prompts. Visible
+window controls require an unlocked user session and an open Codex desktop view.
 
 It stores the token in a mode-`0600` user config file and starts
 `au.edu.uts.vibepocket.bridge` with launchd. Re-running the installer upgrades
@@ -90,27 +93,20 @@ curl http://127.0.0.1:4320/healthz
 launchctl print gui/$UID/au.edu.uts.vibepocket.bridge
 ```
 
-From the Codex Desktop task that should receive phone controls, run:
+To open and focus a specific task by its `CODEX_THREAD_ID`, optionally run:
 
 ```sh
 vibe-pocket-attach
 ```
 
-The command reads that task's `CODEX_THREAD_ID`, verifies that the task belongs
-to a configured workspace, persists only its opaque ID, and focuses it through
-Codex app-server. Run it once in each existing desktop task that should appear
-on an Agent key; tasks created by Vibe Pocket are registered automatically.
+The command reads that task's ID, opens the matching Codex desktop page, and
+focuses its composer. It is not required when the intended task is already
+visible.
 
 Controller mappings are stored outside the repository at:
 
 ```text
 ~/Library/Application Support/Vibe Pocket/controller-profile.json
-```
-
-Opaque IDs for tasks created by Vibe Pocket are stored separately at:
-
-```text
-~/Library/Application Support/Vibe Pocket/owned-threads.json
 ```
 
 ## Tailnet Access
@@ -156,19 +152,19 @@ http://192.168.31.250:4319/app-debug.apk
 The app requires an HTTPS bridge URL and stores its token with an Android
 Keystore AES-GCM key. On MIUI, unrestricted battery use is optional; the SSE
 connection and Android HID registration are active while Vibe Pocket is in the
-foreground. Android 12+ asks for Nearby devices access; Vibe Pocket does not
-request Bluetooth scanning, location, or microphone access.
+foreground. Android 12+ asks for Nearby devices access, and Voice asks for
+microphone access. Vibe Pocket does not request Bluetooth scanning or location.
 
 ## First Controller Test
 
-1. Keep the M5 online and run `vibe-pocket-attach` in the visible Codex task.
+1. Keep the M5 online with an idle Codex task visible.
 2. Open Vibe Pocket, tap Pair, and allow Nearby devices. In macOS Bluetooth
    settings, pair the Xiaomi 13, then tap its Mac entry in Vibe Pocket.
-3. Confirm the Virtual hardware band says connected. Open Codex and test Return,
-   Escape, arrows, Clear, Mode, and Voice.
-4. Select the attached task on one of the six live Agent keys, or tap New task.
-5. Test Agent navigation, collaboration mode, reasoning, and workflows. Workflow
-   directions deliberately create a new app-server task.
+3. Confirm the Virtual hardware band says connected. Open an idle Codex task and
+   test arrows, Clear, Mode, Reasoning, New task, and push-to-talk Voice.
+4. Select a visible Agent key, or tap New task.
+5. Test Agent navigation, collaboration mode, reasoning, and workflows.
+   Workflow directions deliberately create and submit a new visible task.
 6. Open the Settings icon to edit mappings, layer colors, and workflow prompts.
    Map any gesture to `Select layer 1` through `Select layer 6` to make layer
    switching part of the controller surface. `Next access level` independently
@@ -181,19 +177,17 @@ only a bounded task label and state; task execution remains inside Codex.
 
 - The bridge binds to `127.0.0.1`; Tailscale supplies tailnet-only HTTPS.
 - Commands and configurable mappings use a strict semantic action whitelist.
-- Protocol v5 binds Agent focus to a stable opaque ID and carries a bounded view
-  of pending Codex questions.
+- Protocol v5 binds Agent focus to a stable opaque ID.
 - Workflow text can be edited by an authenticated phone, is strictly bounded,
   and is persisted only in the M5 profile. Normal workflow presses send only an
   ID.
-- Structured task controls use Codex app-server JSON-RPC. Fixed composer and
-  navigation controls use a whitelist of macOS Accessibility keystrokes and
-  require an unlocked foreground Codex window.
+- Visible task commands use a whitelist of semantic AX operations inside the
+  signed Bridge Host and require an unlocked Codex desktop session. Only
+  context-free arrows bypass the bridge as Bluetooth HID reports.
 - The bridge does not expose task text, historical conversations, OpenAI
   credentials, raw keyboard sequences, or direct shell execution endpoints.
 - Android delegates Bluetooth pairing keys and trust decisions to the platform;
   Vibe Pocket stores only the selected host address in process memory.
-- The owned-task registry contains only opaque thread IDs and is mode `0600`.
 - Idempotency keys are request-bound and bounded; rapid Android actions are
   additionally protected by a single-flight gate.
 - The LaunchAgent starts Node with a minimal environment so unrelated user
@@ -201,12 +195,10 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 65 Node tests cover the fixed Accessibility command whitelist,
-  hybrid visible/task routing, profile and authorized-task persistence, explicit
-  desktop task attachment, app-server
-  lifecycle races, permission schemas, modes, reasoning, stop, workflows,
-  Codex user-input requests, gestures, layer switching, Agent focus, polling,
-  idempotency, authentication, and HTTP health.
+- Bridge: 68 Node tests cover semantic Accessibility routing, controller
+  profiles, desktop task focusing, compatibility modules, permission schemas,
+  modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,
+  polling, idempotency, authentication, and HTTP health.
 - Android JVM tests cover profile parsing, protocol v5 data, structured command
   serialization, capability gating, HID boot-keyboard reports, fixed Codex key
   mappings, and Bridge-only semantic actions.
@@ -214,8 +206,6 @@ only a bounded task label and state; task execution remains inside Codex.
 - The M5 LaunchAgent, local health endpoint, and Tailnet HTTPS health endpoint
   are verified live.
 
-Direct app-server task creation, natural completion,
-collaboration/access/reasoning updates, interruption, and a real Plan-mode
-`request_user_input` selection/answer round trip are verified live on the M5.
-Bluetooth pairing and every physical gesture require an on-device pass after
-installing the current APK.
+The Swift host compiles successfully and its read-only status probe resolves the
+current visible Codex controls and reasoning label. Bluetooth pairing and every
+physical gesture require an on-device pass after installing the current APK.

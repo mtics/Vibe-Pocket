@@ -7,7 +7,7 @@ class FakeTaskController {
   calls = [];
   snapshot = {
     taskState: "idle",
-    controls: { stop: false, reasoning: true, workflow: true },
+    controls: { stop: false, reasoning: true, workflow: true, "clear-input": false },
     voice: { available: true, active: false },
     userInput: null,
   };
@@ -18,7 +18,10 @@ class FakeTaskController {
   async applyLifecycleHook(event, payload) { this.calls.push(["hook", event, payload]); return { accepted: true }; }
   async press(control) { this.calls.push(["press", control]); return { message: control }; }
   async setVoice(active) { this.calls.push(["setVoice", active]); }
+  async navigate(direction) { this.calls.push(["navigate", direction]); }
+  async cycleMode() { this.calls.push(["cycleMode"]); return { message: "mode" }; }
   async cycleAccess() { this.calls.push(["cycleAccess"]); return { message: "access" }; }
+  async clearInput() { this.calls.push(["clearInput"]); return { message: "clear" }; }
   async focusAgent(id) { this.calls.push(["focusAgent", id]); }
   async adjustReasoning(delta) { this.calls.push(["adjustReasoning", delta]); return { message: "reasoning" }; }
   async workflow(prompt) { this.calls.push(["workflow", prompt]); }
@@ -28,13 +31,34 @@ class FakeTaskController {
 class FakeVisibleController {
   calls = [];
   voiceActive = false;
+  snapshot = {
+    taskState: "idle",
+    message: "Ready to control the visible Codex window.",
+    controls: {
+      approve: true,
+      reject: true,
+      stop: false,
+      "new-task": true,
+      "clear-input": true,
+      "plan-mode": true,
+      "mode-cycle": true,
+      navigate: true,
+      reasoning: true,
+    },
+    mode: { available: true, label: "Full access" },
+    reasoning: { available: true, label: "Medium" },
+  };
+  async status() { this.calls.push(["status"]); return structuredClone(this.snapshot); }
   async activate() { this.calls.push(["activate"]); }
   async press(control) { this.calls.push(["press", control]); return { message: control }; }
   async setVoice(active) { this.calls.push(["setVoice", active]); this.voiceActive = active; return { message: "voice" }; }
   async setDictationDraft(text) { this.calls.push(["setDictationDraft", text]); return { message: "draft" }; }
   async navigate(direction) { this.calls.push(["navigate", direction]); }
   async cycleMode() { this.calls.push(["cycleMode"]); }
+  async cycleAccess() { this.calls.push(["cycleAccess"]); }
+  async adjustReasoning(delta) { this.calls.push(["adjustReasoning", delta]); }
   async clearInput() { this.calls.push(["clearInput"]); }
+  async workflow(prompt) { this.calls.push(["workflow", prompt]); }
 }
 
 function makeHybrid() {
@@ -43,20 +67,25 @@ function makeHybrid() {
   return { task, visible, controller: new HybridCodexController({ taskController: task, accessibilityController: visible }) };
 }
 
-test("advertises visible-window controls independently of task state", async () => {
-  const { controller } = makeHybrid();
+test("advertises controls from the visible Codex state", async () => {
+  const { controller, visible } = makeHybrid();
   const status = await controller.status();
 
   assert.equal(status.controls.approve, true);
   assert.equal(status.controls.reject, true);
-  assert.equal(status.controls.stop, true);
+  assert.equal(status.controls.stop, false);
   assert.equal(status.controls["clear-input"], true);
   assert.equal(status.controls.reasoning, true);
+  assert.equal(status.mode.label, "Codex");
+  assert.equal(status.access.label, "Full access");
+  assert.equal(status.reasoning.label, "Medium");
   assert.match(status.message, /visible Codex window/);
+  assert.deepEqual(visible.calls, [["status"]]);
 });
 
-test("routes composer and navigation actions through Accessibility", async () => {
+test("routes visible composer and navigation actions through Accessibility", async () => {
   const { controller, task, visible } = makeHybrid();
+  task.snapshot.controls["clear-input"] = true;
 
   await controller.press("approve");
   await controller.press("reject");
@@ -75,10 +104,24 @@ test("routes composer and navigation actions through Accessibility", async () =>
     ["clearInput"],
     ["setDictationDraft", "Visible draft"],
   ]);
+  assert.equal(task.calls.some((call) => call[0] === "cycleMode"), false);
   assert.ok(task.calls.some((call) => call[0] === "setVoice" && call[1] === false));
 });
 
-test("keeps task lifecycle actions on app-server and refreshes the visible task", async () => {
+test("routes structured questions and stored drafts through app-server", async () => {
+  const { controller, task, visible } = makeHybrid();
+  task.snapshot.userInput = { header: "Choice" };
+  task.snapshot.controls["clear-input"] = true;
+
+  await controller.navigate("down");
+  await controller.clearInput();
+
+  assert.deepEqual(visible.calls, []);
+  assert.ok(task.calls.some((call) => call[0] === "navigate" && call[1] === "down"));
+  assert.ok(task.calls.some((call) => call[0] === "clearInput"));
+});
+
+test("keeps visible lifecycle actions on the semantic Accessibility controller", async () => {
   const { controller, task, visible } = makeHybrid();
 
   await controller.attach();
@@ -88,14 +131,21 @@ test("keeps task lifecycle actions on app-server and refreshes the visible task"
   await controller.focusAgent("agent-a");
   await controller.workflow("Review this change.");
 
-  assert.deepEqual(visible.calls, [["activate"], ["activate"]]);
-  assert.ok(task.calls.some((call) => call[0] === "press" && call[1] === "new-task"));
-  assert.ok(task.calls.some((call) => call[0] === "adjustReasoning" && call[1] === 1));
-  assert.ok(task.calls.some((call) => call[0] === "cycleAccess"));
-  assert.ok(task.calls.filter((call) => call[0] === "attach").length >= 3);
+  assert.deepEqual(visible.calls, [
+    ["activate"],
+    ["press", "new-task"],
+    ["adjustReasoning", 1],
+    ["cycleAccess"],
+    ["workflow", "Review this change."],
+  ]);
+  assert.equal(task.calls.some((call) => call[0] === "press" && call[1] === "new-task"), false);
+  assert.equal(task.calls.some((call) => call[0] === "adjustReasoning"), false);
+  assert.equal(task.calls.some((call) => call[0] === "cycleAccess"), false);
+  assert.equal(task.calls.some((call) => call[0] === "workflow"), false);
+  assert.equal(task.calls.filter((call) => call[0] === "attach").length, 1);
 });
 
-test("resolves waiting approvals and active turns through app-server", async () => {
+test("resolves waiting approvals through app-server and stops the visible turn", async () => {
   const { controller, task, visible } = makeHybrid();
   task.snapshot.taskState = "waiting";
   task.snapshot.controls.stop = true;
@@ -104,8 +154,8 @@ test("resolves waiting approvals and active turns through app-server", async () 
   await controller.press("reject");
   await controller.press("stop");
 
-  assert.deepEqual(visible.calls, []);
+  assert.deepEqual(visible.calls, [["press", "stop"]]);
   assert.ok(task.calls.some((call) => call[0] === "press" && call[1] === "approve"));
   assert.ok(task.calls.some((call) => call[0] === "press" && call[1] === "reject"));
-  assert.ok(task.calls.some((call) => call[0] === "press" && call[1] === "stop"));
+  assert.equal(task.calls.some((call) => call[0] === "press" && call[1] === "stop"), false);
 });

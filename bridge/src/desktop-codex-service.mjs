@@ -53,7 +53,7 @@ export class DesktopCodexService extends EventEmitter {
   }) {
     super();
     if (!desktop) {
-      throw new TypeError("DesktopCodexService requires a direct Codex app-server controller.");
+      throw new TypeError("DesktopCodexService requires a visible Codex desktop controller.");
     }
     this.#workspaces = workspaces;
     this.#events = events;
@@ -66,7 +66,7 @@ export class DesktopCodexService extends EventEmitter {
       id: DESKTOP_SESSION_ID,
       workspaceId: "Vibe Pocket Codex",
       state: "starting",
-      terminalTail: "Checking the direct Codex app-server connection...",
+      terminalTail: "Checking the visible Codex desktop controls...",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       canInterrupt: false,

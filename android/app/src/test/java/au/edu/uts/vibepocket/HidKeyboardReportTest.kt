@@ -38,7 +38,56 @@ class HidKeyboardReportTest {
 
     @Test
     fun leavesCodexSemanticActionsForBridge() {
-        assertNull(CodexHidMapping.chords(ControllerAction("reasoning_depth", delta = 1)))
+        assertEquals(
+            listOf(
+                HidChord(
+                    modifier = HidKeyboardReport.MODIFIER_LEFT_CONTROL or
+                        HidKeyboardReport.MODIFIER_LEFT_SHIFT or
+                        HidKeyboardReport.MODIFIER_LEFT_ALT,
+                    usage = HidKeyboardReport.USAGE_U,
+                ),
+            ),
+            CodexHidMapping.chords(ControllerAction("reasoning_depth", delta = 1)),
+        )
+        assertEquals(
+            listOf(
+                HidChord(
+                    modifier = HidKeyboardReport.MODIFIER_LEFT_CONTROL or
+                        HidKeyboardReport.MODIFIER_LEFT_SHIFT or
+                        HidKeyboardReport.MODIFIER_LEFT_ALT,
+                    usage = HidKeyboardReport.USAGE_J,
+                ),
+            ),
+            CodexHidMapping.chords(ControllerAction("reasoning_depth", delta = -1)),
+        )
         assertNull(CodexHidMapping.chords(ControllerAction("workflow", workflowId = "review")))
+    }
+
+    @Test
+    fun sendsOnlyContextFreeNavigationDirectlyOverHid() {
+        val left = ControllerAction("navigate", direction = "left")
+
+        assertEquals(true, CodexHidMapping.shouldUseHid(left, hasUserInput = false))
+        assertEquals(false, CodexHidMapping.shouldUseHid(left, hasUserInput = true))
+        assertEquals(
+            false,
+            CodexHidMapping.shouldUseHid(ControllerAction("approve"), hasUserInput = false),
+        )
+        assertEquals(
+            false,
+            CodexHidMapping.shouldUseHid(ControllerAction("mode_cycle"), hasUserInput = false),
+        )
+        assertEquals(
+            false,
+            CodexHidMapping.shouldUseHid(ControllerAction("reasoning_depth", delta = 1), hasUserInput = false),
+        )
+        assertEquals(
+            false,
+            CodexHidMapping.shouldUseHid(ControllerAction("stop"), hasUserInput = true),
+        )
+        assertEquals(
+            false,
+            CodexHidMapping.shouldUseHid(ControllerAction("voice"), hasUserInput = false),
+        )
     }
 }
