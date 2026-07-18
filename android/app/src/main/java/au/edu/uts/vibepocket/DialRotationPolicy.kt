@@ -4,6 +4,7 @@ import kotlin.math.PI
 import kotlin.math.atan2
 
 internal const val DIAL_ROTATION_STEP_RADIANS = PI / 2.0
+internal const val DIAL_ROTATION_DEAD_ZONE_FRACTION = 0.22f
 
 internal data class DialRotationState(
     val previousAngleRadians: Double? = null,
@@ -21,8 +22,9 @@ internal fun beginDialRotation(
     pointerY: Float,
     centerX: Float,
     centerY: Float,
+    minimumRadius: Float = 0f,
 ): DialRotationState = DialRotationState(
-    previousAngleRadians = dialAngleRadians(pointerX, pointerY, centerX, centerY),
+    previousAngleRadians = dialAngleRadians(pointerX, pointerY, centerX, centerY, minimumRadius),
 )
 
 internal fun advanceDialRotation(
@@ -31,8 +33,10 @@ internal fun advanceDialRotation(
     pointerY: Float,
     centerX: Float,
     centerY: Float,
+    minimumRadius: Float = 0f,
 ): DialRotationUpdate {
-    val nextAngle = dialAngleRadians(pointerX, pointerY, centerX, centerY)
+    val nextAngle = dialAngleRadians(pointerX, pointerY, centerX, centerY, minimumRadius)
+        ?: return DialRotationUpdate(state = state)
     val previousAngle = state.previousAngleRadians ?: return DialRotationUpdate(
         state = state.copy(previousAngleRadians = nextAngle),
     )
@@ -55,8 +59,19 @@ internal fun advanceDialRotation(
     )
 }
 
-private fun dialAngleRadians(pointerX: Float, pointerY: Float, centerX: Float, centerY: Float): Double =
-    atan2((pointerY - centerY).toDouble(), (pointerX - centerX).toDouble())
+private fun dialAngleRadians(
+    pointerX: Float,
+    pointerY: Float,
+    centerX: Float,
+    centerY: Float,
+    minimumRadius: Float,
+): Double? {
+    require(minimumRadius >= 0f)
+    val deltaX = pointerX - centerX
+    val deltaY = pointerY - centerY
+    if ((deltaX * deltaX) + (deltaY * deltaY) < minimumRadius * minimumRadius) return null
+    return atan2(deltaY.toDouble(), deltaX.toDouble())
+}
 
 private fun normalizedAngleDelta(delta: Double): Double = when {
     delta > PI -> delta - (2.0 * PI)

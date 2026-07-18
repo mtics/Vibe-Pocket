@@ -1361,11 +1361,13 @@ private fun ReasoningDial(
                             if (!rotationEnabled) return@pointerInput
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
+                                val minimumRadius = min(size.width, size.height) * DIAL_ROTATION_DEAD_ZONE_FRACTION
                                 var dialState = beginDialRotation(
                                     down.position.x,
                                     down.position.y,
                                     size.width / 2f,
                                     size.height / 2f,
+                                    minimumRadius,
                                 )
                                 try {
                                     var pressed = true
@@ -1377,6 +1379,7 @@ private fun ReasoningDial(
                                             change.position.y,
                                             size.width / 2f,
                                             size.height / 2f,
+                                            minimumRadius,
                                         )
                                         dialState = update.state
                                         rotationDegrees += Math.toDegrees(update.deltaRadians).toFloat()

@@ -43,4 +43,35 @@ class DialRotationPolicyTest {
 
         assertEquals(1, update.step)
     }
+
+    @Test
+    fun centerTouchArmsTheDialWithoutCreatingASpuriousFirstStep() {
+        val started = beginDialRotation(
+            pointerX = 0f,
+            pointerY = 0f,
+            centerX = 0f,
+            centerY = 0f,
+            minimumRadius = 0.5f,
+        )
+
+        val armed = advanceDialRotation(
+            started,
+            pointerX = 1f,
+            pointerY = 0f,
+            centerX = 0f,
+            centerY = 0f,
+            minimumRadius = 0.5f,
+        )
+        val update = advanceDialRotation(
+            armed.state,
+            pointerX = 0f,
+            pointerY = -1f,
+            centerX = 0f,
+            centerY = 0f,
+            minimumRadius = 0.5f,
+        )
+
+        assertEquals(0, armed.step)
+        assertEquals(-1, update.step)
+    }
 }
