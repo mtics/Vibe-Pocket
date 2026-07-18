@@ -424,7 +424,9 @@ export class DesktopCodexService extends EventEmitter {
 
   async #perform(operation, fallbackMessage) {
     const result = await operation();
-    this.#recordAction(result?.message ?? fallbackMessage);
+    // The scheduled capability scan verifies desktop actions. Avoid publishing
+    // a transient success message before that scan changes the controller UI.
+    this.#recordAction(result?.message ?? fallbackMessage, { publish: false });
     this.#scheduleActionRefresh();
   }
 
@@ -472,13 +474,13 @@ export class DesktopCodexService extends EventEmitter {
     }));
   }
 
-  #recordAction(message) {
+  #recordAction(message, { publish = true } = {}) {
     this.#status = { ...this.#status, state: "ready", message };
     this.#session.state = this.#controllerState.taskState === "error" ? "error" : "active";
     this.#session.canInterrupt = this.#status.controls.stop;
     this.#session.terminalTail = message;
     this.#session.updatedAt = new Date().toISOString();
-    this.#touch("snapshot_changed");
+    if (publish) this.#touch("snapshot_changed");
   }
 
   #publicSession() {
@@ -486,7 +488,12 @@ export class DesktopCodexService extends EventEmitter {
   }
 
   #stateFingerprint() {
-    return JSON.stringify([this.#status, this.#controllerState, this.#session.state, this.#session.canInterrupt]);
+    return JSON.stringify([
+      { state: this.#status.state, controls: this.#status.controls },
+      this.#controllerState,
+      this.#session.state,
+      this.#session.canInterrupt,
+    ]);
   }
 
   #trimIdempotencyCache() {

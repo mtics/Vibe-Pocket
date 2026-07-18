@@ -233,6 +233,19 @@ test("acknowledges a desktop action before a slow state scan completes", async (
   await service.dispose();
 });
 
+test("defers ordinary action snapshots until the controller surface changes", async () => {
+  const events = new FakeEvents();
+  const service = makeService(new FakeDesktop(), events);
+  await service.start();
+  const publishedBeforeAction = events.published.length;
+
+  await service.command({ kind: "binding", inputId: "key_accept" }, "deferred-action");
+  await new Promise((resolve) => setTimeout(resolve, 240));
+
+  assert.equal(events.published.length, publishedBeforeAction);
+  await service.dispose();
+});
+
 test("reports a desktop action failure before a slow state scan completes", async () => {
   class DelayedFailureDesktop extends FakeDesktop {
     delayStatus = false;

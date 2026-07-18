@@ -107,7 +107,17 @@ class PocketViewModel(
                     runCatching { client.snapshot(config) }
                         .onSuccess { snapshot ->
                             if (_state.value.config == config) {
-                                _state.update { it.copy(snapshot = snapshot, isRefreshing = false, error = null) }
+                                _state.update { current ->
+                                    val visibleSnapshot = current.snapshot
+                                    val nextSnapshot = if (
+                                        visibleSnapshot != null && visibleSnapshot.hasSameControllerSurface(snapshot)
+                                    ) {
+                                        visibleSnapshot
+                                    } else {
+                                        snapshot
+                                    }
+                                    current.copy(snapshot = nextSnapshot, isRefreshing = false, error = null)
+                                }
                             }
                         }
                         .onFailure { error ->

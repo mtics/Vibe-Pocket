@@ -12,6 +12,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -84,6 +85,27 @@ class PocketViewModelTest {
 
         client.refreshRelease.complete(Unit)
         runCurrent()
+    }
+
+    @Test
+    fun transportOnlyRefreshKeepsTheVisibleControllerSnapshot() = runTest(dispatcher) {
+        val transportOnlyUpdate = VOICE_SNAPSHOT.copy(
+            revision = "r_transport",
+            status = BridgeStatus("ready", "Adjusted the visible ChatGPT Codex control."),
+        )
+        val client = SnapshotQueueClient(VOICE_SNAPSHOT, transportOnlyUpdate)
+        val viewModel = PocketViewModel(
+            store = FakeStore(ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+        val visibleSnapshot = viewModel.state.value.snapshot
+
+        viewModel.refresh()
+        runCurrent()
+
+        assertSame(visibleSnapshot, viewModel.state.value.snapshot)
     }
 
     @Test
@@ -208,6 +230,16 @@ class PocketViewModelTest {
             if (snapshotCalls > 1) refreshRelease.await()
             return VOICE_SNAPSHOT
         }
+
+        override suspend fun command(config: ConnectionConfig, command: PocketCommand) = Unit
+    }
+
+    private class SnapshotQueueClient(
+        vararg snapshots: PocketSnapshot,
+    ) : PocketClient {
+        private val queuedSnapshots = ArrayDeque(snapshots.toList())
+
+        override suspend fun snapshot(config: ConnectionConfig): PocketSnapshot = queuedSnapshots.removeFirst()
 
         override suspend fun command(config: ConnectionConfig, command: PocketCommand) = Unit
     }

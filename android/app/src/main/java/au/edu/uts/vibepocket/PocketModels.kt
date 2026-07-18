@@ -89,6 +89,12 @@ data class PocketSnapshot(
     }
 }
 
+/** The controller deck need not rebuild for a revision or status-message-only update. */
+internal fun PocketSnapshot.hasSameControllerSurface(other: PocketSnapshot): Boolean =
+    status.state == other.status.state &&
+        controls == other.controls &&
+        controller == other.controller
+
 data class BridgeStatus(
     val state: String,
     val message: String?,
