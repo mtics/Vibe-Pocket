@@ -80,7 +80,7 @@ export class MacCodexDesktopController {
   }
 
   async cycleAccess() {
-    return this.#invoke("mode-cycle");
+    return this.#invoke("access-cycle");
   }
 
   async adjustReasoning(delta) {

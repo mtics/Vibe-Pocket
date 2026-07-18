@@ -114,6 +114,20 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controls.reasoning, true);
 });
 
+test("clears a stale agent focus when the desktop no longer reports a selected task", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  desktop.agents = desktop.agents.map((agent) => ({ ...agent, focused: false }));
+
+  await service.command({ kind: "binding", inputId: "key_accept" }, "clear-stale-focus");
+
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.controller.focusedAgentId, null);
+  assert.equal(snapshot.controller.focusedAgentIndex, -1);
+  assert.ok(snapshot.controller.agents.every((agent) => agent.focused === false));
+});
+
 test("publishes hook-driven desktop state before returning the hook response", async () => {
   const desktop = new FakeDesktop();
   const events = new FakeEvents();

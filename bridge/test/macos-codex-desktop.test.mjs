@@ -39,7 +39,7 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
     ["/tmp/vibe-pocket-test.sock", "attach", [], ""],
     ["/tmp/vibe-pocket-test.sock", "control", ["new-task"], ""],
     ["/tmp/vibe-pocket-test.sock", "plan-mode", [], ""],
-    ["/tmp/vibe-pocket-test.sock", "mode-cycle", [], ""],
+    ["/tmp/vibe-pocket-test.sock", "access-cycle", [], ""],
     ["/tmp/vibe-pocket-test.sock", "reasoning", ["-1"], ""],
     ["/tmp/vibe-pocket-test.sock", "clear-input", [], ""],
     ["/tmp/vibe-pocket-test.sock", "workflow", [], "Review the visible task."],

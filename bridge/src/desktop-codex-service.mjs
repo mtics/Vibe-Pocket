@@ -415,7 +415,7 @@ export class DesktopCodexService extends EventEmitter {
         message: result.message ?? null,
         controls: normalizeControls(result.controls),
       };
-      this.#controllerState = normalizeControllerState(result, this.#controllerState.focusedAgentId);
+      this.#controllerState = normalizeControllerState(result);
       this.#session.state = this.#controllerState.taskState === "error" ? "error" : "active";
       this.#session.canInterrupt = this.#status.controls.stop;
       this.#session.terminalTail = result.message ?? "Ready to control Vibe Pocket Codex tasks.";
@@ -609,7 +609,7 @@ function emptyControllerState() {
   };
 }
 
-function normalizeControllerState(result, previousFocusedAgentId) {
+function normalizeControllerState(result) {
   const agents = Array.isArray(result.agents)
     ? result.agents
       .filter((agent) => agent && typeof agent.id === "string" && /^agent-[a-f0-9]{24}$/.test(agent.id)
@@ -623,8 +623,7 @@ function normalizeControllerState(result, previousFocusedAgentId) {
       }))
     : [];
   const reportedFocused = agents.find((agent) => agent.focused)?.id ?? null;
-  const focusedAgentId = reportedFocused
-    ?? (agents.some((agent) => agent.id === previousFocusedAgentId) ? previousFocusedAgentId : null);
+  const focusedAgentId = reportedFocused;
   const agentsWithFocus = agents.map((agent) => ({ ...agent, focused: agent.id === focusedAgentId }));
   return {
     taskState: TASK_STATES.has(result.taskState) ? result.taskState : "idle",
