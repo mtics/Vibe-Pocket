@@ -53,7 +53,7 @@ data class PocketSnapshot(
 
     fun agentFocusEnabled(agentId: String): Boolean {
         val state = controller ?: return false
-        return controls.focusAgent && state.agents.any { it.id == agentId }
+        return state.desktopFocused && controls.focusAgent && state.agents.any { it.id == agentId }
     }
 
     private fun actionEnabled(action: ControllerAction): Boolean = when (action.type) {
@@ -65,8 +65,8 @@ data class PocketSnapshot(
         "mode_cycle" -> controls.modeCycle && controller?.desktopFocused == true
         "access_cycle" -> controls.accessCycle && controller?.desktopFocused == true
         "clear_input" -> controls.clearInput
-        "focus_next" -> controls.focusAgent || status.state == "ready"
-        "focus_agent" -> controls.focusAgent
+        "focus_next" -> controls.focusAgent && controller?.desktopFocused == true
+        "focus_agent" -> controls.focusAgent && controller?.desktopFocused == true
         "select_layer" -> controller?.profile?.layers?.any { it.id == action.layerId } == true
         "navigate" -> controls.navigate && controller?.desktopFocused == true
         "reasoning_depth" -> controls.reasoning && controller?.desktopFocused == true &&

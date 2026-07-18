@@ -6,24 +6,47 @@ export class MacCodexDesktopController {
   #socketPath;
   #run;
   #openThread;
+  #threadCatalog;
   #wait;
   #voiceActive = false;
+  #foreground = false;
   #operationQueue = Promise.resolve();
 
   constructor({
     socketPath = process.env.VIBE_POCKET_HOST_SOCKET,
     run = runSocketRequest,
     openThread = openCodexThread,
+    threadCatalog = null,
     wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   } = {}) {
     this.#socketPath = socketPath;
     this.#run = run;
     this.#openThread = openThread;
+    this.#threadCatalog = threadCatalog;
     this.#wait = wait;
   }
 
   async status() {
-    return this.#invoke("status");
+    const result = await this.#invoke("status");
+    this.#foreground = result.foreground === true;
+    if (!this.#threadCatalog) return result;
+    try {
+      const agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
+      return {
+        ...result,
+        agents,
+        controls: {
+          ...result.controls,
+          "focus-agent": this.#foreground && agents.some((agent) => !agent.focused),
+        },
+      };
+    } catch {
+      return {
+        ...result,
+        agents: [],
+        controls: { ...result.controls, "focus-agent": false },
+      };
+    }
   }
 
   get voiceActive() {
@@ -83,17 +106,27 @@ export class MacCodexDesktopController {
   }
 
   async focusAgent(agentId) {
-    return this.#invoke("focus-agent", [agentId]);
+    if (!this.#threadCatalog) return this.#invoke("focus-agent", [agentId]);
+    if (!this.#foreground) {
+      throw new Error("Open Codex on the Mac before selecting another task.");
+    }
+    return this.#threadCatalog.focusAgent(agentId);
   }
 
   async workflow(prompt) {
     return this.#invoke("workflow", [], prompt);
   }
 
-  async dispose() {}
+  async dispose() {
+    await this.#threadCatalog?.dispose?.();
+  }
 
   async #invoke(action, args = [], input = "") {
-    const operation = this.#operationQueue.then(() => this.#invokeNow(action, args, input));
+    return this.#enqueue(() => this.#invokeNow(action, args, input));
+  }
+
+  async #enqueue(callback) {
+    const operation = this.#operationQueue.then(callback);
     this.#operationQueue = operation.catch(() => {});
     return operation;
   }

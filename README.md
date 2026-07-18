@@ -7,7 +7,7 @@ scoped semantic operations.
 
 ## Controller
 
-The Android 0.7.4 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.5 controller uses protocol v5 and a versioned profile from the
 M5:
 
 - Six live Agent Keys distinguish idle, unread, thinking, running,
@@ -24,10 +24,14 @@ M5:
   frontmost, Accept, Reject, Stop, Mode, Reasoning, Voice, and navigation use
   fixed HID chords. Direction keys repeat while held. Custom mappings that
   carry structured user input continue through the authenticated Bridge.
-- New task, Clear, Access, Agent focus, and workflows use narrow Bridge
-  operations. Clear writes only the visible Codex composer's AX value. Access
-  uses a semantic AX press and reports unavailable when macOS cannot expose the
-  menu reliably; it never falls back to moving the pointer.
+- Agent focus uses a read-only `codex app-server` task catalog and the native
+  `codex://threads/<id>` link. The catalog never resumes or modifies a task,
+  and macOS opens the link in the background without activating Codex. Native
+  task navigation does not wait behind an Accessibility status scan.
+- New task, Clear, Access, and workflows use narrow Bridge operations. Clear
+  writes only the visible Codex composer's AX value. Access uses a semantic AX
+  press and reports unavailable when macOS cannot expose the menu reliably; it
+  never falls back to moving the pointer.
 - Voice is push-to-talk for the visible ChatGPT Codex dictation control. Hold
   the key to hold ChatGPT's own dictation shortcut and release it to send a
   zero-key HID report. The Bridge uses the same semantic control only when HID
@@ -69,8 +73,10 @@ documents host and Android Accessory modes, not a generic application-provided
 USB keyboard-gadget profile. A USB-C cable can still charge the phone or carry
 ADB/accessory traffic, but it is not a replacement for the Bluetooth HID link.
 
-Visible command keys operate the Codex task currently shown on the M5. Agent
-keys use stable opaque IDs for Agent controls exposed by that visible task.
+Visible command keys operate the Codex task currently shown on the M5. The
+Bridge resolves visible task labels uniquely against Codex's read-only task
+catalog, omits workspace or ambiguous rows, and derives stable opaque Agent IDs
+from the real task IDs.
 `vibe-pocket-attach` is an optional shortcut for opening a known desktop task
 by ID before focusing its composer.
 
@@ -97,12 +103,17 @@ The installer copies the runtime to:
 ```
 
 The bridge uses a narrowly scoped Swift Accessibility driver compiled into the
-signed Bridge Host. It reads the visible Codex structure, performs whitelisted
-AXPress or AXValue operations where needed, and verifies state changes where
-the UI exposes a result. Mode and Reasoning use installed Codex semantic
-shortcuts. The helper never synthesizes pointer movement. Node handles
-authenticated phone commands, controller profiles, and event delivery without
-creating a hidden Codex session.
+signed Bridge Host. It reads the visible Codex structure and performs
+whitelisted AXPress or AXValue operations only where Codex has no native task
+link or installed shortcut. Mode and Reasoning use installed Codex semantic
+shortcuts, while Agent focus uses real task IDs and background native links.
+The helper never synthesizes pointer movement. Node handles authenticated phone
+commands, a read-only task catalog, controller profiles, and event delivery
+without creating or resuming a hidden Codex session.
+The health listener starts before the first Accessibility discovery pass, so a
+slow or unusually large Codex window cannot make launchd installation look
+unhealthy; the authenticated controller snapshot remains `starting` until that
+pass completes.
 
 After installation, add **Vibe Pocket Bridge Host** once under **System
 Settings > Privacy & Security > Accessibility**. The background service checks
@@ -234,7 +245,8 @@ only a bounded task label and state; task execution remains inside Codex.
 
 ## Verification
 
-- Bridge: 84 Node tests cover semantic Accessibility routing, controller
+- Bridge: 90 Node tests cover native task-link routing, semantic Accessibility
+  routing, controller
   profiles, desktop task focusing, compatibility modules, permission schemas,
   modes, reasoning, stop, workflows, gestures, layer switching, Agent focus,
   polling, idempotency, authentication, and HTTP health.

@@ -449,22 +449,6 @@ private func normalizedAttribute(_ element: AXUIElement, _ attribute: CFString) 
     .lowercased()
 }
 
-private func taskList(in root: AXUIElement) -> AXUIElement? {
-  let lists = descendants(of: root, maxDepth: 22) {
-    attributeString($0, kAXRoleAttribute as CFString) == "AXList"
-  }
-  let candidates = lists.compactMap { list -> (list: AXUIElement, rows: Int, named: Bool)? in
-    let rows = taskRows(in: list).count
-    guard rows > 0 else { return nil }
-    let named = taskListLabels.contains(normalizedAttribute(list, kAXDescriptionAttribute as CFString))
-      || taskListLabels.contains(normalizedAttribute(list, kAXTitleAttribute as CFString))
-    return (list, rows, named)
-  }
-  let namedCandidates = candidates.filter(\.named)
-  return (namedCandidates.isEmpty ? candidates : namedCandidates)
-    .max(by: { $0.rows < $1.rows })?.list
-}
-
 private func taskLabel(in button: AXUIElement) -> String? {
   let labels = descendants(of: button, maxDepth: 7) {
     attributeString($0, kAXRoleAttribute as CFString) == "AXStaticText"
@@ -511,6 +495,31 @@ private func taskRows(in list: AXUIElement) -> [TaskRow] {
   }
   visit(list, depth: 0, clickableAncestor: nil)
   return result
+}
+
+private struct TaskListSnapshot {
+  let rows: [TaskRow]
+  let currentRow: TaskRow?
+}
+
+private func taskListSnapshot(in root: AXUIElement) -> TaskListSnapshot? {
+  let lists = descendants(of: root, maxDepth: 22) {
+    attributeString($0, kAXRoleAttribute as CFString) == "AXList"
+  }
+  let candidates = lists.compactMap { list -> (rows: [TaskRow], named: Bool)? in
+    let rows = taskRows(in: list)
+    guard !rows.isEmpty else { return nil }
+    let named = taskListLabels.contains(normalizedAttribute(list, kAXDescriptionAttribute as CFString))
+      || taskListLabels.contains(normalizedAttribute(list, kAXTitleAttribute as CFString))
+    return (rows, named)
+  }
+  let namedCandidates = candidates.filter(\.named)
+  guard let selected = (namedCandidates.isEmpty ? candidates : namedCandidates)
+    .max(by: { $0.rows.count < $1.rows.count }) else { return nil }
+  let currentRow = candidates.lazy.flatMap(\.rows).first { row in
+    taskIsFocused(row.content) || taskIsFocused(row.target)
+  }
+  return TaskListSnapshot(rows: selected.rows, currentRow: currentRow)
 }
 
 private func taskIsFocused(_ element: AXUIElement) -> Bool {
@@ -579,17 +588,12 @@ private func taskIndicatorState(in button: AXUIElement) -> String {
 }
 
 private func agentTargets(in root: AXUIElement, currentTaskState: String) -> [AgentTarget] {
-  guard let list = taskList(in: root) else { return [] }
-  let allLists = descendants(of: root, maxDepth: 22) {
-    attributeString($0, kAXRoleAttribute as CFString) == "AXList"
-  }
-  let currentRow = allLists.lazy.flatMap(taskRows(in:)).first(where: { row in
-    taskIsFocused(row.content) || taskIsFocused(row.target)
-  })
+  guard let snapshot = taskListSnapshot(in: root) else { return [] }
+  let currentRow = snapshot.currentRow
   let visibleTaskTitle = currentRow.flatMap { taskLabel(in: $0.content) }
   var orderedRows = [TaskRow]()
   if let currentRow { orderedRows.append(currentRow) }
-  for row in taskRows(in: list) {
+  for row in snapshot.rows {
     guard let label = taskLabel(in: row.content),
           !orderedRows.contains(where: { existing in
             taskLabel(in: existing.content).map { taskLabelsMatch($0, label) } == true

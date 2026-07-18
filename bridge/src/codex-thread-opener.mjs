@@ -17,7 +17,7 @@ export async function openCodexThread(threadId, {
 }
 
 function platformCommand(platform, url) {
-  if (platform === "darwin") return ["open", ["-b", "com.openai.codex", url]];
+  if (platform === "darwin") return ["open", ["-g", "-b", "com.openai.codex", url]];
   if (platform === "win32") return ["cmd.exe", ["/d", "/s", "/c", "start", "", url]];
   return ["xdg-open", [url]];
 }

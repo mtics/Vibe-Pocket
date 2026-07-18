@@ -19,7 +19,7 @@ function recorder() {
 
 test("opens an exact Codex thread through each platform URI handler", async () => {
   const cases = [
-    ["darwin", "open", ["-b", "com.openai.codex", "codex://threads/019f-test"]],
+    ["darwin", "open", ["-g", "-b", "com.openai.codex", "codex://threads/019f-test"]],
     ["win32", "cmd.exe", ["/d", "/s", "/c", "start", "", "codex://threads/019f-test"]],
     ["linux", "xdg-open", ["codex://threads/019f-test"]],
   ];

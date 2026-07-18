@@ -73,3 +73,110 @@ test("opens an exact desktop task before attaching without starting Codex app-se
   assert.equal(lifecycle.accepted, false);
   assert.deepEqual(await lifecycle.response, {});
 });
+
+test("resolves and focuses Agent keys through native task links instead of Accessibility", async () => {
+  const calls = [];
+  const threadCatalog = {
+    async resolveVisibleAgents(agents) {
+      calls.push(["resolveVisibleAgents", agents]);
+      return [
+        { id: "agent-111111111111111111111111", label: "Current", state: "idle", focused: true },
+        { id: "agent-222222222222222222222222", label: "Target", state: "idle", focused: false },
+      ];
+    },
+    async focusAgent(agentId) {
+      calls.push(["nativeFocus", agentId]);
+      return { ok: true, message: "opened" };
+    },
+    async dispose() {
+      calls.push(["dispose"]);
+    },
+  };
+  const controller = new MacCodexDesktopController({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog,
+    run: async (socketPath, action, args, input) => {
+      calls.push([socketPath, action, args, input]);
+      return {
+        ok: true,
+        foreground: true,
+        controls: { "focus-agent": true },
+        agents: [{ id: "agent-aaaaaaaaaaaaaaaaaaaaaaaa", label: "AX row", state: "idle", focused: true }],
+      };
+    },
+  });
+
+  const status = await controller.status();
+  assert.equal(status.controls["focus-agent"], true);
+  assert.deepEqual(status.agents.map(({ label }) => label), ["Current", "Target"]);
+  await controller.focusAgent(status.agents[1].id);
+  await controller.dispose();
+
+  assert.deepEqual(calls.map((call) => call[0]), [
+    "/tmp/vibe-pocket-test.sock",
+    "resolveVisibleAgents",
+    "nativeFocus",
+    "dispose",
+  ]);
+  assert.ok(!calls.some((call) => call[1] === "focus-agent"));
+});
+
+test("disables native Agent navigation while Codex is not frontmost", async () => {
+  let focused = false;
+  const controller = new MacCodexDesktopController({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() {
+        return [{ id: "agent-111111111111111111111111", label: "Target", state: "idle", focused: false }];
+      },
+      async focusAgent() { focused = true; },
+    },
+    run: async () => ({
+      ok: true,
+      foreground: false,
+      controls: { "focus-agent": true },
+      agents: [],
+    }),
+  });
+
+  const status = await controller.status();
+  assert.equal(status.controls["focus-agent"], false);
+  await assert.rejects(() => controller.focusAgent(status.agents[0].id), /Open Codex on the Mac/i);
+  assert.equal(focused, false);
+});
+
+test("does not queue native Agent navigation behind a slow Accessibility scan", async () => {
+  let statusCalls = 0;
+  let releaseScan;
+  const slowScan = new Promise((resolve) => { releaseScan = resolve; });
+  const nativeFocuses = [];
+  const threadCatalog = {
+    async resolveVisibleAgents() {
+      return [
+        { id: "agent-111111111111111111111111", label: "Current", state: "idle", focused: true },
+        { id: "agent-222222222222222222222222", label: "Target", state: "idle", focused: false },
+      ];
+    },
+    async focusAgent(agentId) {
+      nativeFocuses.push(agentId);
+      return { ok: true, message: "opened" };
+    },
+  };
+  const controller = new MacCodexDesktopController({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog,
+    run: async () => {
+      statusCalls += 1;
+      if (statusCalls === 2) await slowScan;
+      return { ok: true, foreground: true, controls: {}, agents: [] };
+    },
+  });
+
+  const initial = await controller.status();
+  const pendingScan = controller.status();
+  await controller.focusAgent(initial.agents[1].id);
+
+  assert.deepEqual(nativeFocuses, ["agent-222222222222222222222222"]);
+  releaseScan();
+  await pendingScan;
+});

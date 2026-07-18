@@ -66,6 +66,17 @@ class PocketSnapshotParserTest {
     }
 
     @Test
+    fun agentNavigationIsDisabledWhenCodexIsNotFrontmost() {
+        val root = JSONObject(CONTROLLER_SNAPSHOT)
+        root.getJSONObject("controller").put("foreground", false)
+
+        val snapshot = parsePocketSnapshot(root)
+
+        assertFalse(snapshot.agentFocusEnabled("agent-0123456789abcdef01234567"))
+        assertFalse(snapshot.inputEnabled("touch"))
+    }
+
+    @Test
     fun selectedEmptyLayerDisablesMappedInputs() {
         val root = JSONObject(CONTROLLER_SNAPSHOT)
         root.getJSONObject("controller").put("activeLayerId", "layer-2")
