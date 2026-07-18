@@ -36,6 +36,8 @@ rm -rf "$RUNTIME_DIR/node_modules"
 ditto "$BRIDGE_DIR" "$RUNTIME_DIR"
 chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
 chmod +x "$RUNTIME_DIR/bin/attach-current-task.sh"
+chmod +x "$RUNTIME_DIR/bin/report-codex-hook.sh"
+chmod +x "$RUNTIME_DIR/bin/install-codex-hooks.mjs"
 # Remove artifacts left by releases that supported macOS Accessibility control.
 rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app" "$RUNTIME_DIR/bin/vibe-pocket-codex-helper"
 rm -f \
@@ -59,6 +61,11 @@ TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
 } > "$TEMP_CONFIG"
 chmod 600 "$TEMP_CONFIG"
 mv "$TEMP_CONFIG" "$CONFIG_FILE"
+
+HOOKS_RESULT=$("$NODE_PATH" \
+  "$RUNTIME_DIR/bin/install-codex-hooks.mjs" \
+  "$HOME/.codex/hooks.json" \
+  "$RUNTIME_DIR/bin/report-codex-hook.sh")
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -112,5 +119,6 @@ fi
 
 print "Vibe Pocket LaunchAgent installed on 127.0.0.1:$PORT."
 print "Codex control engine: app-server (direct JSON-RPC)."
+print "Codex lifecycle hooks: $HOOKS_RESULT."
 print "Pairing token is stored in $CONFIG_FILE with mode 0600."
 print "macOS Accessibility permission is not used."

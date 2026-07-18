@@ -59,6 +59,11 @@ class FakeDesktop {
   async focusAgent(index) { this.calls.push(["focusAgent", index]); }
   async adjustReasoning(delta) { this.calls.push(["adjustReasoning", delta]); }
   async workflow(prompt) { this.calls.push(["workflow", prompt]); }
+  async applyLifecycleHook(event, payload) {
+    this.calls.push(["applyLifecycleHook", event, payload]);
+    this.taskState = event === "Stop" ? "complete" : "thinking";
+    return { accepted: true, response: Promise.resolve({ event }) };
+  }
 }
 
 class MemoryProfileStore {
@@ -107,6 +112,26 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controller.access.label, "Workspace");
   assert.equal(snapshot.controller.reasoning.label, "High");
   assert.equal(snapshot.controls.reasoning, true);
+});
+
+test("publishes hook-driven desktop state before returning the hook response", async () => {
+  const desktop = new FakeDesktop();
+  const events = new FakeEvents();
+  const service = makeService(desktop, events);
+  await service.start();
+  const initialRevision = (await service.snapshot()).revision;
+
+  const response = await service.codexHook("UserPromptSubmit", {
+    hook_event_name: "UserPromptSubmit",
+    session_id: "019f2ce2-e042-7ab0-a73d-9fa41d58e210",
+  });
+
+  assert.deepEqual(response, { event: "UserPromptSubmit" });
+  assert.deepEqual(desktop.calls, [["applyLifecycleHook", "UserPromptSubmit", {
+    hook_event_name: "UserPromptSubmit",
+    session_id: "019f2ce2-e042-7ab0-a73d-9fa41d58e210",
+  }]]);
+  assert.notEqual((await service.snapshot()).revision, initialRevision);
 });
 
 test("routes default-layer keys, joystick, touch, and dial inputs", async () => {

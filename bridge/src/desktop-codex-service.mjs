@@ -24,6 +24,7 @@ import { PocketError } from "./pocket-error.mjs";
 const DESKTOP_SESSION_ID = "vibe-pocket-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
 const TASK_STATES = new Set(["idle", "unread", "thinking", "executing", "waiting", "complete", "error"]);
+const CODEX_HOOK_EVENTS = new Set(["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"]);
 
 export class DesktopCodexService extends EventEmitter {
   #workspaces;
@@ -123,6 +124,21 @@ export class DesktopCodexService extends EventEmitter {
     });
     this.#commandQueue = execution.catch(() => {});
     return execution;
+  }
+
+  async codexHook(event, payload) {
+    if (!CODEX_HOOK_EVENTS.has(event)) {
+      throw new PocketError(400, "invalid_hook_event", "Unsupported Codex lifecycle event.");
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new PocketError(400, "invalid_hook_payload", "Codex lifecycle payload must be a JSON object.");
+    }
+
+    const lifecycle = await this.#desktop.applyLifecycleHook(event, payload);
+    await this.#refreshAvailability({ publishIfChanged: true });
+    const response = await lifecycle.response;
+    await this.#refreshAvailability({ publishIfChanged: true });
+    return response;
   }
 
   async command(command, idempotencyKey) {

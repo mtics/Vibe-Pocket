@@ -34,6 +34,12 @@ export function createPocketHttpServer({ service, events, token }) {
         sendJson(response, 200, responseBody);
         return;
       }
+      const hookMatch = url.pathname.match(/^\/v1\/pocket\/codex-hooks\/([A-Za-z]+)$/);
+      if (request.method === "POST" && hookMatch) {
+        const responseBody = await service.codexHook(hookMatch[1], await readJson(request, 2 * 1024 * 1024));
+        sendJson(response, 200, responseBody);
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v1/pocket/commands") {
         const command = await readJson(request);
         const responseBody = await service.command(command, request.headers["idempotency-key"]);
@@ -58,14 +64,14 @@ function authorized(request, token) {
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
 
-function readJson(request) {
+function readJson(request, maxLength = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let body = "";
     request.setEncoding("utf8");
     request.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 64 * 1024) {
-        reject(new PocketError(413, "body_too_large", "Command payload exceeds 64 KB."));
+      if (body.length > maxLength) {
+        reject(new PocketError(413, "body_too_large", "Request payload is too large."));
         request.destroy();
       }
     });

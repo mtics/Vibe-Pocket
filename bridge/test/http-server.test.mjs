@@ -8,11 +8,16 @@ const TOKEN = "test-token-with-at-least-24-characters";
 async function withServer(run) {
   const calls = [];
   const attachedThreads = [];
+  const hooks = [];
   const service = {
     async snapshot() { return { revision: "r_7", controller: { taskState: "idle" } }; },
     async bindDesktopThread(threadId) {
       attachedThreads.push(threadId);
       return { attached: true, revision: "r_8" };
+    },
+    async codexHook(event, payload) {
+      hooks.push({ event, payload });
+      return { hookSpecificOutput: { hookEventName: event } };
     },
     async command(command, idempotencyKey) {
       calls.push({ command, idempotencyKey });
@@ -24,7 +29,7 @@ async function withServer(run) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await run({ baseUrl: `http://127.0.0.1:${port}`, calls, attachedThreads });
+    await run({ baseUrl: `http://127.0.0.1:${port}`, calls, attachedThreads, hooks });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -93,5 +98,35 @@ test("desktop task attachment is authenticated and forwards only the task ID", a
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { attached: true, revision: "r_8" });
     assert.deepEqual(attachedThreads, ["019f2ce2-e042-7ab0-a73d-9fa41d58e210"]);
+  });
+});
+
+test("Codex lifecycle hooks are authenticated and forward bounded JSON", async () => {
+  await withServer(async ({ baseUrl, hooks }) => {
+    const payload = {
+      hook_event_name: "PreToolUse",
+      session_id: "019f2ce2-e042-7ab0-a73d-9fa41d58e210",
+      turn_id: "turn-7",
+      cwd: "/Users/lizhw/Project",
+      tool_use_id: "tool-2",
+    };
+    const unauthorized = await fetch(`${baseUrl}/v1/pocket/codex-hooks/PreToolUse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(unauthorized.status, 401);
+
+    const response = await fetch(`${baseUrl}/v1/pocket/codex-hooks/PreToolUse`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { hookSpecificOutput: { hookEventName: "PreToolUse" } });
+    assert.deepEqual(hooks, [{ event: "PreToolUse", payload }]);
   });
 });

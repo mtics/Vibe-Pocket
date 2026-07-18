@@ -214,6 +214,23 @@ test("opens the exact Codex desktop thread selected by Agent controls", async ()
   assert.deepEqual(openedThreads, ["thread-a", "thread-b", "thread-a"]);
 });
 
+test("keeps six Agent key slots stable when task recency changes", async () => {
+  const appServer = new FakeAppServer();
+  appServer.threads = [
+    ownedThread({ id: "thread-a", name: "First", updatedAt: 2 }),
+    ownedThread({ id: "thread-b", name: "Second", sessionId: "session-b", updatedAt: 1 }),
+  ];
+  const { controller } = makeController(appServer, ["thread-a", "thread-b"]);
+
+  const before = await controller.status();
+  appServer.threads.find(({ id }) => id === "thread-b").updatedAt = 99;
+  const after = await controller.status();
+
+  assert.deepEqual(after.agents.map(({ id }) => id), before.agents.map(({ id }) => id));
+  await controller.navigate("down");
+  assert.equal((await controller.status()).agents.find(({ focused }) => focused).label, "Second");
+});
+
 test("explicitly binds the current top-level Codex desktop task", async () => {
   const threadId = "019f2ce2-e042-7ab0-a73d-9fa41d58e210";
   const appServer = new FakeAppServer();
@@ -235,6 +252,83 @@ test("explicitly binds the current top-level Codex desktop task", async () => {
   assert.equal(status.agents[0].focused, true);
   assert.equal(status.agents[0].label, "Current desktop task");
   assert.ok(appServer.calls.some(({ method, params }) => method === "thread/resume" && params.threadId === threadId));
+});
+
+test("maps external Codex hooks without claiming interrupt ownership", async () => {
+  const threadId = "019f2ce2-e042-7ab0-a73d-9fa41d58e210";
+  const appServer = new FakeAppServer();
+  appServer.threads = [ownedThread({ id: threadId, threadSource: "codexDesktop", sourceKind: "cli" })];
+  const { controller } = makeController(appServer, [threadId]);
+  await controller.status();
+  const payload = (event, extra = {}) => ({
+    hook_event_name: event,
+    session_id: threadId,
+    turn_id: "turn-desktop-1",
+    cwd: "/Users/lizhw/Project",
+    ...extra,
+  });
+
+  await controller.applyLifecycleHook("UserPromptSubmit", payload("UserPromptSubmit"));
+  assert.equal((await controller.status()).taskState, "thinking");
+  assert.equal((await controller.status()).controls.stop, false);
+  await assert.rejects(
+    () => controller.press("stop"),
+    /no interruptible turn/i,
+  );
+
+  await controller.applyLifecycleHook("PreToolUse", payload("PreToolUse", { tool_use_id: "tool-a" }));
+  await controller.applyLifecycleHook("PreToolUse", payload("PreToolUse", { tool_use_id: "tool-b" }));
+  await controller.applyLifecycleHook("PostToolUse", payload("PostToolUse", { tool_use_id: "tool-a" }));
+  assert.equal((await controller.status()).taskState, "executing");
+  await controller.applyLifecycleHook("PostToolUse", payload("PostToolUse", { tool_use_id: "tool-b" }));
+  assert.equal((await controller.status()).taskState, "thinking");
+
+  const allow = await controller.applyLifecycleHook("PermissionRequest", payload("PermissionRequest", {
+    tool_name: "exec_command",
+  }));
+  let status = await controller.status();
+  assert.equal(status.taskState, "waiting");
+  assert.equal(status.controls.approve, true);
+  assert.equal(status.controls.reject, true);
+  await controller.press("approve");
+  assert.deepEqual(await allow.response, {
+    hookSpecificOutput: {
+      hookEventName: "PermissionRequest",
+      decision: { behavior: "allow" },
+    },
+  });
+
+  const deny = await controller.applyLifecycleHook("PermissionRequest", payload("PermissionRequest", {
+    tool_name: "apply_patch",
+  }));
+  await controller.press("reject");
+  assert.deepEqual(await deny.response, {
+    hookSpecificOutput: {
+      hookEventName: "PermissionRequest",
+      decision: { behavior: "deny", message: "Rejected from Vibe Pocket." },
+    },
+  });
+
+  await controller.applyLifecycleHook("Stop", payload("Stop"));
+  status = await controller.status();
+  assert.equal(status.taskState, "complete");
+  assert.equal(status.controls.stop, false);
+});
+
+test("ignores hook events from tasks that Vibe Pocket does not own", async () => {
+  const threadId = "019f2ce2-e042-7ab0-a73d-9fa41d58e210";
+  const { controller } = makeController();
+  await controller.status();
+
+  const lifecycle = await controller.applyLifecycleHook("UserPromptSubmit", {
+    hook_event_name: "UserPromptSubmit",
+    session_id: threadId,
+    turn_id: "turn-foreign",
+    cwd: "/Users/lizhw/Project",
+  });
+
+  assert.equal(lifecycle.accepted, false);
+  assert.deepEqual(await lifecycle.response, {});
 });
 
 test("refuses to bind a desktop task outside configured workspaces", async () => {
@@ -270,10 +364,14 @@ test("cycles collaboration mode and access independently before a workflow", asy
   const { appServer, controller } = makeController();
   await controller.status();
   await controller.attach();
+  await controller.adjustReasoning(1);
   await controller.cycleMode();
   assert.equal((await controller.status()).mode.label, "Plan");
   assert.equal((await controller.status()).access.label, "Workspace");
-  assert.equal(appServer.calls.findLast(({ method }) => method === "thread/settings/update").params.collaborationMode.mode, "plan");
+  assert.equal((await controller.status()).reasoning.label, "high");
+  const modeUpdate = appServer.calls.findLast(({ method }) => method === "thread/settings/update");
+  assert.equal(modeUpdate.params.collaborationMode.mode, "plan");
+  assert.equal(modeUpdate.params.collaborationMode.settings.reasoning_effort, "high");
   await controller.cycleAccess();
   assert.equal((await controller.status()).access.label, "Full access");
 

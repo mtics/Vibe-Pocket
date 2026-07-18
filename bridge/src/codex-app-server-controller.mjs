@@ -37,6 +37,8 @@ const FALLBACK_COLLABORATION_MODES = [
 ];
 const FALLBACK_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const THREAD_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const LIFECYCLE_EVENTS = new Set(["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"]);
+const DEFAULT_HOOK_APPROVAL_TIMEOUT_MS = 120_000;
 
 export class CodexAppServerController {
   #appServer;
@@ -45,6 +47,7 @@ export class CodexAppServerController {
   #openThread;
   #started = false;
   #threads = [];
+  #slotThreadIds = [];
   #rootThreads = new Map();
   #ownedRootIds = new Set();
   #focusThreadId = null;
@@ -54,6 +57,9 @@ export class CodexAppServerController {
   #finishedTurns = new Set();
   #threadStatuses = new Map();
   #threadOutcomes = new Map();
+  #lifecycleStates = new Map();
+  #hookApprovals = new Map();
+  #nextHookApprovalId = 1;
   #executionItems = new Map();
   #approvals = new Map();
   #userInputs = new Map();
@@ -69,12 +75,20 @@ export class CodexAppServerController {
   #defaultEffort = "medium";
   #voiceActive = false;
   #draft = null;
+  #hookApprovalTimeoutMs;
 
-  constructor({ appServer, workspaces, ownershipStore = null, openThread = openCodexThread }) {
+  constructor({
+    appServer,
+    workspaces,
+    ownershipStore = null,
+    openThread = openCodexThread,
+    hookApprovalTimeoutMs = DEFAULT_HOOK_APPROVAL_TIMEOUT_MS,
+  }) {
     this.#appServer = appServer;
     this.#workspaces = workspaces;
     this.#ownershipStore = ownershipStore;
     this.#openThread = openThread;
+    this.#hookApprovalTimeoutMs = hookApprovalTimeoutMs;
     this.#appServer.on("notification", (message) => this.#onNotification(message));
     this.#appServer.on("serverRequest", (message) => this.#onServerRequest(message));
   }
@@ -84,6 +98,7 @@ export class CodexAppServerController {
     await this.#refreshThreads();
     if (this.#focusThreadId) await this.#ensureLoaded(this.#focusThreadId);
     const agents = this.#agents();
+    const hookApproval = this.#focusedHookApproval();
     const approval = this.#focusedApproval();
     const userInput = this.#focusedUserInput();
     const settings = this.#settingsFor(this.#focusThreadId);
@@ -99,8 +114,8 @@ export class CodexAppServerController {
         voice: true,
         stop: this.#activeTurns.has(this.#focusThreadId),
         "new-task": true,
-        approve: Boolean(approval) || Boolean(userInput) || hasDraft,
-        reject: Boolean(approval) || Boolean(userInput) || hasDraft,
+        approve: Boolean(hookApproval) || Boolean(approval) || Boolean(userInput) || hasDraft,
+        reject: Boolean(hookApproval) || Boolean(approval) || Boolean(userInput) || hasDraft,
         "clear-input": hasDraft || hasUserInputDraft,
         "focus-agent": agents.length > 0,
         "mode-cycle": true,
@@ -150,10 +165,67 @@ export class CodexAppServerController {
     this.#ownedRootIds.add(threadId);
     this.#rootThreads.set(threadId, thread);
     await this.#ownershipStore?.add?.(threadId);
+    this.#assignThreadSlot(threadId, { replaceLast: true });
     this.#registerOwnedThread(thread);
     await this.#selectThread(threadId);
     await this.#showThread(threadId);
     return { message: `Attached the current Codex desktop task: ${threadLabel(thread)}.` };
+  }
+
+  async applyLifecycleHook(event, payload) {
+    await this.#ensureStarted();
+    const threadId = payload.session_id;
+    const turnId = printableText(payload.turn_id, 200);
+    if (
+      !LIFECYCLE_EVENTS.has(event)
+      || payload.hook_event_name !== event
+      || typeof threadId !== "string"
+      || !THREAD_ID_PATTERN.test(threadId)
+      || !turnId
+      || !this.#workspaceAllows(payload.cwd)
+      || !this.#isAuthorizedHookThread(threadId)
+    ) {
+      return { accepted: false, response: Promise.resolve({}) };
+    }
+
+    const lifecycle = this.#lifecycleFor(threadId, turnId);
+    if (event !== "Stop") {
+      this.#threadOutcomes.delete(threadId);
+      if (threadId === this.#focusThreadId) this.#unreadThreads.delete(threadId);
+    }
+
+    if (event === "UserPromptSubmit") {
+      this.#releaseHookApprovals(threadId);
+      lifecycle.activeTools.clear();
+      lifecycle.state = "thinking";
+    } else if (event === "PreToolUse") {
+      const toolUseId = printableText(payload.tool_use_id, 240);
+      if (toolUseId) lifecycle.activeTools.add(toolUseId);
+      lifecycle.state = "executing";
+    } else if (event === "PostToolUse") {
+      const toolUseId = printableText(payload.tool_use_id, 240);
+      if (toolUseId) lifecycle.activeTools.delete(toolUseId);
+      lifecycle.state = lifecycle.activeTools.size > 0 ? "executing" : "thinking";
+    } else if (event === "PermissionRequest") {
+      lifecycle.state = "waiting";
+      return {
+        accepted: true,
+        response: this.#waitForHookApproval({
+          threadId,
+          turnId,
+          toolName: printableText(payload.tool_name, 240) ?? "Codex tool",
+        }),
+      };
+    } else if (event === "Stop") {
+      this.#releaseHookApprovals(threadId);
+      lifecycle.activeTools.clear();
+      lifecycle.state = "complete";
+      this.#executionItems.delete(threadId);
+      this.#threadOutcomes.set(threadId, "complete");
+      if (threadId !== this.#focusThreadId) this.#unreadThreads.add(threadId);
+    }
+
+    return { accepted: true, response: Promise.resolve({}) };
   }
 
   async press(control) {
@@ -299,6 +371,7 @@ export class CodexAppServerController {
 
   async dispose() {
     if (!this.#started) return;
+    this.#releaseHookApprovals();
     this.#started = false;
     await this.#appServer.stop();
   }
@@ -376,10 +449,10 @@ export class CodexAppServerController {
 
   async #refreshThreads() {
     await this.#hydrateOwnedRoots();
-    const roots = [...this.#rootThreads.values()]
+    const allRoots = [...this.#rootThreads.values()]
       .filter((thread) => this.#workspaceAllows(thread.cwd))
-      .sort((left, right) => (right.recencyAt ?? right.updatedAt ?? 0) - (left.recencyAt ?? left.updatedAt ?? 0))
-      .slice(0, MAX_AGENTS);
+      .sort((left, right) => (right.recencyAt ?? right.updatedAt ?? 0) - (left.recencyAt ?? left.updatedAt ?? 0));
+    const roots = allRoots.slice(0, MAX_AGENTS);
     this.#ownedSessionIds = new Set(roots.map((thread) => thread.sessionId).filter(Boolean));
 
     let descendants = [];
@@ -394,9 +467,24 @@ export class CodexAppServerController {
     descendants = agentResults.flatMap((result) => result.data ?? [])
       .filter((thread) => this.#ownedSessionIds.has(thread.sessionId) && this.#workspaceAllows(thread.cwd));
 
-    const merged = [...roots, ...descendants]
-      .sort((left, right) => (right.recencyAt ?? right.updatedAt ?? 0) - (left.recencyAt ?? left.updatedAt ?? 0));
-    this.#threads = uniqueThreads(merged).slice(0, MAX_AGENTS);
+    const candidates = uniqueThreads([
+      ...allRoots,
+      ...descendants.sort((left, right) => (
+        (right.recencyAt ?? right.updatedAt ?? 0) - (left.recencyAt ?? left.updatedAt ?? 0)
+      )),
+    ]);
+    const candidatesById = new Map(candidates.map((thread) => [thread.id, thread]));
+    const retained = this.#slotThreadIds.filter((threadId) => candidatesById.has(threadId));
+    const retainedIds = new Set(retained);
+    for (const thread of candidates) {
+      if (retained.length >= MAX_AGENTS) break;
+      if (!retainedIds.has(thread.id)) {
+        retained.push(thread.id);
+        retainedIds.add(thread.id);
+      }
+    }
+    this.#slotThreadIds = retained;
+    this.#threads = retained.map((threadId) => candidatesById.get(threadId));
     for (const thread of this.#threads) {
       if (!this.#threadStatuses.has(thread.id)) this.#threadStatuses.set(thread.id, thread.status);
     }
@@ -451,6 +539,7 @@ export class CodexAppServerController {
     this.#ownedRootIds.add(result.thread.id);
     this.#rootThreads.set(result.thread.id, result.thread);
     await this.#ownershipStore?.add?.(result.thread.id);
+    this.#assignThreadSlot(result.thread.id, { replaceLast: true });
     this.#registerOwnedThread(result.thread);
     this.#loadedThreads.add(result.thread.id);
     this.#captureSettings(result.thread.id, result, {
@@ -533,6 +622,11 @@ export class CodexAppServerController {
   }
 
   async #acceptFocusedIntent() {
+    const hookApproval = this.#focusedHookApproval();
+    if (hookApproval) {
+      this.#resolveHookApproval(hookApproval, true);
+      return { message: `Approved ${hookApproval.toolName} through the Codex permission hook.` };
+    }
     const approval = this.#focusedApproval();
     if (approval) {
       this.#respondToApproval(approval, true);
@@ -548,6 +642,11 @@ export class CodexAppServerController {
   }
 
   async #rejectFocusedIntent() {
+    const hookApproval = this.#focusedHookApproval();
+    if (hookApproval) {
+      this.#resolveHookApproval(hookApproval, false);
+      return { message: `Rejected ${hookApproval.toolName} through the Codex permission hook.` };
+    }
     const approval = this.#focusedApproval();
     if (approval) {
       this.#respondToApproval(approval, false);
@@ -621,8 +720,20 @@ export class CodexAppServerController {
     if (!thread || !this.#workspaceAllows(thread.cwd)) return;
     if (thread.sessionId) this.#ownedSessionIds.add(thread.sessionId);
     if (!thread.parentThreadId && this.#ownedRootIds.has(thread.id)) this.#rootThreads.set(thread.id, thread);
-    this.#threads = uniqueThreads([thread, ...this.#threads]).slice(0, MAX_AGENTS);
+    this.#assignThreadSlot(thread.id);
+    const threadsById = new Map(this.#threads.map((candidate) => [candidate.id, candidate]));
+    threadsById.set(thread.id, thread);
+    this.#threads = this.#slotThreadIds.map((threadId) => threadsById.get(threadId)).filter(Boolean);
     if (thread.status) this.#threadStatuses.set(thread.id, thread.status);
+  }
+
+  #assignThreadSlot(threadId, { replaceLast = false } = {}) {
+    if (this.#slotThreadIds.includes(threadId)) return;
+    if (this.#slotThreadIds.length < MAX_AGENTS) {
+      this.#slotThreadIds.push(threadId);
+    } else if (replaceLast) {
+      this.#slotThreadIds[MAX_AGENTS - 1] = threadId;
+    }
   }
 
   #captureSettings(threadId, value, fallback = {}) {
@@ -662,7 +773,7 @@ export class CodexAppServerController {
       mode: mode.mode,
       settings: {
         model,
-        reasoning_effort: mode.reasoning_effort ?? settings.effort ?? this.#defaultEffort,
+        reasoning_effort: settings.effort ?? mode.reasoning_effort ?? this.#defaultEffort,
         developer_instructions: null,
       },
     };
@@ -692,13 +803,19 @@ export class CodexAppServerController {
     if (this.#hasWaitingState(threadId, status)) return "waiting";
     if (status?.type === "systemError" || this.#threadOutcomes.get(threadId) === "error") return "error";
     if ((this.#executionItems.get(threadId)?.size ?? 0) > 0) return "executing";
+    const lifecycleState = this.#lifecycleStates.get(threadId)?.state;
+    if (lifecycleState === "waiting" || lifecycleState === "executing" || lifecycleState === "thinking") {
+      return lifecycleState;
+    }
     if (this.#activeTurns.has(threadId) || status?.type === "active") return "thinking";
     if (this.#unreadThreads.has(threadId)) return "unread";
+    if (lifecycleState === "complete") return "complete";
     if (this.#threadOutcomes.get(threadId) === "complete") return "complete";
     return "idle";
   }
 
   #hasWaitingState(threadId, status) {
+    if ([...this.#hookApprovals.values()].some((approval) => approval.threadId === threadId)) return true;
     if ([...this.#approvals.values()].some((approval) => approval.threadId === threadId)) return true;
     if ([...this.#userInputs.values()].some((input) => input.threadId === threadId)) return true;
     return status?.type === "active"
@@ -707,6 +824,66 @@ export class CodexAppServerController {
 
   #focusedApproval() {
     return [...this.#approvals.values()].find((approval) => approval.threadId === this.#focusThreadId) ?? null;
+  }
+
+  #focusedHookApproval() {
+    return [...this.#hookApprovals.values()].find((approval) => approval.threadId === this.#focusThreadId) ?? null;
+  }
+
+  #isAuthorizedHookThread(threadId) {
+    return this.#ownedRootIds.has(threadId) || this.#threads.some((thread) => thread.id === threadId);
+  }
+
+  #lifecycleFor(threadId, turnId) {
+    const current = this.#lifecycleStates.get(threadId);
+    if (current?.turnId === turnId) return current;
+    const lifecycle = { turnId, state: "thinking", activeTools: new Set() };
+    this.#lifecycleStates.set(threadId, lifecycle);
+    return lifecycle;
+  }
+
+  #waitForHookApproval({ threadId, turnId, toolName }) {
+    const approvalId = `hook-${this.#nextHookApprovalId++}`;
+    return new Promise((resolve) => {
+      const approval = { approvalId, threadId, turnId, toolName, resolve, timeout: null };
+      approval.timeout = setTimeout(() => {
+        if (!this.#hookApprovals.delete(approvalId)) return;
+        const lifecycle = this.#lifecycleStates.get(threadId);
+        if (lifecycle?.turnId === turnId) {
+          lifecycle.state = lifecycle.activeTools.size > 0 ? "executing" : "thinking";
+        }
+        resolve({});
+      }, this.#hookApprovalTimeoutMs);
+      approval.timeout.unref?.();
+      this.#hookApprovals.set(approvalId, approval);
+    });
+  }
+
+  #resolveHookApproval(approval, accepted) {
+    if (!this.#hookApprovals.delete(approval.approvalId)) return;
+    clearTimeout(approval.timeout);
+    const lifecycle = this.#lifecycleStates.get(approval.threadId);
+    if (lifecycle?.turnId === approval.turnId) {
+      if (!accepted) lifecycle.activeTools.clear();
+      lifecycle.state = accepted && lifecycle.activeTools.size > 0 ? "executing" : "thinking";
+    }
+    approval.resolve({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: accepted
+          ? { behavior: "allow" }
+          : { behavior: "deny", message: "Rejected from Vibe Pocket." },
+      },
+    });
+  }
+
+  #releaseHookApprovals(threadId = null) {
+    for (const approval of [...this.#hookApprovals.values()]) {
+      if (threadId && approval.threadId !== threadId) continue;
+      this.#hookApprovals.delete(approval.approvalId);
+      clearTimeout(approval.timeout);
+      approval.resolve({});
+    }
   }
 
   #focusedUserInput() {
@@ -790,6 +967,7 @@ export class CodexAppServerController {
       this.#activeTurns.set(threadId, turnId);
       this.#threadOutcomes.delete(threadId);
       this.#unreadThreads.delete(threadId);
+      this.#lifecycleFor(threadId, turnId).state = "thinking";
     }
     if (message.method === "item/started") this.#updateExecutionItem(threadId, message.params?.item, true);
     if (message.method === "item/completed") this.#updateExecutionItem(threadId, message.params?.item, false);
@@ -797,6 +975,8 @@ export class CodexAppServerController {
       if (turnId) this.#markTurnFinished(turnId);
       this.#activeTurns.delete(threadId);
       this.#executionItems.delete(threadId);
+      this.#lifecycleStates.delete(threadId);
+      this.#releaseHookApprovals(threadId);
       const status = message.params?.turn?.status;
       if (status === "failed") {
         this.#threadOutcomes.set(threadId, "error");
