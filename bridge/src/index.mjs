@@ -9,6 +9,7 @@ import { Desktop } from "./macos/desktop.mjs";
 import { create } from "./server/http.mjs";
 import { create as createAdmin } from "./server/admin.mjs";
 import { Events } from "./server/events.mjs";
+import { Shutdown } from "./server/shutdown.mjs";
 import { Invitations } from "./pairing/invitations.mjs";
 import { Credentials } from "./pairing/credentials.mjs";
 
@@ -42,12 +43,18 @@ server.listen(config.port, config.host, () => {
 rmSync(config.pairingSocketPath, { force: true });
 admin.listen(config.pairingSocketPath, () => chmodSync(config.pairingSocketPath, 0o600));
 
-async function close() {
-  events.close();
-  server.close();
-  admin.close();
-  rmSync(config.pairingSocketPath, { force: true });
-  await service.dispose();
+const shutdown = new Shutdown({
+  servers: [server, admin],
+  service,
+  events,
+  cleanup: () => rmSync(config.pairingSocketPath, { force: true }),
+});
+
+function close() {
+  void shutdown.close().catch((error) => {
+    console.error("Vibe Pocket bridge shutdown failed:", error);
+    process.exitCode = 1;
+  });
 }
 
 process.once("SIGINT", close);

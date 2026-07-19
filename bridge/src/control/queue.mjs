@@ -1,47 +1,37 @@
 import { Failure } from "../server/failure.mjs";
 
-const LIMIT = 256;
-
 export class Queue {
   #tail = Promise.resolve();
-  #entries = new Map();
   #pending = 0;
+  #accepting = true;
 
   get busy() {
     return this.#pending > 0;
   }
 
-  run(operation) {
-    const execution = this.#tail.then(operation);
-    this.#tail = execution.catch(() => {});
-    return execution;
-  }
-
-  once(key, value, operation) {
-    if (!key || key.length > 160) {
-      throw new Failure(400, "idempotency_key_required", "Every controller action needs an Idempotency-Key header.");
-    }
-
-    const fingerprint = JSON.stringify(value);
-    const existing = this.#entries.get(key);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) {
-        throw new Failure(409, "idempotency_key_reused", "This Idempotency-Key was already used for another action.");
-      }
-      return existing.execution;
+  run(operation, { principal = null } = {}) {
+    if (!this.#accepting) {
+      return Promise.reject(new Failure(503, "bridge_stopping", "The Vibe Pocket bridge is shutting down."));
     }
 
     this.#pending += 1;
-    const execution = this.run(operation)
-      .catch((error) => {
-        this.#entries.delete(key);
-        throw error;
-      })
-      .finally(() => { this.#pending -= 1; });
-    this.#entries.set(key, { fingerprint, execution });
-    while (this.#entries.size > LIMIT) {
-      this.#entries.delete(this.#entries.keys().next().value);
-    }
+    const execution = this.#tail.then(() => {
+      if (principal && (typeof principal.valid !== "function" || !principal.valid())) {
+        throw new Failure(401, "credential_revoked", "This paired device credential has been revoked.");
+      }
+      return operation();
+    });
+    const settled = execution.finally(() => { this.#pending -= 1; });
+    this.#tail = settled.catch(() => {});
     return execution;
+  }
+
+  stop() {
+    this.#accepting = false;
+    return this.drain();
+  }
+
+  drain() {
+    return this.#tail;
   }
 }

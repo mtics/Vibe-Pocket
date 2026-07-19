@@ -1,23 +1,38 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 const MAXIMUM_DEVICES = 24;
 
 export class Credentials {
+  #devices;
+  #commit;
+
   constructor({
     path,
     rootToken,
     now = Date.now,
     randomId = () => randomBytes(9).toString("base64url"),
     randomSecret = () => randomBytes(32).toString("base64url"),
+    commit = persistCredentials,
   }) {
     this.path = path;
     this.rootToken = rootToken;
     this.now = now;
     this.randomId = randomId;
     this.randomSecret = randomSecret;
-    this.devices = this.#load();
+    this.#commit = commit;
+    this.#devices = this.#load();
   }
 
   issue() {
@@ -27,29 +42,54 @@ export class Credentials {
       throw new Error("The device credential generator returned invalid material.");
     }
     const credential = `vp1.${id}.${secret}`;
-    this.devices.set(id, {
+    const next = new Map(this.#devices);
+    next.set(id, {
       digest: digest(credential),
       createdAt: new Date(this.now()).toISOString(),
     });
-    while (this.devices.size > MAXIMUM_DEVICES) this.devices.delete(this.devices.keys().next().value);
-    this.#persist();
+    while (next.size > MAXIMUM_DEVICES) next.delete(next.keys().next().value);
+    this.#commit(this.path, next);
+    this.#devices = next;
     return credential;
   }
 
   accepts(candidate) {
-    if (typeof candidate !== "string") return false;
-    if (equal(candidate, this.rootToken)) return true;
+    return this.resolve(candidate) != null;
+  }
+
+  resolve(candidate) {
+    if (typeof candidate !== "string") return null;
+    if (equal(candidate, this.rootToken)) {
+      return Object.freeze({
+        id: `credential:${digest(candidate)}`,
+        revocable: false,
+        valid: () => true,
+      });
+    }
     const match = candidate.match(/^vp1\.([A-Za-z0-9_-]{8,64})\.([A-Za-z0-9_-]{32,128})$/);
-    if (!match) return false;
-    const device = this.devices.get(match[1]);
-    return device != null && equal(digest(candidate), device.digest);
+    if (!match) return null;
+    const candidateDigest = digest(candidate);
+    const device = this.#devices.get(match[1]);
+    if (device == null || !equal(candidateDigest, device.digest)) return null;
+    const deviceId = match[1];
+    return Object.freeze({
+      id: `credential:${candidateDigest}`,
+      revocable: true,
+      valid: () => {
+        const current = this.#devices.get(deviceId);
+        return current != null && equal(candidateDigest, current.digest);
+      },
+    });
   }
 
   revoke(candidate) {
     if (typeof candidate !== "string") return false;
     const match = candidate.match(/^vp1\.([A-Za-z0-9_-]{8,64})\.([A-Za-z0-9_-]{32,128})$/);
-    if (!match || !this.accepts(candidate) || !this.devices.delete(match[1])) return false;
-    this.#persist();
+    if (!match || !this.accepts(candidate) || !this.#devices.has(match[1])) return false;
+    const next = new Map(this.#devices);
+    next.delete(match[1]);
+    this.#commit(this.path, next);
+    this.#devices = next;
     return true;
   }
 
@@ -71,14 +111,41 @@ export class Credentials {
       return new Map();
     }
   }
+}
 
-  #persist() {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const temporary = `${this.path}.${process.pid}.tmp`;
-    const devices = [...this.devices].map(([id, value]) => ({ id, ...value }));
-    writeFileSync(temporary, `${JSON.stringify({ version: 1, devices }, null, 2)}\n`, { mode: 0o600 });
-    renameSync(temporary, this.path);
-    chmodSync(this.path, 0o600);
+export function persistCredentials(path, entries, { sync = fsyncSync } = {}) {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  const devices = [...entries].map(([id, value]) => ({ id, ...value }));
+  let descriptor = null;
+  let directoryDescriptor = null;
+  let renamed = false;
+  try {
+    descriptor = openSync(temporary, "wx", 0o600);
+    writeFileSync(descriptor, `${JSON.stringify({ version: 1, devices }, null, 2)}\n`, "utf8");
+    sync(descriptor);
+    closeSync(descriptor);
+    descriptor = null;
+    renameSync(temporary, path);
+    renamed = true;
+    try {
+      directoryDescriptor = openSync(directory, "r");
+      sync(directoryDescriptor);
+    } catch {
+      // The rename is the commit point. A directory sync failure must not
+      // leave runtime state behind the replacement already visible on disk.
+    }
+  } finally {
+    if (descriptor != null) closeSync(descriptor);
+    if (directoryDescriptor != null) {
+      try {
+        closeSync(directoryDescriptor);
+      } catch {
+        if (!renamed) throw new Error("Could not close the credential directory.");
+      }
+    }
+    if (!renamed) rmSync(temporary, { force: true });
   }
 }
 

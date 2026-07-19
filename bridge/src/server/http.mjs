@@ -1,12 +1,19 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { timingSafeEqual } from "node:crypto";
 import { Failure } from "./failure.mjs";
 import { Invitations } from "../pairing/invitations.mjs";
+import { readJson } from "./json.mjs";
+import { manage, RequestTracker } from "./request-tracker.mjs";
 
 export const PROTOCOL_VERSION = 6;
 
 export function create({ service, events, token, credentials, invitations = new Invitations({ issue: () => token }) }) {
-  return createServer(async (request, response) => {
+  const requests = new RequestTracker();
+  const server = createServer((request, response) => {
+    void requests.run(() => handle(request, response)).catch((error) => sendError(response, error));
+  });
+
+  async function handle(request, response) {
     try {
       const url = new URL(request.url, "http://localhost");
       if (request.method === "GET" && url.pathname === "/healthz") {
@@ -18,18 +25,20 @@ export function create({ service, events, token, credentials, invitations = new 
         return;
       }
       if (request.method === "POST" && url.pathname === "/v1/pairing/claim") {
-        const { code, nonce } = await readJson(request, 4 * 1024);
+        const { code, nonce } = await readJson(request, { maxBytes: 4 * 1024 });
         sendJson(response, 200, invitations.claim(code, nonce));
         return;
       }
-      if (!authorized(request, token, credentials)) {
+      const principal = authenticate(request, token, credentials);
+      if (!principal) {
         sendJson(response, 401, { error: { code: "unauthorized", message: "Pair Vibe Pocket before connecting." } });
         return;
       }
       if (request.method === "DELETE" && url.pathname === "/v1/pocket/devices/current") {
-        if (!credentials?.revoke(bearer(request))) {
+        if (!principal.revocable || !credentials?.revoke(bearer(request))) {
           throw new Failure(400, "device_credential_required", "Only a paired device can revoke its credential.");
         }
+        events.closeIdentity?.(principal.id);
         sendJson(response, 200, { revoked: true });
         return;
       }
@@ -38,7 +47,7 @@ export function create({ service, events, token, credentials, invitations = new 
         return;
       }
       if (request.method === "GET" && url.pathname === "/v1/pocket/events") {
-        events.connect(request, response);
+        events.connect(request, response, principal.id);
         return;
       }
       if (request.method === "POST" && url.pathname === "/v1/pocket/desktop/attach") {
@@ -49,33 +58,41 @@ export function create({ service, events, token, credentials, invitations = new 
       }
       const hookMatch = url.pathname.match(/^\/v1\/pocket\/codex-hooks\/([A-Za-z]+)$/);
       if (request.method === "POST" && hookMatch) {
-        const responseBody = await service.codexHook(hookMatch[1], await readJson(request, 2 * 1024 * 1024));
+        const responseBody = await service.codexHook(hookMatch[1], await readJson(request, { maxBytes: 2 * 1024 * 1024 }));
         sendJson(response, 200, responseBody);
         return;
       }
       if (request.method === "POST" && url.pathname === "/v1/pocket/commands") {
         const command = await readJson(request);
-        const responseBody = await service.command(command, request.headers["idempotency-key"]);
+        const responseBody = await service.command(command, request.headers["idempotency-key"], principal);
         sendJson(response, 202, responseBody);
         return;
       }
       sendJson(response, 404, { error: { code: "not_found", message: "Vibe Pocket endpoint not found." } });
     } catch (error) {
-      const status = error instanceof Failure ? error.status : 500;
-      const code = error instanceof Failure ? error.code : "bridge_error";
-      const message = error instanceof Failure ? error.message : "The Vibe Pocket bridge could not finish this request.";
-      sendJson(response, status, { error: { code, message } });
+      sendError(response, error);
     }
-  });
+  }
+
+  return manage(server, requests);
 }
 
-function authorized(request, token, credentials) {
+function authenticate(request, token, credentials) {
   const raw = bearer(request);
-  if (raw == null) return false;
-  if (credentials?.accepts(raw)) return true;
+  if (raw == null) return null;
+  const resolved = credentials?.resolve?.(raw);
+  if (resolved) return resolved;
+  if (credentials?.accepts(raw)) {
+    return {
+      id: identity(raw),
+      revocable: raw !== token,
+      valid: () => credentials.accepts(raw),
+    };
+  }
   const candidate = Buffer.from(raw);
   const expected = Buffer.from(token);
-  return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+  if (candidate.length !== expected.length || !timingSafeEqual(candidate, expected)) return null;
+  return { id: identity(raw), revocable: false, valid: () => true };
 }
 
 function bearer(request) {
@@ -83,33 +100,27 @@ function bearer(request) {
   return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : null;
 }
 
-function readJson(request, maxLength = 64 * 1024) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > maxLength) {
-        reject(new Failure(413, "body_too_large", "Request payload is too large."));
-        request.destroy();
-      }
-    });
-    request.on("end", () => {
-      try {
-        resolve(JSON.parse(body || "{}"));
-      } catch {
-        reject(new Failure(400, "invalid_json", "Command body must be valid JSON."));
-      }
-    });
-    request.on("error", reject);
-  });
+function identity(raw) {
+  return `credential:${createHash("sha256").update(raw).digest("base64url")}`;
 }
 
-function sendJson(response, status, body) {
+function sendError(response, error) {
+  const status = error instanceof Failure ? error.status : 500;
+  const code = error instanceof Failure ? error.code : "bridge_error";
+  const message = error instanceof Failure ? error.message : "The Vibe Pocket bridge could not finish this request.";
+  sendJson(response, status, { error: { code, message } }, { closeConnection: code === "body_too_large" });
+}
+
+function sendJson(response, status, body, { closeConnection = false } = {}) {
+  if (response.headersSent || response.writableEnded || response.destroyed) return;
+  const socket = response.socket;
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
+    ...(closeConnection ? { Connection: "close" } : {}),
   });
-  response.end(JSON.stringify(body));
+  response.end(JSON.stringify(body), () => {
+    if (closeConnection) socket?.destroy();
+  });
 }

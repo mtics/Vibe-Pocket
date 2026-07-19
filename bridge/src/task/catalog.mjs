@@ -6,7 +6,6 @@ import { Settings } from "./settings.mjs";
 
 const MAX_THREADS = 100;
 const MAX_AGENT_COUNT = 24;
-const FOCUS_GRACE_MS = 5_000;
 const AGENT_ID_PATTERN = /^agent-[a-f0-9]{24}$/;
 const ACTIVE_AGENT_STATES = new Set(["waiting", "error", "executing", "thinking", "unread"]);
 const AGENT_STATE_PRIORITY = new Map([
@@ -32,7 +31,6 @@ export class Catalog {
   #activityReader;
   #settings;
   #focusedThreadId = null;
-  #pendingFocus = null;
 
   constructor({
     appServer,
@@ -114,36 +112,12 @@ export class Catalog {
       if (recency !== 0) return recency;
       return left._sourceIndex - right._sourceIndex;
     });
-    const timestamp = this.#now();
     const actualFocus = resolved.find(({ focused }) => focused)?._threadId ?? null;
-    const unresolvedFocus = visibleAgents.some((agent) => agent?.focused === true) && actualFocus == null;
     let selected = ordered.slice(0, MAX_AGENT_COUNT);
-    const pending = this.#pendingFocus;
-    if (pending && timestamp < pending.until && actualFocus !== pending.threadId) {
-      const target = ordered.find(({ _threadId }) => _threadId === pending.threadId);
-      if (target && !selected.some(({ _threadId }) => _threadId === pending.threadId)) {
-        selected = [...selected.slice(0, MAX_AGENT_COUNT - 1), target];
-      }
-      selected = selected.map((agent) => ({
-        ...agent,
-        focused: agent._threadId === pending.threadId,
-      }));
-      this.#focusedThreadId = pending.threadId;
-    } else if (actualFocus) {
-      this.#pendingFocus = null;
+    if (actualFocus) {
       this.#focusedThreadId = actualFocus;
       selected = selected.map((agent) => ({ ...agent, focused: agent._threadId === actualFocus }));
-    } else if (this.#focusedThreadId && !unresolvedFocus) {
-      const retained = ordered.find(({ _threadId }) => _threadId === this.#focusedThreadId);
-      if (retained && !selected.some(({ _threadId }) => _threadId === this.#focusedThreadId)) {
-        selected = [...selected.slice(0, MAX_AGENT_COUNT - 1), retained];
-      }
-      selected = selected.map((agent) => ({
-        ...agent,
-        focused: agent._threadId === this.#focusedThreadId,
-      }));
     } else {
-      this.#pendingFocus = null;
       this.#focusedThreadId = null;
       selected = selected.map((agent) => ({ ...agent, focused: false }));
     }
@@ -164,10 +138,29 @@ export class Catalog {
     return this.#settings.selectModel(modelId);
   }
 
+  async validateModel(modelId) {
+    await this.#ensureStarted();
+    return this.#settings.modelOption(modelId, { refresh: true });
+  }
+
   async adjustReasoning(delta) {
     await this.#ensureStarted();
     await this.#settings.start();
     return this.#settings.adjustReasoning(delta);
+  }
+
+  async selectReasoning(level) {
+    await this.#ensureStarted();
+    await this.#settings.start();
+    return this.#settings.selectReasoning(level);
+  }
+
+  reasoningTarget(delta) {
+    return this.#settings.reasoningTarget(delta);
+  }
+
+  hasReasoningLevel(level) {
+    return this.#settings.hasReasoningLevel(level);
   }
 
   async focusAgent(agentId) {
@@ -177,15 +170,27 @@ export class Catalog {
     const threadId = this.#agentThreads.get(agentId);
     if (!threadId) throw new Error("That Codex task is no longer available.");
     await this.#openThread(threadId);
-    this.#focusedThreadId = threadId;
-    this.#pendingFocus = { threadId, until: this.#now() + FOCUS_GRACE_MS };
-    return { ok: true, message: "Opened the selected Codex task through its native task link." };
+    return {
+      ok: true,
+      agentId,
+      threadId,
+      message: "Opened the selected Codex task through its native task link.",
+    };
+  }
+
+  async focusThread(threadId) {
+    await this.#openThread(threadId);
+    return {
+      ok: true,
+      agentId: agentIdForThread(threadId),
+      threadId,
+      message: "Opened the requested Codex task through its native task link.",
+    };
   }
 
   async dispose() {
     this.#agentThreads.clear();
     this.#focusedThreadId = null;
-    this.#pendingFocus = null;
     this.#cachedThreads = [];
     this.#cacheExpiresAt = 0;
     if (!this.#started && !this.#startPromise) return;
@@ -290,6 +295,6 @@ function threadRecency(thread) {
   return 0;
 }
 
-function agentIdForThread(threadId) {
+export function agentIdForThread(threadId) {
   return `agent-${createHash("sha256").update(threadId).digest("hex").slice(0, 24)}`;
 }

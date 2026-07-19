@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
@@ -14,6 +15,8 @@ import {
   defaultPath,
 } from "../../src/profile/store.mjs";
 import { load } from "../../src/config.mjs";
+
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 async function temporaryProfile(t) {
   const root = await mkdtemp(join(tmpdir(), "vibe-pocket-profile-"));
@@ -96,6 +99,54 @@ test("loads an environment-configured profile path only outside the repository",
     }),
     /outside the Vibe Pocket repository/,
   );
+});
+
+test("rejects a profile path whose symlinked parent enters the repository", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-config-link-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const linkedRepository = join(root, "linked-repository");
+  await symlink(REPOSITORY_ROOT, linkedRepository, "dir");
+
+  assert.throws(
+    () => load({
+      VIBE_POCKET_TOKEN: "x".repeat(24),
+      VIBE_POCKET_PROFILE_PATH: join(linkedRepository, "private", "controller-profile.json"),
+    }),
+    /outside the Vibe Pocket repository/,
+  );
+  assert.throws(
+    () => load({
+      VIBE_POCKET_TOKEN: "x".repeat(24),
+      XDG_CONFIG_HOME: linkedRepository,
+    }),
+    /outside the Vibe Pocket repository/,
+  );
+});
+
+test("rejects an unresolved symlink parent", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-config-dangling-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const linkedDirectory = join(root, "linked-directory");
+  await symlink(join(REPOSITORY_ROOT, "not-created"), linkedDirectory, "dir");
+
+  assert.throws(
+    () => load({
+      VIBE_POCKET_TOKEN: "x".repeat(24),
+      VIBE_POCKET_PROFILE_PATH: join(linkedDirectory, "controller-profile.json"),
+    }),
+    /unresolved symbolic link/,
+  );
+});
+
+test("accepts a safe profile path below non-existing ancestors", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-config-missing-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profilePath = join(root, "not-created", "nested", "controller-profile.json");
+
+  assert.equal(load({
+    VIBE_POCKET_TOKEN: "x".repeat(24),
+    VIBE_POCKET_PROFILE_PATH: profilePath,
+  }).profilePath, profilePath);
 });
 
 test("does not expose a configurable desktop-control engine", () => {

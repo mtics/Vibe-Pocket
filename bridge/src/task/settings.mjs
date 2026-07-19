@@ -5,6 +5,7 @@ export class Settings {
   #context;
   #models = new Map();
   #started = false;
+  #starting = null;
   #current = null;
   #confirmed = new Map();
   #threads = new Map();
@@ -17,23 +18,16 @@ export class Settings {
       if (message?.method !== "thread/settings/updated") return;
       this.#capture(message.params?.threadId, message.params?.threadSettings);
     });
+    this.#appServer.on?.("transportReset", () => this.#invalidateThreadState());
   }
 
-  async start() {
-    if (this.#started) return;
-    const result = await this.#appServer.request("model/list", { limit: 50 });
-    for (const entry of result.data ?? []) {
-      if (!entry?.id || entry.hidden === true) continue;
-      this.#models.set(entry.id, {
-        id: entry.id,
-        label: displayName(entry),
-        defaultEffort: entry.defaultReasoningEffort,
-        efforts: entry.supportedReasoningEfforts
-          ?.map(({ reasoningEffort }) => reasoningEffort)
-          .filter((effort) => typeof effort === "string" && effort.length > 0) ?? [],
-      });
+  async start({ refresh = false } = {}) {
+    if (this.#started && !refresh) return;
+    if (!this.#starting) {
+      this.#starting = this.#loadModels()
+        .finally(() => { this.#starting = null; });
     }
-    this.#started = true;
+    await this.#starting;
   }
 
   async projection(thread, visible = {}) {
@@ -56,7 +50,9 @@ export class Settings {
     const selected = visibleModel
       ?? this.#models.get(confirmed?.model ?? observed?.model);
     const efforts = selected?.efforts ?? [];
-    const visibleLevel = typeof visible.level === "string" ? visible.level : null;
+    const visibleLevel = visible.ambiguous === true
+      ? null
+      : typeof visible.level === "string" ? visible.level : null;
     const level = [visibleLevel, confirmed?.reasoningEffort, observed?.reasoningEffort]
       .find((effort) => efforts.includes(effort)) ?? null;
     return this.#view(thread?.id, selected, level, visible);
@@ -80,13 +76,29 @@ export class Settings {
     return this.#view(current.threadId, selected, level);
   }
 
+  async modelOption(modelId, { refresh = false } = {}) {
+    await this.start({ refresh });
+    const selected = this.#models.get(modelId);
+    if (!selected) throw new Error("The requested Codex model is unavailable or stale.");
+    return { id: selected.id, label: selected.label };
+  }
+
   async adjustReasoning(delta) {
     const current = this.#requireCurrent();
-    await this.#resume(current.threadId);
     if (delta !== -1 && delta !== 1) throw new Error("Reasoning adjustment must be one step.");
     const index = current.efforts.indexOf(current.level);
+    if (index < 0) throw new Error("The current Codex reasoning level is unresolved.");
     const level = current.efforts[index + delta];
     if (!level) throw new Error("Codex reasoning cannot move farther in that direction.");
+    return this.selectReasoning(level);
+  }
+
+  async selectReasoning(level) {
+    const current = this.#requireCurrent();
+    await this.#resume(current.threadId);
+    if (!current.efforts.includes(level)) {
+      throw new Error("The requested Codex reasoning level is unavailable or stale.");
+    }
     await this.#appServer.request("thread/settings/update", {
       threadId: current.threadId,
       effort: level,
@@ -102,7 +114,12 @@ export class Settings {
   reasoningTarget(delta) {
     if ((delta !== -1 && delta !== 1) || !this.#current?.level) return null;
     const index = this.#current.efforts.indexOf(this.#current.level);
+    if (index < 0) return null;
     return this.#current.efforts[index + delta] ?? null;
+  }
+
+  hasReasoningLevel(level) {
+    return typeof level === "string" && this.#current?.efforts.includes(level) === true;
   }
 
   #view(threadId, selected, level, visible = {}) {
@@ -140,10 +157,37 @@ export class Settings {
     if (!pending) {
       pending = this.#appServer.request("thread/resume", { threadId })
         .then((result) => this.#capture(threadId, result))
-        .finally(() => this.#loading.delete(threadId));
+        .finally(() => {
+          if (this.#loading.get(threadId) === pending) this.#loading.delete(threadId);
+        });
       this.#loading.set(threadId, pending);
     }
     return pending;
+  }
+
+  #invalidateThreadState() {
+    this.#current = null;
+    this.#confirmed.clear();
+    this.#threads.clear();
+    this.#loading.clear();
+  }
+
+  async #loadModels() {
+    const result = await this.#appServer.request("model/list", { limit: 50 });
+    const models = new Map();
+    for (const entry of result.data ?? []) {
+      if (!entry?.id || entry.hidden === true) continue;
+      models.set(entry.id, {
+        id: entry.id,
+        label: displayName(entry),
+        defaultEffort: entry.defaultReasoningEffort,
+        efforts: entry.supportedReasoningEfforts
+          ?.map(({ reasoningEffort }) => reasoningEffort)
+          .filter((effort) => typeof effort === "string" && effort.length > 0) ?? [],
+      });
+    }
+    this.#models = models;
+    this.#started = true;
   }
 
   #capture(threadId, value) {

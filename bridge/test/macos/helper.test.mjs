@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
@@ -56,45 +55,20 @@ test("composer controls and Agent focus identity use the focused Codex window", 
   assert.doesNotMatch(statusReply, /AXUIElementCreateApplication/);
 });
 
-test("production Swift semantics keep minimum reasoning adjustable upward", async (context) => {
+test("production Swift selector semantics parse and require native ambiguity confirmation", async (context) => {
   if (process.platform !== "darwin") {
     context.skip("The macOS Accessibility helper is compiled only on macOS.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "vibe-pocket-reasoning-"));
-  try {
-    const source = await readFile(helperUrl, "utf8");
-    const probeSource = `${source}
-
-guard let minimum = ReasoningLevel.parse(from: "5.6 Sol 最小") else {
-  fatalError("The localized minimum label was not parsed.")
-}
-precondition(minimum == .minimal)
-precondition(minimum.canIncrease)
-precondition(!minimum.canDecrease)
-
-guard let medium = ReasoningLevel.parse(from: "5.6 Luna 中") else {
-  fatalError("The localized medium label was not parsed.")
-}
-precondition(medium == .medium)
-precondition(medium.canIncrease && medium.canDecrease)
-precondition(ReasoningLevel.modelLabel(from: "5.6 Luna 中") == "5.6 Luna")
-precondition(ReasoningLevel.parse(from: "5.6 Sol Max") == .max)
-precondition(ReasoningLevel.parse(from: "5.6 Sol Ultra") == .ultra)
-precondition(!ReasoningLevel.ultra.canIncrease)
-precondition(ReasoningLevel.parse(from: "5.7 Preview") == nil)
-precondition(agentStatePriority("waiting") < agentStatePriority("executing"))
-precondition(agentStatePriority("executing") < agentStatePriority("idle"))
-precondition(maxAgentTargets == 24)
-`;
-    const mainPath = join(directory, "main.swift");
-    const executablePath = join(directory, "reasoning-probe");
-    await writeFile(mainPath, probeSource);
-    await execFileAsync("/usr/bin/swiftc", [mainPath, "-o", executablePath]);
-    await execFileAsync(executablePath);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  const source = await readFile(helperUrl, "utf8");
+  await execFileAsync("/usr/bin/swiftc", ["-frontend", "-parse", fileURLToPath(helperUrl)]);
+  assert.match(source, /case xhigh[\s\S]*?case max[\s\S]*?case ultra/);
+  assert.match(source, /needsNativeConfirmation: Bool \{ self == \.xhigh \|\| self == \.ultra \}/);
+  assert.match(source, /ambiguous: level == \.xhigh/);
+  assert.match(source, /if requested\.needsNativeConfirmation \{ return false \}/);
+  assert.doesNotMatch(source, /desktopLevels|shifted\(by/);
+  assert.match(source, /modelMatches\(requested: String, candidate: String\)[\s\S]*?modelKey\(candidate\) == target/);
+  assert.doesNotMatch(source, /candidate\.contains\(target\)/);
 });
 
 test("reasoning availability comes from structure before directional semantics", async () => {
@@ -105,28 +79,60 @@ test("reasoning availability comes from structure before directional semantics",
     /"reasoning": reasoningControl\(in: index\) != nil && !isExecuting/,
   );
   assert.match(source, /let reasoningAvailable = controls\["reasoning"\] == true/);
-  assert.match(
-    source,
-    /"canIncrease": reasoningAvailable && \(reasoning\?\.level\?\.canIncrease \?\? true\)/,
-  );
-  assert.match(
-    source,
-    /"canDecrease": reasoningAvailable && \(reasoning\?\.level\?\.canDecrease \?\? true\)/,
-  );
+  assert.match(source, /"ambiguous": reasoning\?\.ambiguous \?\? false/);
+  assert.match(source, /"canIncrease": reasoningAvailable/);
+  assert.match(source, /"canDecrease": reasoningAvailable/);
 });
 
-test("model selection uses a semantic menu target and backward delete has a dedicated key", async () => {
+test("menu selection revalidates foreground and window with deferred PID-scoped cleanup", async () => {
   const source = await readFile(helperUrl, "utf8");
+  const interaction = source.slice(
+    source.indexOf("private final class MenuInteraction"),
+    source.indexOf("private func elementFrame"),
+  );
+  const modelSelection = source.slice(
+    source.indexOf("private func selectModel"),
+    source.indexOf("private func selectReasoning"),
+  );
+  const reasoningSelection = source.slice(
+    source.indexOf("private func selectReasoning"),
+    source.indexOf("private func focusPrompt"),
+  );
+  const accessSelection = source.slice(
+    source.indexOf("private func selectNextAccessMode"),
+    source.indexOf("private func waitForValue"),
+  );
 
   assert.match(source, /case "model-picker":[\s\S]*?openComposerMenu\(control\)/);
   assert.match(source, /case "select-model":[\s\S]*?selectModel\(modelID/);
-  assert.match(source, /private func selectModel[\s\S]*?openSubmenu\(menuItem\)[\s\S]*?modelOption[\s\S]*?chooseMenuItem\(targetElement\)/);
-  assert.match(source, /private func selectModel[\s\S]*?postKey\(53, to: application\.processIdentifier\)/);
-  assert.match(source, /private func selectReasoning[\s\S]*?postKey\(53, to: application\.processIdentifier\)/);
+  assert.match(modelSelection, /defer \{ interaction\.cleanup\(\) \}/);
+  assert.match(reasoningSelection, /defer \{ interaction\.cleanup\(\) \}/);
+  assert.match(accessSelection, /defer \{ interaction\.cleanup\(\) \}/);
+  assert.match(interaction, /waitForValue[\s\S]*?find: \(AXUIElement\)[\s\S]*?try revalidate\(\)[\s\S]*?find\(window\)/);
+  assert.match(interaction, /try verifyForeground\(application\)[\s\S]*?focusedWindow[\s\S]*?CFEqual/);
+  assert.match(interaction, /AXUIElementPerformAction[\s\S]*?postKey\(fallbackKey, to: application\.processIdentifier\)/);
+  assert.match(interaction, /postKey\(53, to: application\.processIdentifier\)/);
+  assert.doesNotMatch(source, /postKey\(53\)(?!,)/);
   assert.match(source, /case "select-reasoning":[\s\S]*?selectReasoning\(level/);
   assert.match(source, /observedLevel == requested/);
-  assert.doesNotMatch(source, /reasoningMenuItem\(in: root\) == nil \? true : nil/);
+  assert.match(source, /modelMatches\(requested: requested, candidate:/);
+  assert.doesNotMatch(modelSelection, /AXUIElementCreateApplication/);
+  assert.doesNotMatch(reasoningSelection, /AXUIElementCreateApplication/);
+  assert.doesNotMatch(accessSelection, /AXUIElementCreateApplication/);
+  assert.match(modelSelection, /modelMenuItem\(in: window\)[\s\S]*?modelOption\(in: window/);
+  assert.match(reasoningSelection, /reasoningMenuItem\(in: window\)[\s\S]*?reasoningOption\(in: window/);
+  assert.match(accessSelection, /descendants\(of: window\)/);
   assert.match(source, /case "delete-backward":[\s\S]*?focusPrompt[\s\S]*?postKey\(51\)/);
+});
+
+test("both exact and delta reasoning entry points reject a running turn", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const exact = source.slice(source.indexOf('case "select-reasoning"'), source.indexOf('case "reasoning"'));
+  const delta = source.slice(source.indexOf('case "reasoning"'), source.indexOf('case "delete-backward"'));
+
+  assert.match(exact, /controlButton\(\.stop, in: area\) == nil/);
+  assert.match(delta, /controlButton\(\.stop, in: area\) == nil/);
+  assert.match(delta, /exact advertised target level/);
 });
 
 test("bridge child inherits normal termination signals", async () => {
@@ -138,6 +144,16 @@ test("bridge child inherits normal termination signals", async () => {
   assert.notEqual(ignoreTermination, -1);
   assert.ok(childRun < ignoreTermination);
   assert.match(source, /asyncAfter[\s\S]*?Darwin\.kill\(childPID, SIGKILL\)/);
+});
+
+test("control socket startup closes partial state and protects disconnected writes", async () => {
+  const source = await readFile(hostUrl, "utf8");
+  const start = source.slice(source.indexOf("func start() throws"), source.indexOf("func stop()"));
+
+  await execFileAsync("/usr/bin/swiftc", ["-frontend", "-parse", fileURLToPath(hostUrl)]);
+  assert.match(start, /defer \{[\s\S]*?Darwin\.close\(descriptor\)[\s\S]*?Darwin\.unlink\(socketPath\)/);
+  assert.match(start, /bound = true[\s\S]*?listening = true/);
+  assert.match(source, /setsockopt\(client, SOL_SOCKET, SO_NOSIGPIPE/);
 });
 
 test("every launch cleans only an exact orphaned bridge listener", async () => {

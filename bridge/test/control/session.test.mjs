@@ -366,6 +366,32 @@ test("waits for initial desktop discovery before accepting a control command", a
   await service.dispose();
 });
 
+test("does not publish or arm polling when stopped during initial discovery", async () => {
+  class StartingDesktop extends FakeDesktop {
+    discovery = Promise.withResolvers();
+    statusCalls = 0;
+
+    async status() {
+      this.statusCalls += 1;
+      await this.discovery.promise;
+      return super.status();
+    }
+  }
+
+  const desktop = new StartingDesktop();
+  const events = new FakeEvents();
+  const service = makeService(desktop, events, { pollIntervalMs: 5 });
+  const starting = service.start();
+  const stopping = service.stop();
+  desktop.discovery.resolve();
+
+  await Promise.all([starting, stopping]);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(desktop.statusCalls, 1);
+  assert.deepEqual(events.published, []);
+  await service.dispose();
+});
+
 test("publishes native model and reasoning confirmations without a desktop rescan", async () => {
   class NativeSettingsDesktop extends FakeDesktop {
     statusCalls = 0;
@@ -508,7 +534,7 @@ test("reports a desktop action failure before a slow state scan completes", asyn
       service.command({ kind: "binding", inputId: "key_accept" }, "fast-error"),
       new Promise((_, reject) => setTimeout(() => reject(new Error("command waited for state scan")), 50)),
     ]),
-    (error) => error.code === "desktop_action_failed",
+    (error) => error.code === "command_outcome_indeterminate",
   );
 
   desktop.releaseStatus.resolve();
@@ -600,6 +626,47 @@ test("binds idempotency keys to one request body", async () => {
   );
 });
 
+test("fingerprints validated command bodies independent of property order", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  const first = await service.command({ kind: "binding", inputId: "key_accept" }, "reordered-key");
+  const replay = await service.command({ inputId: "key_accept", kind: "binding" }, "reordered-key");
+
+  assert.deepEqual(replay, first);
+  assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  await service.dispose();
+});
+
+test("retains an explicit tombstone when a side effect is followed by failure", async () => {
+  class AmbiguousDesktop extends FakeDesktop {
+    async press(control) {
+      this.calls.push(["press", control]);
+      throw new Error("response channel closed after dispatch");
+    }
+  }
+
+  const desktop = new AmbiguousDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  let firstFailure;
+  await assert.rejects(
+    () => service.command({ kind: "stop" }, "ambiguous-action"),
+    (error) => {
+      firstFailure = error;
+      return error.code === "command_outcome_indeterminate";
+    },
+  );
+  await assert.rejects(
+    () => service.command({ kind: "stop" }, "ambiguous-action"),
+    (error) => error === firstFailure,
+  );
+  assert.deepEqual(desktop.calls, [["press", "stop"]]);
+  await service.dispose();
+});
+
 test("returns a precise error when a caller selects an imaginary desktop session", async () => {
   const service = makeService();
   await service.start();
@@ -620,7 +687,7 @@ test("keeps controls and desktop state available when one action fails", async (
 
   await assert.rejects(
     () => service.command({ kind: "stop" }, "stop-missing-control"),
-    (error) => error.code === "desktop_action_failed",
+    (error) => error.code === "command_outcome_indeterminate",
   );
   const snapshot = await service.snapshot();
   assert.equal(snapshot.status.state, "ready");
@@ -733,6 +800,91 @@ test("does not start a background scan while a controller command is queued", as
 
   desktop.releasePress.resolve();
   await command;
+  await service.dispose();
+});
+
+test("discards an old poll that completes after a newer native action", async () => {
+  class RacingDesktop extends FakeDesktop {
+    statusCalls = 0;
+    pollStarted = Promise.withResolvers();
+    releasePoll = Promise.withResolvers();
+
+    constructor() {
+      super();
+      this.model = {
+        available: true,
+        id: "gpt-old",
+        label: "Old",
+        options: [
+          { id: "gpt-old", label: "Old", selected: true },
+          { id: "gpt-new", label: "New", selected: false },
+        ],
+      };
+    }
+
+    async status() {
+      this.statusCalls += 1;
+      const snapshot = await super.status();
+      if (this.statusCalls === 2) {
+        this.pollStarted.resolve();
+        await this.releasePoll.promise;
+      }
+      return snapshot;
+    }
+
+    async selectModel(modelId) {
+      this.calls.push(["selectModel", modelId]);
+      this.model = {
+        ...this.model,
+        id: modelId,
+        label: "New",
+        options: this.model.options.map((option) => ({ ...option, selected: option.id === modelId })),
+      };
+      return { message: "Selected New.", settings: { model: this.model, reasoning: this.reasoning } };
+    }
+  }
+
+  const desktop = new RacingDesktop();
+  const service = makeService(desktop, new FakeEvents(), { pollIntervalMs: 5 });
+  await service.start();
+  await desktop.pollStarted.promise;
+
+  await service.command({ kind: "select_model", modelId: "gpt-new" }, "newer-action");
+  desktop.releasePoll.resolve();
+  await new Promise(setImmediate);
+
+  assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
+  await service.dispose();
+});
+
+test("revalidates a queued command principal after revocation", async () => {
+  class BlockingDesktop extends FakeDesktop {
+    firstStarted = Promise.withResolvers();
+    releaseFirst = Promise.withResolvers();
+
+    async press(control) {
+      this.calls.push(["press", control]);
+      if (this.calls.length === 1) {
+        this.firstStarted.resolve();
+        await this.releaseFirst.promise;
+      }
+    }
+  }
+
+  const desktop = new BlockingDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  const first = service.command({ kind: "approve" }, "principal-blocker");
+  await desktop.firstStarted.promise;
+  let active = true;
+  const principal = { id: "device:test", revocable: true, valid: () => active };
+  const queued = service.command({ kind: "reject" }, "principal-queued", principal);
+
+  active = false;
+  desktop.releaseFirst.resolve();
+  await first;
+  await assert.rejects(queued, (error) => error.code === "credential_revoked");
+  assert.deepEqual(desktop.calls, [["press", "approve"]]);
   await service.dispose();
 });
 

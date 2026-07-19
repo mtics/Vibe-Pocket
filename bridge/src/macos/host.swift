@@ -44,6 +44,15 @@ private final class CodexControlServer {
     let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { throw posixError("create the Codex control socket") }
     listener = descriptor
+    var bound = false
+    var listening = false
+    defer {
+      if !listening {
+        Darwin.close(descriptor)
+        listener = -1
+        if bound { Darwin.unlink(socketPath) }
+      }
+    }
 
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
@@ -66,10 +75,12 @@ private final class CodexControlServer {
       }
     }
     guard bindResult == 0 else { throw posixError("bind the Codex control socket") }
+    bound = true
     guard Darwin.chmod(socketPath, S_IRUSR | S_IWUSR) == 0 else {
       throw posixError("protect the Codex control socket")
     }
     guard Darwin.listen(descriptor, 8) == 0 else { throw posixError("listen for Codex controls") }
+    listening = true
 
     queue.async { [weak self] in self?.acceptLoop() }
   }
@@ -89,6 +100,8 @@ private final class CodexControlServer {
         if errno == EINTR { continue }
         return
       }
+      var noSigPipe: Int32 = 1
+      Darwin.setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout.size(ofValue: noSigPipe)))
       handle(client)
       Darwin.close(client)
     }

@@ -8,6 +8,8 @@ export class Desktop {
   #openThread;
   #threadCatalog;
   #wait;
+  #focusPollAttempts;
+  #focusPollIntervalMs;
   #voiceActive = false;
   #lastAgents = [];
   #operationQueue = Promise.resolve();
@@ -18,24 +20,25 @@ export class Desktop {
     openThread = open,
     threadCatalog = null,
     wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    focusPollAttempts = 20,
+    focusPollIntervalMs = 150,
   } = {}) {
     this.#socketPath = socketPath;
     this.#run = run;
     this.#openThread = openThread;
     this.#threadCatalog = threadCatalog;
     this.#wait = wait;
+    this.#focusPollAttempts = focusPollAttempts;
+    this.#focusPollIntervalMs = focusPollIntervalMs;
   }
 
   async status() {
-    const result = await this.#invoke("status");
+    return this.#enqueue(() => this.#statusNow());
+  }
+
+  async #statusNow() {
+    const { result, agents } = await this.#observeAgentsNow();
     if (!this.#threadCatalog) return result;
-    let agents;
-    try {
-      agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
-      this.#lastAgents = agents;
-    } catch {
-      agents = this.#lastAgents;
-    }
     let settings = null;
     try {
       settings = await this.#threadCatalog.settings(result.reasoning);
@@ -76,9 +79,19 @@ export class Desktop {
   }
 
   async bindThread(threadId) {
-    await this.#openThread(threadId);
-    await this.#wait(700);
-    return this.attach();
+    if (!this.#threadCatalog) {
+      throw new Error("The native Codex task catalog is required to confirm a desktop task.");
+    }
+    return this.#enqueue(async () => {
+      const requested = typeof this.#threadCatalog.focusThread === "function"
+        ? await this.#threadCatalog.focusThread(threadId)
+        : await this.#openThread(threadId).then(() => ({ agentId: null }));
+      if (!requested?.agentId) {
+        throw new Error("The native Codex task catalog could not identify the requested desktop task.");
+      }
+      await this.#confirmFocus(requested.agentId);
+      return this.#invokeNow("attach", [], "");
+    });
   }
 
   applyLifecycleHook() {
@@ -117,18 +130,38 @@ export class Desktop {
 
   async selectModel(modelId) {
     if (!this.#threadCatalog) throw new Error("Native Codex model selection is unavailable.");
-    await this.#invoke("select-model", [modelId]);
-    const current = await this.status();
-    const settings = { model: current.model, reasoning: current.reasoning };
-    return { ok: true, message: `Selected ${settings.model.label}.`, settings };
+    return this.#enqueue(async () => {
+      const current = await this.#statusNow();
+      this.#requireSettingsAvailable(current, "model");
+      const selected = await this.#threadCatalog.validateModel(modelId);
+      await this.#invokeNow("select-model", [selected.id], "");
+      const settings = await this.#threadCatalog.selectModel(selected.id);
+      return { ok: true, message: `Selected ${settings.model.label}.`, settings };
+    });
   }
 
   async adjustReasoning(delta) {
     if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
-    await this.#invoke("reasoning", [`${delta}`]);
-    const current = await this.status();
-    const settings = { model: current.model, reasoning: current.reasoning };
-    return { ok: true, message: `Selected ${settings.reasoning.label} reasoning.`, settings };
+    if (delta !== -1 && delta !== 1) throw new Error("Reasoning adjustment must be one step.");
+    return this.#enqueue(async () => {
+      const current = await this.#statusNow();
+      this.#requireSettingsAvailable(current, "reasoning");
+      const target = this.#threadCatalog.reasoningTarget(delta);
+      if (!target) throw new Error("Codex reasoning cannot move farther in that direction.");
+      return this.#selectReasoningNow(target);
+    });
+  }
+
+  async selectReasoning(level) {
+    if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
+    return this.#enqueue(async () => {
+      const current = await this.#statusNow();
+      this.#requireSettingsAvailable(current, "reasoning");
+      if (!this.#threadCatalog.hasReasoningLevel(level)) {
+        throw new Error("The requested Codex reasoning level is unavailable or stale.");
+      }
+      return this.#selectReasoningNow(level);
+    });
   }
 
   async clearInput() {
@@ -141,7 +174,14 @@ export class Desktop {
 
   async focusAgent(agentId) {
     if (!this.#threadCatalog) return this.#invoke("focus-agent", [agentId]);
-    return this.#threadCatalog.focusAgent(agentId);
+    return this.#enqueue(async () => {
+      const requested = await this.#threadCatalog.focusAgent(agentId);
+      await this.#confirmFocus(requested?.agentId ?? agentId);
+      return {
+        ok: true,
+        message: "Focused the selected Codex task after native desktop confirmation.",
+      };
+    });
   }
 
   async workflow(prompt) {
@@ -168,6 +208,52 @@ export class Desktop {
     const body = await this.#run(this.#socketPath, action, args, input);
     if (!body.ok) throw new Error(body.message ?? "The macOS desktop controller rejected this action.");
     return body;
+  }
+
+  async #observeAgentsNow({ allowCached = true } = {}) {
+    const result = await this.#invokeNow("status", [], "");
+    if (!this.#threadCatalog) return { result, agents: result.agents ?? [] };
+    let agents;
+    try {
+      agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
+      this.#lastAgents = agents;
+    } catch (error) {
+      if (!allowCached) throw error;
+      agents = this.#lastAgents;
+    }
+    return { result: { ...result, agents }, agents };
+  }
+
+  async #confirmFocus(agentId) {
+    let lastError = null;
+    for (let attempt = 0; attempt < this.#focusPollAttempts; attempt += 1) {
+      try {
+        const { agents } = await this.#observeAgentsNow({ allowCached: false });
+        if (agents.some((agent) => agent.id === agentId && agent.focused === true)) return;
+      } catch (error) {
+        lastError = error;
+      }
+      if (attempt + 1 < this.#focusPollAttempts) await this.#wait(this.#focusPollIntervalMs);
+    }
+    throw new Error(
+      "ChatGPT did not confirm the requested Codex task before the focus timeout.",
+      lastError ? { cause: lastError } : undefined,
+    );
+  }
+
+  async #selectReasoningNow(level) {
+    await this.#invokeNow("select-reasoning", [level], "");
+    const settings = await this.#threadCatalog.selectReasoning(level);
+    return { ok: true, message: `Selected ${settings.reasoning.label} reasoning.`, settings };
+  }
+
+  #requireSettingsAvailable(status, kind) {
+    if (status.taskState === "executing" || status.controls?.stop === true) {
+      throw new Error(`Codex ${kind} cannot be changed while the visible task is running.`);
+    }
+    if (status.controls?.[kind] !== true) {
+      throw new Error(`The visible Codex ${kind} control is unavailable.`);
+    }
   }
 
 }

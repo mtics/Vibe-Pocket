@@ -158,6 +158,16 @@ private func codexScope(for application: NSRunningApplication) -> AXUIElement {
   return root
 }
 
+private func focusedWindow(for application: NSRunningApplication) throws -> AXUIElement {
+  let root = AXUIElementCreateApplication(application.processIdentifier)
+  var value: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(root, kAXFocusedWindowAttribute as CFString, &value) == .success,
+        let window = value as! AXUIElement? else {
+    throw HelperFailure.message("ChatGPT did not expose a focused Accessibility window.")
+  }
+  return window
+}
+
 private func codexArea(in root: AXUIElement) throws -> AXUIElement {
   let areas = codexWebAreas(of: root)
   guard !areas.isEmpty else {
@@ -364,8 +374,6 @@ private enum ReasoningLevel: String, CaseIterable {
   case max
   case ultra
 
-  private static let desktopLevels: [ReasoningLevel] = [.low, .medium, .high, .xhigh, .ultra]
-
   private static let aliases: [(ReasoningLevel, [String])] = [
     (.ultra, ["ultra"]),
     (.max, ["maximum", "max", "最大", "最高"]),
@@ -401,17 +409,7 @@ private enum ReasoningLevel: String, CaseIterable {
     return ""
   }
 
-  func shifted(by delta: Int) -> ReasoningLevel? {
-    guard delta == -1 || delta == 1 else { return nil }
-    if self == .minimal { return delta > 0 ? .low : nil }
-    if self == .max { return delta > 0 ? .ultra : .xhigh }
-    guard let currentIndex = Self.desktopLevels.firstIndex(of: self) else { return nil }
-    let targetIndex = currentIndex + delta
-    return Self.desktopLevels.indices.contains(targetIndex) ? Self.desktopLevels[targetIndex] : nil
-  }
-
-  var canIncrease: Bool { shifted(by: 1) != nil }
-  var canDecrease: Bool { shifted(by: -1) != nil }
+  var needsNativeConfirmation: Bool { self == .xhigh || self == .ultra }
 }
 
 private struct ReasoningControl {
@@ -419,6 +417,7 @@ private struct ReasoningControl {
   let label: String
   let modelLabel: String
   let level: ReasoningLevel?
+  let ambiguous: Bool
 }
 
 private let reasoningRoleHints = ["reasoning", "reasoning effort", "推理", "推理强度"]
@@ -460,7 +459,8 @@ private func reasoningControl(in index: AreaIndex) -> ReasoningControl? {
       element: element,
       label: label,
       modelLabel: level == nil ? "" : ReasoningLevel.modelLabel(from: label),
-      level: level
+      level: level,
+      ambiguous: level == .xhigh
     )
   }
   if let parsed = candidates.first(where: { $0.level != nil }) { return parsed }
@@ -852,8 +852,9 @@ private func statusReply(application: NSRunningApplication, area: AXUIElement) -
       "label": reasoning?.label ?? "",
       "modelLabel": reasoning?.modelLabel ?? "",
       "level": reasoning?.level?.rawValue ?? "",
-      "canIncrease": reasoningAvailable && (reasoning?.level?.canIncrease ?? true),
-      "canDecrease": reasoningAvailable && (reasoning?.level?.canDecrease ?? true),
+      "ambiguous": reasoning?.ambiguous ?? false,
+      "canIncrease": reasoningAvailable,
+      "canDecrease": reasoningAvailable,
     ],
     "agents": agents.enumerated().map { index, agent in
       ["id": agent.id, "label": agent.label, "state": agent.state, "focused": agent.focused]
@@ -927,19 +928,74 @@ private func focus(_ element: AXUIElement) throws {
   }
 }
 
-private func openComposerMenu(_ control: ReasoningControl) throws {
-  try focus(control.element)
-  try postKey(49)
-}
+private final class MenuInteraction {
+  private let application: NSRunningApplication
+  private let window: AXUIElement
+  private var opened = false
 
-private func openSubmenu(_ item: AXUIElement) throws {
-  try focus(item)
-  try postKey(124)
-}
+  init(application: NSRunningApplication) throws {
+    try verifyForeground(application)
+    self.application = application
+    self.window = try focusedWindow(for: application)
+  }
 
-private func chooseMenuItem(_ item: AXUIElement) throws {
-  try focus(item)
-  try postKey(36)
+  func openComposerMenu(_ control: ReasoningControl) throws {
+    try perform(control.element, fallbackKey: 49)
+    opened = true
+  }
+
+  func openMenu(_ element: AXUIElement) throws {
+    try perform(element, fallbackKey: 49)
+    opened = true
+  }
+
+  func openSubmenu(_ item: AXUIElement) throws {
+    try perform(item, fallbackKey: 124)
+  }
+
+  func chooseMenuItem(_ item: AXUIElement) throws {
+    try perform(item, fallbackKey: 36)
+  }
+
+  func waitForValue<Value>(
+    attempts: Int,
+    intervalMicroseconds: UInt32,
+    find: (AXUIElement) -> Value?
+  ) throws -> Value? {
+    for attempt in 0..<attempts {
+      try revalidate()
+      if let value = find(window) { return value }
+      if attempt + 1 < attempts { usleep(intervalMicroseconds) }
+    }
+    return nil
+  }
+
+  func leaveOpen() {
+    opened = false
+  }
+
+  func cleanup() {
+    guard opened, (try? revalidate()) != nil else { return }
+    try? postKey(53, to: application.processIdentifier)
+    opened = false
+  }
+
+  private func perform(_ element: AXUIElement, fallbackKey: CGKeyCode) throws {
+    try revalidate()
+    if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success { return }
+    try revalidate()
+    try focus(element)
+    try revalidate()
+    try postKey(fallbackKey, to: application.processIdentifier)
+  }
+
+  private func revalidate() throws {
+    try verifyForeground(application)
+    let currentWindow = try focusedWindow(for: application)
+    guard CFEqual(currentWindow, window) else {
+      throw HelperFailure.message("ChatGPT changed its focused window during menu interaction.")
+    }
+  }
 }
 
 private func elementFrame(_ element: AXUIElement) throws -> CGRect {
@@ -993,18 +1049,18 @@ private func selectNextAccessMode(
   currentLabel: String
 ) throws {
   let buttonFrame = try elementFrame(button)
-  try performPress(button)
-  usleep(200_000)
-  let root = AXUIElementCreateApplication(application.processIdentifier)
-  let menus = descendants(of: root) {
-    attributeString($0, kAXRoleAttribute as CFString) == "AXMenu"
-  }.compactMap { menu -> (AXUIElement, CGFloat)? in
-    guard let frame = try? elementFrame(menu) else { return nil }
-    return (menu, hypot(frame.midX - buttonFrame.midX, frame.midY - buttonFrame.midY))
-  }
-  guard let menu = menus.min(by: { $0.1 < $1.1 })?.0,
-        let currentKey = accessModeKey(for: currentLabel) else {
-    try? postKey(53)
+  let interaction = try MenuInteraction(application: application)
+  defer { interaction.cleanup() }
+  try interaction.openMenu(button)
+  guard let menu = try interaction.waitForValue(attempts: 8, intervalMicroseconds: 50_000, find: { window in
+    let menus = descendants(of: window) {
+      attributeString($0, kAXRoleAttribute as CFString) == "AXMenu"
+    }.compactMap { menu -> (AXUIElement, CGFloat)? in
+      guard let frame = try? elementFrame(menu) else { return nil }
+      return (menu, hypot(frame.midX - buttonFrame.midX, frame.midY - buttonFrame.midY))
+    }
+    return menus.min(by: { $0.1 < $1.1 })?.0
+  }), let currentKey = accessModeKey(for: currentLabel) else {
     throw HelperFailure.message("ChatGPT did not expose its access mode menu.")
   }
   let options = children(of: menu).compactMap { item -> (AXUIElement, String)? in
@@ -1020,10 +1076,9 @@ private func selectNextAccessMode(
     target = options.first(where: { $0.1 != currentKey })?.0
   }
   guard let target else {
-    try? postKey(53)
     throw HelperFailure.message("ChatGPT did not expose another access mode in its menu.")
   }
-  try performPress(target)
+  try interaction.chooseMenuItem(target)
   usleep(180_000)
 }
 
@@ -1039,26 +1094,14 @@ private func waitForValue<Value>(
   return nil
 }
 
-private func adjustReasoningLevel(
-  from control: ReasoningControl,
-  in application: NSRunningApplication,
-  delta: Int
-) throws {
-  let requestedLevel = control.level?.shifted(by: delta)
-  if control.level != nil && requestedLevel == nil {
-    throw HelperFailure.message(delta > 0
-      ? "Codex reasoning is already at its highest level."
-      : "Codex reasoning is already at its lowest level.")
-  }
-  guard let requestedLevel else {
-    throw HelperFailure.message("The requested Codex reasoning level is unavailable.")
-  }
-  try selectReasoning(requestedLevel, from: control, in: application)
-}
-
 private func modelKey(_ value: String) -> String {
   let compact = value.lowercased().filter { $0.isLetter || $0.isNumber }
   return compact.hasPrefix("gpt") ? String(compact.dropFirst(3)) : compact
+}
+
+private func modelMatches(requested: String, candidate: String) -> Bool {
+  let target = modelKey(requested)
+  return !target.isEmpty && modelKey(candidate) == target
 }
 
 private func modelLabel(of element: AXUIElement) -> String {
@@ -1082,15 +1125,13 @@ private func modelLabel(of element: AXUIElement) -> String {
 }
 
 private func modelOption(in root: AXUIElement, matching requested: String) -> AXUIElement? {
-  let target = modelKey(requested)
   let selectableRoles: Set<String> = ["AXButton", "AXMenuItem", "AXRadioButton"]
   return descendants(of: root, maxDepth: 28) { element in
     let role = attributeString(element, kAXRoleAttribute as CFString)
     guard selectableRoles.contains(role), attributeBool(element, kAXEnabledAttribute as CFString) else {
       return false
     }
-    let candidate = modelKey(reasoningControlLabel(element))
-    return !candidate.isEmpty && candidate.contains(target)
+    return modelMatches(requested: requested, candidate: reasoningControlLabel(element))
   }.first
 }
 
@@ -1145,68 +1186,62 @@ private func selectModel(
   }
   if modelKey(control.modelLabel) == target { return }
 
-  let root = AXUIElementCreateApplication(application.processIdentifier)
-  try openComposerMenu(control)
-  guard let menuItem = waitForValue(attempts: 8, intervalMicroseconds: 60_000, find: {
-    modelMenuItem(in: root)
+  let interaction = try MenuInteraction(application: application)
+  defer { interaction.cleanup() }
+  try interaction.openComposerMenu(control)
+  guard let menuItem = try interaction.waitForValue(attempts: 8, intervalMicroseconds: 60_000, find: { window in
+    modelMenuItem(in: window)
   }) else {
-    try? postKey(53)
     throw HelperFailure.message("ChatGPT did not expose its model menu.")
   }
-  try openSubmenu(menuItem)
-  guard let targetElement = waitForValue(attempts: 10, intervalMicroseconds: 80_000, find: {
-    modelOption(in: root, matching: requested)
+  try interaction.openSubmenu(menuItem)
+  guard let targetElement = try interaction.waitForValue(attempts: 10, intervalMicroseconds: 80_000, find: { window in
+    modelOption(in: window, matching: requested)
   }) else {
-    try? postKey(53)
     throw HelperFailure.message("ChatGPT did not expose the requested model in its model menu.")
   }
-  try chooseMenuItem(targetElement)
-  let confirmed = waitForValue(attempts: 16, intervalMicroseconds: 100_000) { () -> Bool? in
-    guard let area = try? codexArea(for: application),
+  try interaction.chooseMenuItem(targetElement)
+  let confirmed = try interaction.waitForValue(attempts: 16, intervalMicroseconds: 100_000) { window -> Bool? in
+    guard let area = try? codexArea(in: window),
           let observed = reasoningControl(in: area) else { return nil }
     return modelKey(observed.modelLabel) == target ? true : nil
   }
   guard confirmed != nil else {
     throw HelperFailure.message("ChatGPT did not confirm the selected Codex model.")
   }
-  try? postKey(53, to: application.processIdentifier)
 }
 
 private func selectReasoning(
   _ requested: ReasoningLevel,
   from control: ReasoningControl,
   in application: NSRunningApplication
-) throws {
-  let root = AXUIElementCreateApplication(application.processIdentifier)
-  try openComposerMenu(control)
-  guard let menuItem = waitForValue(attempts: 8, intervalMicroseconds: 60_000, find: {
-    reasoningMenuItem(in: root)
+) throws -> Bool {
+  let interaction = try MenuInteraction(application: application)
+  defer { interaction.cleanup() }
+  try interaction.openComposerMenu(control)
+  guard let menuItem = try interaction.waitForValue(attempts: 8, intervalMicroseconds: 60_000, find: { window in
+    reasoningMenuItem(in: window)
   }) else {
-    try? postKey(53)
     throw HelperFailure.message("ChatGPT did not expose its reasoning menu.")
   }
-  try openSubmenu(menuItem)
-  guard let target = waitForValue(attempts: 10, intervalMicroseconds: 80_000, find: {
-    reasoningOption(in: root, matching: requested)
+  try interaction.openSubmenu(menuItem)
+  guard let target = try interaction.waitForValue(attempts: 10, intervalMicroseconds: 80_000, find: { window in
+    reasoningOption(in: window, matching: requested)
   }) else {
-    try? postKey(53)
     throw HelperFailure.message("ChatGPT did not expose the requested reasoning level.")
   }
-  try chooseMenuItem(target)
-  let confirmed = waitForValue(attempts: 16, intervalMicroseconds: 100_000) { () -> Bool? in
-    guard let area = try? codexArea(for: application),
+  try interaction.chooseMenuItem(target)
+  if requested.needsNativeConfirmation { return false }
+  let confirmed = try interaction.waitForValue(attempts: 16, intervalMicroseconds: 100_000) { window -> Bool? in
+    guard let area = try? codexArea(in: window),
           let observed = reasoningControl(in: area),
           let observedLevel = observed.level else { return nil }
-    // The closed selector renders both xhigh and ultra as the same localized
-    // label. The exact submenu target above distinguishes them.
-    return observedLevel == requested || (requested == .ultra && observedLevel == .xhigh)
-      ? true
-      : nil
+    return observedLevel == requested ? true : nil
   }
   guard confirmed != nil else {
     throw HelperFailure.message("ChatGPT did not confirm the selected reasoning level.")
   }
-  try? postKey(53, to: application.processIdentifier)
+  return true
 }
 
 private func focusPrompt(in area: AXUIElement) throws -> AXUIElement {
@@ -1372,7 +1407,9 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
           let control = reasoningControl(in: area) else {
       throw HelperFailure.message("The ChatGPT Codex model is not currently adjustable.")
     }
-    try openComposerMenu(control)
+    let interaction = try MenuInteraction(application: application)
+    try interaction.openComposerMenu(control)
+    interaction.leaveOpen()
     return ["ok": true, "message": "Opened the ChatGPT Codex model picker."]
   case "select-model":
     guard let modelID = arguments.dropFirst().first else {
@@ -1397,24 +1434,36 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
           let control = reasoningControl(in: area) else {
       throw HelperFailure.message("The ChatGPT Codex reasoning level is not currently adjustable.")
     }
-    try selectReasoning(level, from: control, in: application)
-    return ["ok": true, "message": "Selected the requested ChatGPT Codex reasoning level."]
+    let confirmed = try selectReasoning(level, from: control, in: application)
+    return [
+      "ok": true,
+      "message": confirmed
+        ? "Selected the requested ChatGPT Codex reasoning level."
+        : "Requested the exact ChatGPT Codex reasoning level; native task confirmation is required.",
+      "nativeConfirmationRequired": !confirmed,
+    ]
   case "reasoning":
     guard let rawDelta = arguments.dropFirst().first,
           let delta = Int(rawDelta), delta == -1 || delta == 1 else {
       throw HelperFailure.message("Reasoning depth must move by one step.")
     }
+    guard let rawLevel = arguments.dropFirst(2).first,
+          let level = ReasoningLevel(rawValue: rawLevel) else {
+      throw HelperFailure.message("Reasoning adjustment requires its exact advertised target level.")
+    }
     let (application, area) = try desktop(activateDesktop: false)
     try verifyForeground(application)
-    guard let control = reasoningControl(in: area) else {
+    guard controlButton(.stop, in: area) == nil,
+          let control = reasoningControl(in: area) else {
       throw HelperFailure.message("The ChatGPT Codex reasoning level is not currently adjustable.")
     }
-    try adjustReasoningLevel(
-      from: control,
-      in: application,
-      delta: delta
-    )
-    return ["ok": true, "message": "Requested the next ChatGPT Codex reasoning level."]
+    _ = delta
+    let confirmed = try selectReasoning(level, from: control, in: application)
+    return [
+      "ok": true,
+      "message": "Requested the exact next ChatGPT Codex reasoning level.",
+      "nativeConfirmationRequired": !confirmed,
+    ]
   case "delete-backward":
     let (application, area) = try desktop(activateDesktop: false)
     try verifyForeground(application)

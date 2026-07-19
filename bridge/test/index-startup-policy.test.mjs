@@ -12,3 +12,11 @@ test("opens the health listener before waiting for Accessibility discovery", asy
   assert.ok(listen > start);
   assert.ok(wait > listen);
 });
+
+test("delegates signals to the ordered shutdown coordinator", async () => {
+  const source = await readFile(new URL("../src/index.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /new Shutdown\(\{/);
+  assert.match(source, /servers: \[server, admin\]/);
+  assert.match(source, /shutdown\.close\(\)/);
+});

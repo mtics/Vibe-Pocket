@@ -1,49 +1,44 @@
 import { createServer } from "node:http";
 
 import { Failure } from "./failure.mjs";
+import { readJson } from "./json.mjs";
+import { manage, RequestTracker } from "./request-tracker.mjs";
 
 export function create({ invitations }) {
-  return createServer(async (request, response) => {
+  const requests = new RequestTracker();
+  const server = createServer((request, response) => {
+    void requests.run(() => handle(request, response)).catch((error) => sendError(response, error));
+  });
+
+  async function handle(request, response) {
     try {
       const url = new URL(request.url, "http://localhost");
       if (request.method === "POST" && url.pathname === "/v1/pairing/invitations") {
-        const { origin } = await read(request);
+        const { origin } = await readJson(request, {
+          maxBytes: 4 * 1024,
+          invalidMessage: "Pairing request must be valid JSON.",
+          tooLargeMessage: "Pairing request is too large.",
+        });
         send(response, 201, invitations.create(origin));
         return;
       }
       send(response, 404, { error: { code: "not_found", message: "Vibe Pocket admin endpoint not found." } });
     } catch (error) {
-      const status = error instanceof Failure ? error.status : 500;
-      const code = error instanceof Failure ? error.code : "admin_error";
-      const message = error instanceof Failure ? error.message : "The Vibe Pocket admin service could not finish this request.";
-      send(response, status, { error: { code, message } });
+      sendError(response, error);
     }
-  });
+  }
+  return manage(server, requests);
 }
 
-function read(request) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 4 * 1024) {
-        reject(new Failure(413, "body_too_large", "Pairing request is too large."));
-        request.destroy();
-      }
-    });
-    request.on("end", () => {
-      try {
-        resolve(JSON.parse(body || "{}"));
-      } catch {
-        reject(new Failure(400, "invalid_json", "Pairing request must be valid JSON."));
-      }
-    });
-    request.on("error", reject);
-  });
+function sendError(response, error) {
+  const status = error instanceof Failure ? error.status : 500;
+  const code = error instanceof Failure ? error.code : "admin_error";
+  const message = error instanceof Failure ? error.message : "The Vibe Pocket admin service could not finish this request.";
+  send(response, status, { error: { code, message } });
 }
 
 function send(response, status, body) {
+  if (response.headersSent || response.writableEnded || response.destroyed) return;
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",

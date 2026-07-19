@@ -1,12 +1,12 @@
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { defaultPath } from "./profile/store.mjs";
 
 const DEFAULT_PORT = 4320;
 const BRIDGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PROFILE_FORBIDDEN_ROOT = findRepositoryRoot(BRIDGE_ROOT) ?? BRIDGE_ROOT;
+const PROFILE_FORBIDDEN_ROOT = realpathSync(findRepositoryRoot(BRIDGE_ROOT) ?? BRIDGE_ROOT);
 
 export function load(environment = process.env, cwd = process.cwd()) {
   const token = environment.VIBE_POCKET_TOKEN;
@@ -35,15 +35,52 @@ export function load(environment = process.env, cwd = process.cwd()) {
 }
 
 function parseProfilePath(value, environment) {
-  if (!value) return defaultPath({ environment });
-  if (!isAbsolute(value)) {
+  const configuredPath = value || defaultPath({ environment });
+  if (!isAbsolute(configuredPath)) {
     throw new Error("VIBE_POCKET_PROFILE_PATH must be an absolute path outside the repository.");
   }
-  const repositoryRelativePath = relative(PROFILE_FORBIDDEN_ROOT, value);
-  if (repositoryRelativePath === "" || (!repositoryRelativePath.startsWith("..") && !isAbsolute(repositoryRelativePath))) {
+  const profilePath = resolve(configuredPath);
+  const canonicalPath = resolveFromExistingAncestor(profilePath);
+  if (isWithin(PROFILE_FORBIDDEN_ROOT, canonicalPath)) {
     throw new Error("VIBE_POCKET_PROFILE_PATH must be outside the Vibe Pocket repository.");
   }
-  return value;
+  return profilePath;
+}
+
+function resolveFromExistingAncestor(path) {
+  let candidate = path;
+  const suffix = [];
+  while (true) {
+    try {
+      return resolve(realpathSync(candidate), ...suffix.reverse());
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
+        throw new Error("VIBE_POCKET_PROFILE_PATH could not be resolved safely.", { cause: error });
+      }
+      let existingEntry;
+      try {
+        existingEntry = lstatSync(candidate);
+      } catch (statError) {
+        if (statError?.code !== "ENOENT" && statError?.code !== "ENOTDIR") throw statError;
+      }
+      if (existingEntry?.isSymbolicLink()) {
+        throw new Error("VIBE_POCKET_PROFILE_PATH contains an unresolved symbolic link.");
+      }
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      suffix.push(basename(candidate));
+      candidate = parent;
+    }
+  }
+}
+
+function isWithin(root, destination) {
+  const rootRelativePath = relative(root, destination);
+  return rootRelativePath === "" || (
+    !isAbsolute(rootRelativePath)
+    && rootRelativePath !== ".."
+    && !rootRelativePath.startsWith(`..${sep}`)
+  );
 }
 
 function findRepositoryRoot(start) {
