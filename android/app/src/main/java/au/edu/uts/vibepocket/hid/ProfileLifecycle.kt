@@ -35,6 +35,14 @@ internal class ProfileLifecycle {
         return true
     }
 
+    fun rejectPendingProxy(): Boolean {
+        if (closed || !proxyPending) return false
+        profileGeneration += 1
+        registrationGeneration = 0
+        proxyPending = false
+        return true
+    }
+
     fun requestRegistration(): Registration? {
         if (closed || !proxyActive || registrationPending || registered) return null
         registrationGeneration += 1

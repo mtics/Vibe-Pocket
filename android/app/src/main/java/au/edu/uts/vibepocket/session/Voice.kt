@@ -1,6 +1,7 @@
 package au.edu.uts.vibepocket.session
 
 import au.edu.uts.vibepocket.bridge.Client
+import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.connection.VoiceStop
@@ -136,7 +137,9 @@ internal class Voice(
             var retryDelay = retry.initialDelayMillis
             try {
                 while (currentCoroutineContext().isActive) {
-                    val current = synchronized(lock) { obligation } ?: return@launch
+                    val current = synchronized(lock) {
+                        obligation?.takeUnless { it.startPending }
+                    } ?: return@launch
                     val result = try {
                         withTimeout(retry.timeoutMillis) {
                             client.stopVoice(current.stop.config, current.stop.idempotencyKey)
@@ -147,8 +150,10 @@ internal class Voice(
                     } catch (error: Throwable) {
                         Result.failure(error)
                     }
-                    if (result.isFailure) rejected(current.stop.config, requireNotNull(result.exceptionOrNull()))
-                    val cleared = result.isSuccess && runCatching {
+                    val failure = result.exceptionOrNull()
+                    if (failure != null) rejected(current.stop.config, failure)
+                    val terminal = (failure as? Failure)?.statusCode == 401
+                    val cleared = (result.isSuccess || terminal) && runCatching {
                         store.clearVoiceStop(current.stop.idempotencyKey)
                     }.onFailure {
                         rejected(current.stop.config, it)
@@ -162,15 +167,20 @@ internal class Voice(
                         }
                     }
                     if (acknowledged) {
-                        accepted(current.stop.config)
-                        retryDelay = retry.initialDelayMillis
-                        continue
+                        if (result.isSuccess) accepted(current.stop.config)
+                        return@launch
                     }
                     delay(retryDelay)
                     retryDelay = (retryDelay * 2).coerceAtMost(retry.maxDelayMillis)
                 }
             } finally {
-                synchronized(lock) { stopping = false }
+                val relaunch = synchronized(lock) {
+                    stopping = false
+                    val launch = obligation?.startPending == false && !closing
+                    if (launch) stopping = true
+                    launch
+                }
+                if (relaunch) drainStop()
             }
         }
     }

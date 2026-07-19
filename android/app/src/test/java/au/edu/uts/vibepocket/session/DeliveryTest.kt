@@ -117,11 +117,10 @@ class DeliveryTest {
             dispatcher = dispatcher,
             client = client,
             pending = pending,
-            config = { config },
             publishPending = {},
             accepted = { accepted() },
             rejected = { _, error -> throw error },
-        )
+        ).also { it.bind(config) }
     }
 
     private class GateClient : Client {

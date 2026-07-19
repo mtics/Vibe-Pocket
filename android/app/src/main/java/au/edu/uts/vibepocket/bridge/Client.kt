@@ -156,6 +156,7 @@ internal data class EventCallbacks(
     val snapshotChanged: () -> Unit,
     val eventId: (String) -> Unit,
     val disconnected: (String) -> Unit,
+    val unauthorized: () -> Unit,
 )
 
 internal fun interface EventFactory {
@@ -170,6 +171,7 @@ internal val NetworkEvents = EventFactory { config, lastEventId, callbacks ->
         onSnapshotChanged = callbacks.snapshotChanged,
         onEventId = callbacks.eventId,
         onDisconnected = callbacks.disconnected,
+        onUnauthorized = callbacks.unauthorized,
     )
 }
 
@@ -180,6 +182,7 @@ class Events(
     private val onSnapshotChanged: () -> Unit,
     private val onEventId: (String) -> Unit,
     private val onDisconnected: (String) -> Unit,
+    private val onUnauthorized: () -> Unit,
 ) : EventStream {
     @Volatile private var running = false
     @Volatile private var connection: HttpURLConnection? = null
@@ -190,18 +193,23 @@ class Events(
         if (running) return
         running = true
         executor.execute {
-            var retryDelay = 1_000L
+            val backoff = EventBackoff()
             while (running) {
-                val result = runCatching { consume() }
-                if (result.isSuccess) retryDelay = 1_000L
-                if (running && result.isFailure) {
-                    onDisconnected(result.exceptionOrNull()?.message ?: "Connection lost.")
+                val result = runCatching { consume(backoff::healthy) }
+                val failure = result.exceptionOrNull()
+                if (running && (failure as? Failure)?.statusCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                    running = false
+                    onUnauthorized()
+                    break
+                }
+                if (running && failure != null) {
+                    onDisconnected(failure.message ?: "Connection lost.")
                 }
                 if (running) {
-                    runCatching { Thread.sleep(retryDelay) }
-                    retryDelay = (retryDelay * 2).coerceAtMost(8_000L)
+                    runCatching { Thread.sleep(backoff.nextDelay()) }
                 }
             }
+            executor.shutdown()
         }
     }
 
@@ -212,7 +220,7 @@ class Events(
         executor.shutdownNow()
     }
 
-    private fun consume() {
+    private fun consume(onHealthy: () -> Unit) {
         val stream = (URL(config.normalizedUrl + "/v1/pocket/events").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 20_000
@@ -223,10 +231,12 @@ class Events(
         }
         connection = stream
         try {
-            if (stream.responseCode != HttpURLConnection.HTTP_OK) {
+            val status = stream.responseCode
+            if (status != HttpURLConnection.HTTP_OK) {
                 readResponse(stream.errorStream, stream.contentLengthLong)
-                throw Failure("The controller event connection was rejected.")
+                throw Failure("The controller event connection was rejected.", status)
             }
+            onHealthy()
             if (stream.contentLengthLong > MaxResponseBytes) {
                 throw Failure("The controller event response is too large.")
             }
@@ -245,6 +255,21 @@ class Events(
             stream.disconnect()
             connection = null
         }
+    }
+}
+
+internal class EventBackoff(
+    private val initialDelayMillis: Long = 1_000,
+    private val maxDelayMillis: Long = 8_000,
+) {
+    private var delayMillis = initialDelayMillis
+
+    fun healthy() {
+        delayMillis = initialDelayMillis
+    }
+
+    fun nextDelay(): Long = delayMillis.also {
+        delayMillis = (delayMillis * 2).coerceAtMost(maxDelayMillis)
     }
 }
 

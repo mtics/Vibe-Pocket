@@ -12,6 +12,8 @@ import au.edu.uts.vibepocket.bridge.NetworkEvents
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.connection.Store
+import au.edu.uts.vibepocket.connection.loadLifecycle
+import au.edu.uts.vibepocket.connection.valueOrNull
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
@@ -36,7 +38,9 @@ class Session internal constructor(
     private val eventFactory: EventFactory = NetworkEvents,
     retry: Retry = Retry(),
 ) : ViewModel() {
-    private val _state = MutableStateFlow(State())
+    private val restored = store.loadLifecycle()
+    private var lifecycleErrors = restored.errors
+    private val _state = MutableStateFlow(State(error = lifecycleErrorMessage()))
     val state: StateFlow<State> = _state.asStateFlow()
     private val _feedback = MutableSharedFlow<Feedback>(extraBufferCapacity = 4)
     val feedback: SharedFlow<Feedback> = _feedback.asSharedFlow()
@@ -45,7 +49,9 @@ class Session internal constructor(
     @Volatile private var foreground = false
     @Volatile private var lastEventId: String? = null
     @Volatile private var eventError: String? = null
+    @Volatile private var activeEventGeneration: Long? = null
     private var events: EventStream? = null
+    private var eventGeneration = 0L
     private var predictionExpiry: Job? = null
 
     private val prediction = Prediction(nowMillis)
@@ -56,6 +62,7 @@ class Session internal constructor(
         state = _state,
         reconcile = prediction::reconcile,
         reconciled = ::predictionReconciled,
+        persistentError = ::lifecycleErrorMessage,
     )
     private val voice = Voice(
         dispatcher = dispatcher,
@@ -70,7 +77,6 @@ class Session internal constructor(
         dispatcher = dispatcher,
         client = client,
         pending = pending,
-        config = { _state.value.config },
         publishPending = ::publishPending,
         accepted = ::commandAccepted,
         rejected = ::commandRejected,
@@ -95,13 +101,15 @@ class Session internal constructor(
     )
 
     init {
-        val config = store.load()
+        val config = restored.config.valueOrNull()
         if (config != null) {
-            _state.update { it.copy(config = config) }
+            _state.update { it.copy(config = config, error = lifecycleErrorMessage()) }
+            delivery.bind(config)
+            refresh.activate(config, eventGeneration)
             refresh.request()
         } else {
             connection.pendingInvitation?.let { invitation ->
-                _state.update { it.copy(invitation = invitation) }
+                _state.update { it.copy(invitation = invitation, error = lifecycleErrorMessage()) }
             }
         }
         voice.restore()
@@ -117,7 +125,7 @@ class Session internal constructor(
                 return false
             }
         if (!connection.offer(invitation)) return false
-        _state.update { it.copy(invitation = invitation, error = null) }
+        _state.update { it.copy(invitation = invitation, error = lifecycleErrorMessage()) }
         return true
     }
 
@@ -126,26 +134,31 @@ class Session internal constructor(
         return connection.pair(invitation)
     }
 
-    fun dismissPairing() {
-        _state.value.invitation?.let(connection::dismiss)
-        _state.update { it.copy(invitation = null) }
+    fun dismissPairing(): Boolean {
+        val invitation = _state.value.invitation ?: return false
+        if (!connection.dismiss(invitation)) return false
+        reloadLifecycleErrors()
+        _state.update { it.copy(invitation = null, error = lifecycleErrorMessage()) }
+        return true
     }
 
     fun disconnect() {
         voice.stop()
-        connection.disconnect()
+        val config = _state.value.config
+        delivery.bind(null)
+        if (!connection.disconnect()) delivery.bind(config)
     }
 
     fun setForeground(value: Boolean) {
         if (!value) voice.stop()
-        if (foreground == value) return
-        foreground = value
-        if (value) {
-            _state.value.config?.let(::startEvents)
-            refresh.request()
-        } else {
+        if (!value) {
+            foreground = false
             stopEvents(stale = true)
+            return
         }
+        if (foreground) return
+        foreground = value
+        _state.value.config?.let(::startEvents)
     }
 
     fun refresh() = refresh.request()
@@ -211,7 +224,6 @@ class Session internal constructor(
 
     private fun connectionAccepted(config: Config, snapshot: Snapshot) {
         voice.stop()
-        delivery.cancel()
         stopEvents()
         predictionExpiry?.cancel()
         predictionExpiry = null
@@ -219,14 +231,25 @@ class Session internal constructor(
         lastEventId = null
         eventError = null
         pending.clear()
-        _state.value = State(config = config, snapshot = snapshot, invitation = null)
-        if (foreground) startEvents(config)
+        reloadLifecycleErrors()
+        _state.value = State(
+            config = config,
+            snapshot = snapshot,
+            invitation = null,
+            error = lifecycleErrorMessage(),
+        )
+        delivery.bind(config)
+        if (foreground) {
+            startEvents(config)
+        } else {
+            refresh.activate(config, ++eventGeneration)
+        }
         _feedback.tryEmit(Feedback.Success)
     }
 
     private fun connectionCleared() {
         voice.stop()
-        delivery.cancel()
+        delivery.bind(null)
         stopEvents()
         predictionExpiry?.cancel()
         predictionExpiry = null
@@ -234,7 +257,8 @@ class Session internal constructor(
         lastEventId = null
         eventError = null
         pending.clear()
-        _state.value = State()
+        reloadLifecycleErrors()
+        _state.value = State(error = lifecycleErrorMessage())
     }
 
     private fun connectionRejected(error: Throwable) {
@@ -255,33 +279,44 @@ class Session internal constructor(
     }
 
     private fun publishPending() {
-        _state.update { it.copy(inFlightIds = pending.snapshot(), error = null) }
+        _state.update { it.copy(inFlightIds = pending.snapshot(), error = lifecycleErrorMessage()) }
     }
 
     private fun startEvents(config: Config) {
         if (events != null || !foreground || _state.value.config != config) return
-        events = eventFactory.create(
+        val generation = ++eventGeneration
+        activeEventGeneration = generation
+        refresh.activate(config, generation)
+        markSnapshotStale(config, generation)
+        val stream = eventFactory.create(
             config,
             lastEventId,
             EventCallbacks(
                 connected = {
-                    val recovered = eventError
-                    eventError = null
-                    if (recovered != null && foreground && _state.value.config == config) {
-                        _state.update { current ->
-                            if (current.error == recovered) current.copy(error = null) else current
+                    if (isCurrentEvent(config, generation)) {
+                        val recovered = eventError
+                        eventError = null
+                        if (recovered != null) {
+                            _state.update { current ->
+                                if (current.error == recovered) {
+                                    current.copy(error = lifecycleErrorMessage())
+                                } else {
+                                    current
+                                }
+                            }
                         }
+                        refresh.request(generation, stale = true)
                     }
-                    refresh.request()
-                    markSnapshotStale(config)
                 },
                 snapshotChanged = {
-                    refresh.request()
-                    markSnapshotStale(config)
+                    if (isCurrentEvent(config, generation)) {
+                        refresh.request(generation, stale = true)
+                    }
                 },
-                eventId = { lastEventId = it },
+                eventId = { if (isCurrentEvent(config, generation)) lastEventId = it },
                 disconnected = { message ->
-                    if (foreground && _state.value.config == config) {
+                    if (isCurrentEvent(config, generation)) {
+                        refresh.activate(config, generation)
                         eventError = message
                         _state.update {
                             it.copy(
@@ -291,20 +326,46 @@ class Session internal constructor(
                         }
                     }
                 },
+                unauthorized = {
+                    if (isCurrentEvent(config, generation)) invalidateCredential(config)
+                },
             ),
-        ).also(EventStream::start)
+        )
+        events = stream
+        stream.start()
     }
 
     private fun stopEvents(stale: Boolean = false) {
-        events?.stop()
+        activeEventGeneration = null
+        val stream = events
         events = null
+        refresh.deactivate()
+        stream?.stop()
         if (stale) _state.update { it.copy(snapshot = it.snapshot?.copy(transportFresh = false)) }
     }
 
-    private fun markSnapshotStale(config: Config) {
-        if (_state.value.config != config) return
+    private fun markSnapshotStale(config: Config, generation: Long) {
+        if (!isCurrentEvent(config, generation)) return
         _state.update { it.copy(snapshot = it.snapshot?.copy(transportFresh = false)) }
     }
+
+    private fun isCurrentEvent(config: Config, generation: Long): Boolean =
+        foreground && _state.value.config == config && activeEventGeneration == generation
+
+    private fun invalidateCredential(config: Config) {
+        voice.stop()
+        delivery.bind(null)
+        stopEvents(stale = true)
+        connection.invalidate(config)
+    }
+
+    private fun reloadLifecycleErrors() {
+        lifecycleErrors = store.loadLifecycle().errors
+    }
+
+    private fun lifecycleErrorMessage(): String? = lifecycleErrors
+        .takeIf { it.isNotEmpty() }
+        ?.joinToString(separator = " ") { it.message }
 
     private fun schedulePredictionExpiry() {
         val deadline = prediction.deadlineMillis() ?: return
@@ -325,7 +386,7 @@ class Session internal constructor(
     }
 
     override fun onCleared() {
-        delivery.cancel()
+        delivery.bind(null)
         voice.close()
         predictionExpiry?.cancel()
         stopEvents()

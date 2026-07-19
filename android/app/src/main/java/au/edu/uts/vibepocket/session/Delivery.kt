@@ -5,8 +5,10 @@ import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.control.Command
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -15,49 +17,56 @@ internal class Delivery(
     private val dispatcher: CoroutineDispatcher,
     private val client: Client,
     private val pending: Pending,
-    private val config: () -> Config?,
     private val publishPending: () -> Unit,
     private val accepted: (Config) -> Unit,
     private val rejected: (Config, Throwable) -> Unit,
 ) {
+    private data class Owner(
+        val config: Config?,
+        val epoch: Long,
+    )
+
     private data class Outbound(
         val command: Command,
         val id: String,
-        val config: Config,
+        val owner: Owner,
         val family: String?,
-        val epoch: Long,
     )
 
     private val lock = Any()
     private val queue = ArrayDeque<Outbound>()
-    private var draining = false
+    private var owner = Owner(config = null, epoch = 0)
     private var active: Outbound? = null
-    private var epoch = 0L
-    private var drainJob: Job? = null
+    private var worker: Job? = null
+
+    fun bind(config: Config?) {
+        replaceOwner(config)
+    }
 
     fun send(command: Command, id: String, family: String? = null): Boolean {
-        val currentConfig = config() ?: return false
         val shouldLaunch = synchronized(lock) {
+            val currentOwner = owner.takeIf { it.config != null } ?: return false
             if (!pending.add(id)) return false
-            if (family != null) coalesce(family)
-            queue.addLast(Outbound(command, id, currentConfig, family, epoch))
-            (!draining).also { launch -> if (launch) draining = true }
+            if (family != null) coalesce(family, currentOwner)
+            queue.addLast(Outbound(command, id, currentOwner, family))
+            worker == null
         }
         publishPending()
-        if (shouldLaunch) drain()
+        if (shouldLaunch) launchWorker()
         return true
     }
 
     fun cancel() {
+        val currentConfig = synchronized(lock) { owner.config }
+        replaceOwner(currentConfig)
+    }
+
+    private fun replaceOwner(config: Config?) {
         val cancelled = synchronized(lock) {
-            epoch += 1
+            owner = Owner(config, owner.epoch + 1)
             val ids = queue.mapTo(mutableSetOf()) { it.id }
             active?.id?.let(ids::add)
             queue.clear()
-            active = null
-            draining = false
-            val worker = drainJob
-            drainJob = null
             worker to ids
         }
         cancelled.first?.cancel()
@@ -65,10 +74,10 @@ internal class Delivery(
         publishPending()
     }
 
-    private fun coalesce(family: String) {
+    private fun coalesce(family: String, currentOwner: Owner) {
         for (index in queue.lastIndex downTo 0) {
             val queued = queue[index]
-            if (queued.family == null) return
+            if (queued.owner != currentOwner || queued.family == null) return
             if (queued.family == family) {
                 queue.removeAt(index)
                 pending.remove(queued.id)
@@ -77,42 +86,61 @@ internal class Delivery(
         }
     }
 
-    private fun drain() {
-        val workerEpoch = synchronized(lock) { epoch }
-        val worker = scope.launch(dispatcher) {
+    private fun launchWorker() {
+        lateinit var candidate: Job
+        candidate = scope.launch(dispatcher, start = CoroutineStart.LAZY) {
+            drain()
+        }
+        val installed = synchronized(lock) {
+            if (worker == null && queue.isNotEmpty()) {
+                worker = candidate
+                true
+            } else {
+                false
+            }
+        }
+        if (!installed) {
+            candidate.cancel()
+            return
+        }
+        candidate.invokeOnCompletion { workerFinished(candidate) }
+        candidate.start()
+    }
+
+    private suspend fun drain() {
+        while (currentCoroutineContext().isActive) {
+            val outbound = synchronized(lock) {
+                queue.removeFirstOrNull()?.also { active = it }
+            } ?: return
+            var result: Result<Unit>? = null
             try {
-                while (currentCoroutineContext().isActive) {
-                    val outbound = synchronized(lock) {
-                        if (workerEpoch != epoch || queue.isEmpty()) {
-                            null
-                        } else {
-                            queue.removeFirst().also { active = it }
-                        }
-                    } ?: return@launch
-                    val result = runCatching { client.command(outbound.config, outbound.command) }
-                    val current = synchronized(lock) {
-                        val matches = outbound.epoch == epoch
-                        if (active === outbound) active = null
-                        matches
-                    }
-                    if (current) {
-                        result.onSuccess { accepted(outbound.config) }
-                            .onFailure { rejected(outbound.config, it) }
-                    }
-                    pending.remove(outbound.id)
-                    if (current && config() == outbound.config) publishPending()
-                }
+                currentCoroutineContext().ensureActive()
+                result = runCatching { client.command(requireNotNull(outbound.owner.config), outbound.command) }
             } finally {
-                synchronized(lock) {
-                    if (workerEpoch == epoch) {
-                        draining = false
-                        drainJob = null
-                    }
+                val current = synchronized(lock) {
+                    if (active === outbound) active = null
+                    owner == outbound.owner
+                }
+                pending.remove(outbound.id)
+                if (current) {
+                    result?.onSuccess { accepted(requireNotNull(outbound.owner.config)) }
+                        ?.onFailure { rejected(requireNotNull(outbound.owner.config), it) }
+                    publishPending()
                 }
             }
         }
-        synchronized(lock) {
-            if (workerEpoch == epoch && draining) drainJob = worker else worker.cancel()
+    }
+
+    private fun workerFinished(completed: Job) {
+        val shouldLaunch = synchronized(lock) {
+            if (worker !== completed) {
+                false
+            } else {
+                worker = null
+                active = null
+                queue.isNotEmpty()
+            }
         }
+        if (shouldLaunch) launchWorker()
     }
 }

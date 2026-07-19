@@ -5,7 +5,9 @@ import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Invitation
+import au.edu.uts.vibepocket.connection.LoadOutcome
 import au.edu.uts.vibepocket.connection.Store
+import au.edu.uts.vibepocket.connection.valueOrNull
 import au.edu.uts.vibepocket.control.Snapshot
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -38,7 +40,7 @@ internal class Connection(
 
     private val lock = Any()
     private var generation = 0L
-    private var claim = store.loadClaim()
+    private var claim = store.loadClaimRecord().valueOrNull()
     private var active: Attempt? = null
     private var revoking = false
 
@@ -81,23 +83,30 @@ internal class Connection(
         return true
     }
 
-    fun dismiss(invitation: Invitation) {
+    fun dismiss(invitation: Invitation): Boolean {
+        var matched = true
         val superseded = runCatching {
             synchronized(lock) {
-                val previous = claim?.takeIf { it.invitation == invitation } ?: return@synchronized null
+                val previous = claim
+                if (previous != null && previous.invitation != invitation) {
+                    matched = false
+                    return@synchronized null
+                }
                 store.clearClaim()
                 claim = null
-                active?.takeIf { it.claim == previous }?.also {
+                active?.takeIf { it.claim != null && it.claim == previous }?.also {
                     generation += 1
                     active = null
                 }
             }
         }.getOrElse {
             rejected(it)
-            return
+            return false
         }
+        if (!matched) return false
         superseded?.let { pending.remove(it.id) }
         if (superseded != null) publishPending()
+        return true
     }
 
     fun pair(invitation: Invitation): Boolean {
@@ -117,7 +126,8 @@ internal class Connection(
     }
 
     private fun start(claim: Claim? = null, resolve: suspend () -> Config): Boolean {
-        if (store.loadRevocations().isNotEmpty()) {
+        val revocations = loadRevocations() ?: return false
+        if (revocations.isNotEmpty()) {
             rejected(IllegalStateException("Vibe Pocket is still revoking the previous device credential."))
             retryRevocation()
             return false
@@ -188,14 +198,13 @@ internal class Connection(
         active === attempt && generation == attempt.generation
     }
 
-    fun disconnect() {
+    fun disconnect(): Boolean {
         var previous: Config? = null
         val superseded = runCatching {
             synchronized(lock) {
                 val existing = current().also { previous = it }
                 if (existing == null || !existing.isDeviceCredential) {
-                    store.clear()
-                    store.clearClaim()
+                    store.invalidate()
                 } else {
                     store.forget(existing)
                 }
@@ -209,10 +218,32 @@ internal class Connection(
         }.getOrElse { error ->
             rejected(error)
             previous?.let(recover)
-            return
+            return false
         }
         superseded?.let { pending.remove(it.id) }
         retryRevocation()
+        return true
+    }
+
+    fun invalidate(config: Config): Boolean {
+        val superseded = runCatching {
+            synchronized(lock) {
+                val existing = current() ?: return false
+                if (!existing.matches(config)) return false
+                store.invalidate()
+                generation += 1
+                claim = null
+                active.also {
+                    active = null
+                    disconnected()
+                }
+            }
+        }.getOrElse { error ->
+            rejected(error)
+            return false
+        }
+        superseded?.let { pending.remove(it.id) }
+        return true
     }
 
     private fun retireIssued(config: Config) {
@@ -226,7 +257,7 @@ internal class Connection(
 
     private fun retryRevocation() {
         val launch = synchronized(lock) {
-            if (revoking || store.loadRevocations().isEmpty()) false else true.also { revoking = it }
+            if (revoking || loadRevocations().isNullOrEmpty()) false else true.also { revoking = it }
         }
         if (!launch) return
         scope.launch(dispatcher) {
@@ -234,7 +265,7 @@ internal class Connection(
             try {
                 while (isActive) {
                     val voiceStop = store.loadVoiceStop()
-                    val queued = store.loadRevocations()
+                    val queued = loadRevocations() ?: return@launch
                     if (queued.isEmpty()) return@launch
                     val config = queued.firstOrNull { candidate ->
                         voiceStop == null || !voiceStop.config.matches(candidate)
@@ -262,10 +293,19 @@ internal class Connection(
             } finally {
                 val relaunch = synchronized(lock) {
                     revoking = false
-                    store.loadRevocations().isNotEmpty()
+                    !loadRevocations().isNullOrEmpty()
                 }
                 if (relaunch) retryRevocation()
             }
+        }
+    }
+
+    private fun loadRevocations(): List<Config>? = when (val loaded = store.loadRevocationsRecord()) {
+        LoadOutcome.Absent -> emptyList()
+        is LoadOutcome.Loaded -> loaded.value
+        is LoadOutcome.RecoverableError -> {
+            rejected(loaded.asException())
+            null
         }
     }
 

@@ -33,6 +33,17 @@ interface Store {
     fun loadVoiceStop(): VoiceStop?
     fun clearVoiceStop(idempotencyKey: String): Boolean
 
+    fun loadConfigRecord(): LoadOutcome<Config> = loadOutcome(LifecycleRecord.CONFIG, ::load)
+    fun loadClaimRecord(): LoadOutcome<Claim> = loadOutcome(LifecycleRecord.CLAIM, ::loadClaim)
+    fun loadRevocationsRecord(): LoadOutcome<List<Config>> =
+        runCatching { loadRevocations() }
+            .fold(
+                onSuccess = { LoadOutcome.Loaded(it) },
+                onFailure = { LoadOutcome.RecoverableError(LifecycleRecord.REVOCATIONS, it) },
+            )
+    fun loadVoiceStopRecord(): LoadOutcome<VoiceStop> =
+        loadOutcome(LifecycleRecord.VOICE_STOP, ::loadVoiceStop)
+
     fun commit(config: Config) {
         save(config)
         clearClaim()
@@ -43,7 +54,62 @@ interface Store {
         clear()
         clearClaim()
     }
+
+    fun invalidate() {
+        clear()
+        clearClaim()
+    }
 }
+
+enum class LifecycleRecord(val description: String) {
+    CONFIG("saved Bridge configuration"),
+    CLAIM("pending pairing claim"),
+    REVOCATIONS("pending credential revocations"),
+    VOICE_STOP("pending voice stop"),
+}
+
+sealed interface LoadOutcome<out T> {
+    data object Absent : LoadOutcome<Nothing>
+    data class Loaded<T>(val value: T) : LoadOutcome<T>
+    data class RecoverableError(
+        val record: LifecycleRecord,
+        val cause: Throwable,
+    ) : LoadOutcome<Nothing> {
+        val message: String
+            get() = "Vibe Pocket could not read the ${record.description}."
+
+        fun asException(): IllegalStateException = IllegalStateException(message, cause)
+    }
+}
+
+data class LifecycleLoads(
+    val config: LoadOutcome<Config>,
+    val claim: LoadOutcome<Claim>,
+    val revocations: LoadOutcome<List<Config>>,
+    val voiceStop: LoadOutcome<VoiceStop>,
+) {
+    val errors: List<LoadOutcome.RecoverableError>
+        get() = listOf(config, claim, revocations, voiceStop)
+            .filterIsInstance<LoadOutcome.RecoverableError>()
+}
+
+fun Store.loadLifecycle(): LifecycleLoads = LifecycleLoads(
+    config = loadConfigRecord(),
+    claim = loadClaimRecord(),
+    revocations = loadRevocationsRecord(),
+    voiceStop = loadVoiceStopRecord(),
+)
+
+fun <T> LoadOutcome<T>.valueOrNull(): T? = (this as? LoadOutcome.Loaded<T>)?.value
+
+private fun <T : Any> loadOutcome(
+    record: LifecycleRecord,
+    load: () -> T?,
+): LoadOutcome<T> = runCatching(load)
+    .fold(
+        onSuccess = { if (it == null) LoadOutcome.Absent else LoadOutcome.Loaded(it) },
+        onFailure = { LoadOutcome.RecoverableError(record, it) },
+    )
 
 data class Claim(
     val invitation: Invitation,
@@ -70,12 +136,13 @@ class Vault(context: Context) : Store {
         }
     }
 
-    override fun load(): Config? {
-        val encrypted = preferences.getString(CONFIG_KEY, null) ?: return null
-        return runCatching {
-            decodeConfig(decrypt(encrypted))
-        }.getOrNull()
-    }
+    override fun load(): Config? = loadConfigRecord().valueOrNull()
+
+    override fun loadConfigRecord(): LoadOutcome<Config> = loadRecord(
+        key = CONFIG_KEY,
+        record = LifecycleRecord.CONFIG,
+        decode = ::decodeConfig,
+    )
 
     override fun clear() {
         check(preferences.edit().remove(CONFIG_KEY).commit()) {
@@ -94,15 +161,17 @@ class Vault(context: Context) : Store {
         }
     }
 
-    override fun loadClaim(): Claim? {
-        val encrypted = preferences.getString(CLAIM_KEY, null) ?: return null
-        return runCatching {
-            val payload = JSONObject(decrypt(encrypted))
-            Claim(
-                invitation = Invitation(payload.getString("origin"), payload.getString("code")),
-                nonce = payload.getString("nonce"),
-            )
-        }.getOrNull()
+    override fun loadClaim(): Claim? = loadClaimRecord().valueOrNull()
+
+    override fun loadClaimRecord(): LoadOutcome<Claim> = loadRecord(
+        key = CLAIM_KEY,
+        record = LifecycleRecord.CLAIM,
+    ) { value ->
+        val payload = JSONObject(value)
+        Claim(
+            invitation = Invitation(payload.getString("origin"), payload.getString("code")),
+            nonce = payload.getString("nonce"),
+        )
     }
 
     override fun clearClaim() {
@@ -125,11 +194,15 @@ class Vault(context: Context) : Store {
 
     @Synchronized
     override fun loadRevocations(): List<Config> {
-        val encrypted = preferences.getString(REVOCATION_KEY, null) ?: return emptyList()
-        return runCatching { decodeRevocations(decrypt(encrypted)) }.getOrElse {
-            throw IllegalStateException("Vibe Pocket could not read pending credential revocations.", it)
-        }
+        return loadRevocationsRecord().valueOrNull().orEmpty()
     }
+
+    @Synchronized
+    override fun loadRevocationsRecord(): LoadOutcome<List<Config>> = loadRecord(
+        key = REVOCATION_KEY,
+        record = LifecycleRecord.REVOCATIONS,
+        decode = ::decodeRevocations,
+    )
 
     @Synchronized
     override fun removeRevocation(config: Config): Boolean {
@@ -170,12 +243,13 @@ class Vault(context: Context) : Store {
         }
     }
 
-    override fun loadVoiceStop(): VoiceStop? {
-        val encrypted = preferences.getString(VOICE_STOP_KEY, null) ?: return null
-        return runCatching { decodeVoiceStop(decrypt(encrypted)) }.getOrElse {
-            throw IllegalStateException("Vibe Pocket could not read the pending voice stop.", it)
-        }
-    }
+    override fun loadVoiceStop(): VoiceStop? = loadVoiceStopRecord().valueOrNull()
+
+    override fun loadVoiceStopRecord(): LoadOutcome<VoiceStop> = loadRecord(
+        key = VOICE_STOP_KEY,
+        record = LifecycleRecord.VOICE_STOP,
+        decode = ::decodeVoiceStop,
+    )
 
     override fun clearVoiceStop(idempotencyKey: String): Boolean {
         val encrypted = preferences.getString(VOICE_STOP_KEY, null) ?: return true
@@ -214,6 +288,17 @@ class Vault(context: Context) : Store {
         }
     }
 
+    override fun invalidate() {
+        check(
+            preferences.edit()
+                .remove(CONFIG_KEY)
+                .remove(CLAIM_KEY)
+                .commit(),
+        ) {
+            "Vibe Pocket could not invalidate the Bridge configuration."
+        }
+    }
+
     private fun encrypt(plainText: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
@@ -232,6 +317,19 @@ class Vault(context: Context) : Store {
             GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)),
         )
         return cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)).toString(Charsets.UTF_8)
+    }
+
+    private fun <T> loadRecord(
+        key: String,
+        record: LifecycleRecord,
+        decode: (String) -> T,
+    ): LoadOutcome<T> {
+        val encrypted = preferences.getString(key, null) ?: return LoadOutcome.Absent
+        return runCatching { decode(decrypt(encrypted)) }
+            .fold(
+                onSuccess = { LoadOutcome.Loaded(it) },
+                onFailure = { LoadOutcome.RecoverableError(record, it) },
+            )
     }
 
     private fun secretKey(): SecretKey {

@@ -26,7 +26,6 @@ internal sealed interface Plan {
 
 private val HidTapActions = setOf(
     "approve",
-    "reject",
     "stop",
     "mode_cycle",
     "model_picker",

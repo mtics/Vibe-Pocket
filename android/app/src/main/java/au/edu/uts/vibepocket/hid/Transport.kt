@@ -1,26 +1,53 @@
 package au.edu.uts.vibepocket.hid
 
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 internal enum class TransactionResult {
     COMPLETE,
-    KEY_DOWN_FAILED,
-    RELEASE_FAILED,
+    NOT_DISPATCHED,
+    INDETERMINATE,
+}
+
+internal sealed interface QueueResult<out T> {
+    data class Completed<T>(val value: T) : QueueResult<T>
+    data object Rejected : QueueResult<Nothing>
+    data object Cancelled : QueueResult<Nothing>
+    data object TimedOut : QueueResult<Nothing>
+    data object Failed : QueueResult<Nothing>
 }
 
 internal class ProducerGate {
     private val lock = Any()
     private var closed = false
+    private var generation = 0L
 
     fun submit(block: () -> Boolean): Boolean = synchronized(lock) {
         if (closed) false else block()
     }
 
+    fun submitVersioned(block: (Long) -> Boolean): Boolean = synchronized(lock) {
+        if (closed) false else block(generation)
+    }
+
+    fun isCurrent(ticket: Long): Boolean = synchronized(lock) {
+        !closed && ticket == generation
+    }
+
+    fun cancelPending(): Boolean = synchronized(lock) {
+        if (closed) return@synchronized false
+        generation += 1
+        true
+    }
+
     fun close(finalRelease: () -> Unit): Boolean = synchronized(lock) {
         if (closed) return@synchronized false
         closed = true
+        generation += 1
         finalRelease()
         true
     }
@@ -28,56 +55,89 @@ internal class ProducerGate {
 
 internal class ReportQueue(
     private val executor: ExecutorService,
+    private val waitTimeoutMillis: Long = DEFAULT_WAIT_TIMEOUT_MILLIS,
 ) {
     private val gate = ProducerGate()
 
-    fun submit(block: () -> Unit): Boolean = gate.submit {
-        runCatching { executor.execute(block) }.isSuccess
+    init {
+        require(waitTimeoutMillis > 0)
     }
 
-    fun submitAndWait(block: () -> Boolean): Boolean {
-        var future: Future<Boolean>? = null
-        val accepted = gate.submit {
-            future = runCatching { executor.submit<Boolean>(block) }.getOrNull()
+    fun submit(
+        block: () -> Unit,
+        cancelled: () -> Unit = {},
+        failed: () -> Unit = {},
+    ): Boolean = gate.submitVersioned { ticket ->
+        runCatching {
+            executor.execute {
+                if (!gate.isCurrent(ticket)) {
+                    runCatching(cancelled)
+                } else {
+                    runCatching(block).onFailure { runCatching(failed) }
+                }
+            }
+        }.isSuccess
+    }
+
+    fun <T> submitAndWait(block: () -> T): QueueResult<T> {
+        var future: Future<QueueResult<T>>? = null
+        val accepted = gate.submitVersioned { ticket ->
+            future = runCatching {
+                executor.submit<QueueResult<T>> {
+                    if (!gate.isCurrent(ticket)) {
+                        QueueResult.Cancelled
+                    } else {
+                        runCatching(block).fold(
+                            onSuccess = { QueueResult.Completed(it) },
+                            onFailure = { QueueResult.Failed },
+                        )
+                    }
+                }
+            }.getOrNull()
             future != null
         }
-        if (!accepted) return false
-        return await(future ?: return false, failure = false)
+        if (!accepted) return QueueResult.Rejected
+        return await(future ?: return QueueResult.Rejected)
     }
 
-    fun close(finalRelease: () -> Unit): Boolean {
-        var release: Future<Unit>? = null
+    fun cancelPending(): Boolean = gate.cancelPending()
+
+    fun close(finalRelease: () -> Unit): QueueResult<Unit> {
+        var release: Future<QueueResult<Unit>>? = null
         val closing = gate.close {
             release = runCatching {
-                executor.submit<Unit> {
-                    finalRelease()
-                    Unit
+                executor.submit<QueueResult<Unit>> {
+                    runCatching(finalRelease).fold(
+                        onSuccess = { QueueResult.Completed(Unit) },
+                        onFailure = { QueueResult.Failed },
+                    )
                 }
             }.getOrNull()
         }
-        if (!closing) return false
+        if (!closing) return QueueResult.Rejected
         executor.shutdown()
-        release?.let { await(it, Unit) }
-        return true
+        val result = release?.let(::await) ?: QueueResult.Failed
+        executor.shutdownNow()
+        return result
     }
 
-    private fun <T> await(future: Future<T>, failure: T): T {
-        var interrupted = false
-        return try {
-            while (true) {
-                try {
-                    return future.get()
-                } catch (_: InterruptedException) {
-                    interrupted = true
-                } catch (_: ExecutionException) {
-                    return failure
-                }
-            }
-            @Suppress("UNREACHABLE_CODE")
-            failure
-        } finally {
-            if (interrupted) Thread.currentThread().interrupt()
-        }
+    private fun <T> await(future: Future<QueueResult<T>>): QueueResult<T> = try {
+        future.get(waitTimeoutMillis, TimeUnit.MILLISECONDS)
+    } catch (_: InterruptedException) {
+        future.cancel(true)
+        Thread.currentThread().interrupt()
+        QueueResult.Cancelled
+    } catch (_: TimeoutException) {
+        future.cancel(true)
+        QueueResult.TimedOut
+    } catch (_: CancellationException) {
+        QueueResult.Cancelled
+    } catch (_: ExecutionException) {
+        QueueResult.Failed
+    }
+
+    private companion object {
+        const val DEFAULT_WAIT_TIMEOUT_MILLIS = 500L
     }
 }
 
@@ -91,11 +151,35 @@ internal fun sendTransaction(
     holdMillis: Long,
     gapMillis: Long,
 ): TransactionResult {
+    var dispatched = false
     chords.forEach { chord ->
-        if (!send(Report.encode(chord))) return TransactionResult.KEY_DOWN_FAILED
-        pause(holdMillis)
-        if (!send(Report.release)) return TransactionResult.RELEASE_FAILED
-        pause(gapMillis)
+        val keyDown = try {
+            send(Report.encode(chord))
+        } catch (_: RuntimeException) {
+            false
+        }
+        if (!keyDown) {
+            return if (dispatched) TransactionResult.INDETERMINATE else TransactionResult.NOT_DISPATCHED
+        }
+        dispatched = true
+        try {
+            pause(holdMillis)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return TransactionResult.INDETERMINATE
+        }
+        val released = try {
+            send(Report.release)
+        } catch (_: RuntimeException) {
+            false
+        }
+        if (!released) return TransactionResult.INDETERMINATE
+        try {
+            pause(gapMillis)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return TransactionResult.INDETERMINATE
+        }
     }
     return TransactionResult.COMPLETE
 }

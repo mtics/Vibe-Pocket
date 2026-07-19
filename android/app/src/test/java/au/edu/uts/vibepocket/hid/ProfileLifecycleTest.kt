@@ -80,4 +80,17 @@ class ProfileLifecycleTest {
         assertFalse(lifecycle.acceptProxy(pending))
         assertNull(lifecycle.requestProxy())
     }
+
+    @Test
+    fun adapterOffRejectsPendingProxyAndAllowsAFreshGeneration() {
+        val lifecycle = ProfileLifecycle()
+        val pending = requireNotNull(lifecycle.requestProxy())
+
+        assertTrue(lifecycle.rejectPendingProxy())
+        assertFalse(lifecycle.acceptProxy(pending))
+
+        val replacement = requireNotNull(lifecycle.requestProxy())
+        assertNotEquals(pending, replacement)
+        assertTrue(lifecycle.acceptProxy(replacement))
+    }
 }

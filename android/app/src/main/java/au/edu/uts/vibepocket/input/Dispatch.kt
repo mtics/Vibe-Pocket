@@ -5,12 +5,27 @@ import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import java.util.concurrent.atomic.AtomicLong
 
+enum class HidResult {
+    DELIVERED,
+    NOT_DISPATCHED,
+    INDETERMINATE,
+    CANCELLED,
+    TIMED_OUT,
+    ;
+
+    val fallbackSafe: Boolean
+        get() = this == NOT_DISPATCHED || this == CANCELLED
+
+    val consumed: Boolean
+        get() = this == DELIVERED || this == INDETERMINATE || this == TIMED_OUT
+}
+
 internal interface Hid {
-    fun send(action: Action, completion: (Boolean) -> Unit): Boolean
-    fun press(action: Action): Boolean
-    fun release(action: Action): Boolean
-    fun releaseAny(): Boolean
-    fun repeat(action: Action, completion: (Boolean) -> Unit): Boolean
+    fun send(action: Action, completion: (HidResult) -> Unit): Boolean
+    fun press(action: Action): HidResult
+    fun release(action: Action): HidResult
+    fun releaseAny(): HidResult
+    fun repeat(action: Action, completion: (HidResult) -> Unit): Boolean
     fun stopRepeat()
 }
 
@@ -49,6 +64,7 @@ internal class Dispatch(
         val desktop = snapshot?.desktop ?: return false
         if (!desktop.foreground || desktop.question != null || !snapshot.capabilities.modelPicker) return false
         if (!snapshot.transportFresh) return bridge.openModel()
+        if (held != null) return bridge.openModel()
         return deliver(Action("model_picker"), bridge::openModel)
     }
 
@@ -58,9 +74,10 @@ internal class Dispatch(
             is Plan.Bridge -> bridge.activate(plan.inputId, plan.gesture)
             is Plan.HidTap -> {
                 if (plan.action.type != "navigate") return false
+                if (held != null) return deliver(plan.fallback)
                 val requestGeneration = generation.get()
-                hid.repeat(plan.action) { delivered ->
-                    if (!delivered && generation.get() == requestGeneration) deliver(plan.fallback)
+                hid.repeat(plan.action) { result ->
+                    if (result.fallbackSafe && generation.get() == requestGeneration) deliver(plan.fallback)
                 } || deliver(plan.fallback)
             }
             is Plan.HidHold -> false
@@ -75,11 +92,15 @@ internal class Dispatch(
             Plan.Disabled -> false
             is Plan.Bridge -> bridge.startVoice(plan.inputId)
             is Plan.HidHold -> {
-                if (hid.press(plan.action)) {
-                    held = Held(inputId, plan.action)
-                    true
-                } else {
-                    bridge.startVoice(plan.fallback.inputId)
+                when (hid.press(plan.action)) {
+                    HidResult.DELIVERED,
+                    HidResult.INDETERMINATE,
+                    HidResult.TIMED_OUT -> {
+                        held = Held(inputId, plan.action)
+                        true
+                    }
+                    HidResult.NOT_DISPATCHED,
+                    HidResult.CANCELLED -> bridge.startVoice(plan.fallback.inputId)
                 }
             }
             is Plan.HidTap -> false
@@ -92,7 +113,7 @@ internal class Dispatch(
         held = null
         val released = hid.release(owner.action)
         val stopped = bridge.stopVoice(owner.inputId)
-        return released || stopped
+        return released.consumed || stopped
     }
 
     fun release() {
@@ -107,10 +128,14 @@ internal class Dispatch(
     }
 
     private fun deliver(action: Action, fallback: () -> Boolean): Boolean {
+        if (held != null) return fallback()
         val requestGeneration = generation.get()
-        return hid.send(action) { delivered ->
+        return hid.send(action) { result ->
             if (generation.get() != requestGeneration) return@send
-            if (delivered) onAction(action) else fallback()
+            when {
+                result == HidResult.DELIVERED -> onAction(action)
+                result.fallbackSafe -> fallback()
+            }
         } || fallback()
     }
 

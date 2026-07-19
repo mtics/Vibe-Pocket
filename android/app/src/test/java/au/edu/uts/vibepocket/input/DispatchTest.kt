@@ -157,6 +157,19 @@ class DispatchTest {
     }
 
     @Test
+    fun releaseFailureIsConsumedAndNeverFallsBackToBridge() {
+        val hid = FakeHid(deliveryResult = HidResult.INDETERMINATE)
+        val bridge = FakeBridge()
+        val delivered = mutableListOf<Action>()
+        val orchestrator = Dispatch(hid, bridge, delivered::add)
+
+        assertTrue(orchestrator.activate(snapshot(Action("mode_cycle")), INPUT_ID, Gesture.Kind.TAP))
+
+        assertTrue(delivered.isEmpty())
+        assertTrue(bridge.calls.isEmpty())
+    }
+
+    @Test
     fun lifecycleReleaseInvalidatesLateCompletionAndStopsRepeat() {
         val hid = FakeHid(deferSend = true)
         val bridge = FakeBridge()
@@ -227,6 +240,18 @@ class DispatchTest {
     }
 
     @Test
+    fun rejectAlwaysUsesSemanticBridgeDelivery() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(orchestrator.activate(snapshot(Action("reject")), INPUT_ID, Gesture.Kind.TAP))
+
+        assertTrue(hid.sent.isEmpty())
+        assertEquals(listOf(BridgeCall.Activate(INPUT_ID, Gesture.Kind.TAP)), bridge.calls)
+    }
+
+    @Test
     fun minimumReasoningDisablesOnlyTheDownwardPlan() {
         val minimum = Reasoning(
             available = true,
@@ -288,6 +313,38 @@ class DispatchTest {
     }
 
     @Test
+    fun ordinaryActionDuringHeldVoiceUsesBridgeWithoutTouchingTheChord() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+        val voice = Action("voice")
+
+        assertTrue(orchestrator.startVoice(snapshot(voice), INPUT_ID))
+        assertTrue(orchestrator.activate(snapshot(Action("mode_cycle")), INPUT_ID, Gesture.Kind.TAP))
+
+        assertTrue(hid.sent.isEmpty())
+        assertTrue(hid.released.isEmpty())
+        assertEquals(listOf(BridgeCall.Activate(INPUT_ID, Gesture.Kind.TAP)), bridge.calls)
+
+        assertTrue(orchestrator.stopVoice(INPUT_ID))
+        assertEquals(listOf(voice), hid.released)
+    }
+
+    @Test
+    fun timedOutVoicePressIsOwnedAndDoesNotStartBridgeVoice() {
+        val hid = FakeHid(holdResult = HidResult.TIMED_OUT)
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+        val voice = Action("voice")
+
+        assertTrue(orchestrator.startVoice(snapshot(voice), INPUT_ID))
+        assertTrue(bridge.calls.isEmpty())
+        assertTrue(orchestrator.stopVoice(INPUT_ID))
+        assertEquals(listOf(voice), hid.released)
+        assertEquals(listOf(BridgeCall.VoiceStop(INPUT_ID)), bridge.calls)
+    }
+
+    @Test
     fun backgroundVoiceUsesBridgeWithoutSynthesizingAKey() {
         val hid = FakeHid()
         val bridge = FakeBridge()
@@ -301,47 +358,50 @@ class DispatchTest {
 
     private class FakeHid(
         private val sendResult: Boolean = true,
-        private val deliveryResult: Boolean = true,
+        private val deliveryResult: HidResult = HidResult.DELIVERED,
         private val deferSend: Boolean = false,
-        private val holdResult: Boolean = true,
+        private val holdResult: HidResult = HidResult.DELIVERED,
+        private val releaseResult: HidResult = HidResult.DELIVERED,
     ) : Hid {
         val sent = mutableListOf<Action>()
         val held = mutableListOf<Action>()
         val released = mutableListOf<Action>()
         var releaseAllCount = 0
         var stopRepeatCount = 0
-        private val sendCompletions = ArrayDeque<(Boolean) -> Unit>()
+        private val sendCompletions = ArrayDeque<(HidResult) -> Unit>()
 
-        override fun send(action: Action, completion: (Boolean) -> Unit): Boolean {
+        override fun send(action: Action, completion: (HidResult) -> Unit): Boolean {
             sent += action
             if (!sendResult) return false
             if (deferSend) sendCompletions += completion else completion(deliveryResult)
             return true
         }
 
-        override fun press(action: Action): Boolean {
+        override fun press(action: Action): HidResult {
             held += action
             return holdResult
         }
 
-        override fun release(action: Action): Boolean {
+        override fun release(action: Action): HidResult {
             released += action
-            return true
+            return releaseResult
         }
 
-        override fun releaseAny(): Boolean {
+        override fun releaseAny(): HidResult {
             releaseAllCount += 1
-            return true
+            return releaseResult
         }
 
-        override fun repeat(action: Action, completion: (Boolean) -> Unit): Boolean = send(action, completion)
+        override fun repeat(action: Action, completion: (HidResult) -> Unit): Boolean = send(action, completion)
 
         override fun stopRepeat() {
             stopRepeatCount += 1
         }
 
         fun completeSend(delivered: Boolean) {
-            sendCompletions.removeFirst()(delivered)
+            sendCompletions.removeFirst()(
+                if (delivered) HidResult.DELIVERED else HidResult.NOT_DISPATCHED,
+            )
         }
     }
 
