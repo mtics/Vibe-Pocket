@@ -78,8 +78,8 @@ rm -f \
   "$RUNTIME_DIR/test/pocket-controller-service.test.mjs" \
   "$RUNTIME_DIR/test/pocket-service.test.mjs"
 
-HOST_SOURCE="$RUNTIME_DIR/src/macos-bridge-host.swift"
-CONTROL_SOURCE="$RUNTIME_DIR/src/macos-codex-helper.swift"
+HOST_SOURCE="$RUNTIME_DIR/src/macos/host.swift"
+CONTROL_SOURCE="$RUNTIME_DIR/src/macos/helper.swift"
 HOST_SOURCE_HASH=$(
   {
     shasum -a 256 "$HOST_SOURCE" "$CONTROL_SOURCE"

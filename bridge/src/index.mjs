@@ -1,28 +1,28 @@
-import { loadConfig } from "./config.mjs";
-import { CodexAppServer } from "./codex-app-server.mjs";
-import { CodexThreadCatalog } from "./codex-thread-catalog.mjs";
-import { ControllerProfileStore } from "./controller-profile-store.mjs";
-import { DesktopCodexService } from "./desktop-codex-service.mjs";
-import { MacCodexDesktopController } from "./macos-codex-desktop.mjs";
-import { createPocketHttpServer } from "./http-server.mjs";
-import { SseHub } from "./sse-hub.mjs";
+import { load } from "./config.mjs";
+import { Rpc } from "./codex/rpc.mjs";
+import { Catalog } from "./task/catalog.mjs";
+import { Store } from "./profile/store.mjs";
+import { Session } from "./control/session.mjs";
+import { Desktop } from "./macos/desktop.mjs";
+import { create } from "./server/http.mjs";
+import { Events } from "./server/events.mjs";
 
-const config = loadConfig();
-const events = new SseHub();
-const profileStore = new ControllerProfileStore({ profilePath: config.profilePath });
-const appServer = new CodexAppServer({ command: config.codexCommand });
+const config = load();
+const events = new Events();
+const profileStore = new Store({ profilePath: config.profilePath });
+const appServer = new Rpc({ command: config.codexCommand });
 appServer.on("serverRequest", (message) => {
   appServer.respondWithError(message.id, -32601, "Vibe Pocket's task catalog is read-only.");
 });
-const threadCatalog = new CodexThreadCatalog({ appServer });
-const desktop = new MacCodexDesktopController({ threadCatalog });
-const service = new DesktopCodexService({
+const threadCatalog = new Catalog({ appServer });
+const desktop = new Desktop({ threadCatalog });
+const service = new Session({
   workspaces: config.workspaces,
   events,
   profileStore,
   desktop,
 });
-const server = createPocketHttpServer({ service, events, token: config.token });
+const server = create({ service, events, token: config.token });
 
 const startup = service.start();
 server.listen(config.port, config.host, () => {

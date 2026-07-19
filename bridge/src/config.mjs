@@ -2,13 +2,13 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { defaultControllerProfilePath } from "./controller-profile-store.mjs";
+import { defaultPath } from "./profile/store.mjs";
 
 const DEFAULT_PORT = 4318;
 const BRIDGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PROFILE_FORBIDDEN_ROOT = findRepositoryRoot(BRIDGE_ROOT) ?? BRIDGE_ROOT;
 
-export function loadConfig(environment = process.env, cwd = process.cwd()) {
+export function load(environment = process.env, cwd = process.cwd()) {
   const token = environment.VIBE_POCKET_TOKEN;
   if (!token || token.length < 24) {
     throw new Error(
@@ -33,7 +33,7 @@ export function loadConfig(environment = process.env, cwd = process.cwd()) {
 }
 
 function parseProfilePath(value, environment) {
-  if (!value) return defaultControllerProfilePath({ environment });
+  if (!value) return defaultPath({ environment });
   if (!isAbsolute(value)) {
     throw new Error("VIBE_POCKET_PROFILE_PATH must be an absolute path outside the repository.");
   }
