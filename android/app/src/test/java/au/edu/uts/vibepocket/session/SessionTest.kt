@@ -6,6 +6,7 @@ import au.edu.uts.vibepocket.bridge.EventCallbacks
 import au.edu.uts.vibepocket.bridge.EventFactory
 import au.edu.uts.vibepocket.bridge.EventStream
 import au.edu.uts.vibepocket.bridge.Failure
+import au.edu.uts.vibepocket.bridge.IssuedCredential
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Invitation
@@ -476,7 +477,7 @@ class SessionTest {
         val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
         val code = "a".repeat(43)
 
-        assertTrue(viewModel.offer("vibepocket://pair?origin=https%3A%2F%2Fm5.example.test&code=$code"))
+        assertTrue(viewModel.offer(invitation(code)))
         assertTrue(viewModel.pair())
         runCurrent()
 
@@ -675,6 +676,132 @@ class SessionTest {
         assertEquals(listOf(savedNonce, savedNonce), client.nonces)
         assertEquals(null, store.claim)
         assertEquals(client.config, store.config)
+    }
+
+    @Test
+    fun activationResponseLossRetriesIssuedTokenWithoutReclaiming() = runTest(dispatcher) {
+        val store = FakeStore(null)
+        val client = ActivationLossPairClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+
+        assertTrue(viewModel.offer(invitation("d".repeat(43))))
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(1, client.claimCalls)
+        assertEquals(1, client.activateCalls)
+        assertEquals(client.config, store.claim?.issued)
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(1, client.claimCalls)
+        assertEquals(2, client.activateCalls)
+        assertEquals(client.config, store.config)
+        assertEquals(null, store.claim)
+    }
+
+    @Test
+    fun restoredIssuedReplacementIsVisibleAndSkipsClaimWithOldConfig() = runTest(dispatcher) {
+        val old = Config("https://old.example.test", "vp1.oldphone.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        val replacement = Config("https://m5.example.test", "vp1.pending.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        val pendingInvitation = Invitation("https://m5.example.test", "e".repeat(43), Long.MAX_VALUE)
+        val store = FakeStore(old).also {
+            it.claim = Claim(pendingInvitation, "nonce", replacement, Long.MAX_VALUE)
+        }
+        val client = PersistedIssuedClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+
+        assertEquals(old, viewModel.state.value.config)
+        assertEquals(pendingInvitation, viewModel.state.value.invitation)
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(0, client.claimCalls)
+        assertEquals(1, client.activateCalls)
+        assertEquals(replacement, store.config)
+    }
+
+    @Test
+    fun dismissalAndSupersessionQueueIssuedTokenBeforeClaimClear() = runTest(dispatcher) {
+        val issued = Config("https://m5.example.test", "vp1.pending.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        val firstInvitation = Invitation("https://m5.example.test", "f".repeat(43), Long.MAX_VALUE)
+        val firstStore = FakeStore(DEVICE_CONFIG).also {
+            it.claim = Claim(firstInvitation, "nonce", issued, Long.MAX_VALUE)
+        }
+        val first = Session(store = firstStore, client = StaticClient(), dispatcher = dispatcher)
+
+        assertTrue(first.dismissPairing())
+        assertEquals(listOf("revocation:save", "claim:clear"), firstStore.lifecycleEvents.take(2))
+        assertEquals(issued, firstStore.revocation)
+
+        val secondStore = FakeStore(DEVICE_CONFIG).also {
+            it.claim = Claim(firstInvitation, "nonce", issued, Long.MAX_VALUE)
+        }
+        val second = Session(store = secondStore, client = StaticClient(), dispatcher = dispatcher)
+        val replacementCode = "g".repeat(43)
+
+        assertTrue(second.offer(invitation(replacementCode)))
+        assertEquals(listOf("revocation:save", "claim:clear"), secondStore.lifecycleEvents.take(2))
+        assertEquals(replacementCode, second.state.value.invitation?.code)
+        assertEquals(DEVICE_CONFIG, second.state.value.config)
+    }
+
+    @Test
+    fun expiredPendingCredentialIsRetiredWithoutReplacingOldConfig() = runTest(dispatcher) {
+        val store = FakeStore(DEVICE_CONFIG)
+        val client = ExpiredPairClient()
+        val viewModel = Session(
+            store = store,
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { 100L },
+        )
+        val owner = ViewModelStore().apply { put("expired-pair", viewModel) }
+
+        assertTrue(viewModel.offer(invitation("h".repeat(43))))
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(0, client.activateCalls)
+        assertEquals(DEVICE_CONFIG, store.config)
+        assertEquals(null, store.claim)
+        assertEquals(client.config, store.revocation)
+        owner.clear()
+    }
+
+    @Test
+    fun unauthorizedActivationRetiresPendingTokenWithoutDestroyingOldConfig() = runTest(dispatcher) {
+        val store = FakeStore(DEVICE_CONFIG)
+        val client = UnauthorizedActivationPairClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        val owner = ViewModelStore().apply { put("unauthorized-pair", viewModel) }
+
+        assertTrue(viewModel.offer(invitation("i".repeat(43))))
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(DEVICE_CONFIG, store.config)
+        assertEquals(null, store.claim)
+        assertEquals(client.config, store.revocation)
+        assertEquals(401, (client.activationFailure as Failure).statusCode)
+        owner.clear()
+    }
+
+    @Test
+    fun pairingPersistsIssuedTokenBeforeActivationAndCommitsAfterSnapshot() = runTest(dispatcher) {
+        val trace = mutableListOf<String>()
+        val store = FakeStore(null, trace)
+        val client = OrderedPairClient(trace)
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+
+        assertTrue(viewModel.offer(invitation("j".repeat(43))))
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(
+            listOf("claim:empty", "claim", "claim:issued", "activate", "snapshot", "commit"),
+            trace,
+        )
     }
 
     @Test
@@ -906,7 +1033,10 @@ class SessionTest {
         ) to client
     }
 
-    private class FakeStore(config: Config?) : Store {
+    private class FakeStore(
+        config: Config?,
+        private val trace: MutableList<String>? = null,
+    ) : Store {
         var config: Config? = config
             private set
         var saveCalls = 0
@@ -916,6 +1046,7 @@ class SessionTest {
         var claim: Claim? = null
         var revocation: Config? = null
         var voiceStop: VoiceStop? = null
+        val lifecycleEvents = mutableListOf<String>()
 
         override fun save(config: Config) {
             this.config = config
@@ -930,16 +1061,19 @@ class SessionTest {
         }
 
         override fun saveClaim(claim: Claim) {
+            trace?.add(if (claim.issued == null) "claim:empty" else "claim:issued")
             this.claim = claim
         }
 
         override fun loadClaim(): Claim? = claim
 
         override fun clearClaim() {
+            lifecycleEvents += "claim:clear"
             claim = null
         }
 
         override fun saveRevocation(config: Config) {
+            lifecycleEvents += "revocation:save"
             revocation = config
         }
 
@@ -960,6 +1094,13 @@ class SessionTest {
             if (current.idempotencyKey != idempotencyKey) return false
             voiceStop = null
             return true
+        }
+
+        override fun commit(config: Config) {
+            trace?.add("commit")
+            this.config = config
+            saveCalls += 1
+            claim = null
         }
 
         fun recreated(): FakeStore = FakeStore(config).also {
@@ -1051,6 +1192,7 @@ class SessionTest {
         }
 
         override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun activate(config: Config) = Unit
 
         override suspend fun command(config: Config, command: Command) = Unit
     }
@@ -1108,6 +1250,7 @@ class SessionTest {
         }
 
         override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun activate(config: Config) = Unit
         override suspend fun command(config: Config, command: Command) = Unit
         override suspend fun revoke(config: Config) {
             revocations += config
@@ -1125,6 +1268,96 @@ class SessionTest {
         }
 
         override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun activate(config: Config) = Unit
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class ActivationLossPairClient : Client {
+        val config = Config("https://m5.example.test", "vp1.activation.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        var claimCalls = 0
+        var activateCalls = 0
+
+        override suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential {
+            claimCalls += 1
+            return IssuedCredential(config, Long.MAX_VALUE)
+        }
+
+        override suspend fun activate(config: Config) {
+            activateCalls += 1
+            if (activateCalls == 1) throw Failure("The activation response was lost.")
+        }
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class PersistedIssuedClient : Client {
+        var claimCalls = 0
+        var activateCalls = 0
+
+        override suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential {
+            claimCalls += 1
+            error("A persisted issued credential must not be claimed again.")
+        }
+
+        override suspend fun activate(config: Config) {
+            activateCalls += 1
+        }
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class ExpiredPairClient : Client {
+        val config = Config("https://m5.example.test", "vp1.expired1.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        var activateCalls = 0
+
+        override suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential =
+            IssuedCredential(config, 100L)
+
+        override suspend fun activate(config: Config) {
+            activateCalls += 1
+        }
+
+        override suspend fun revoke(config: Config) = kotlinx.coroutines.awaitCancellation()
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class UnauthorizedActivationPairClient : Client {
+        val config = Config("https://m5.example.test", "vp1.unauth01.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        val activationFailure: Throwable = Failure("The pending credential expired.", 401)
+
+        override suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential =
+            IssuedCredential(config, Long.MAX_VALUE)
+
+        override suspend fun activate(config: Config) {
+            throw activationFailure
+        }
+
+        override suspend fun revoke(config: Config) = kotlinx.coroutines.awaitCancellation()
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class OrderedPairClient(
+        private val trace: MutableList<String>,
+    ) : Client {
+        private val config = Config(
+            "https://m5.example.test",
+            "vp1.ordered1.abcdefghijklmnopqrstuvwxyzABCDEFG",
+        )
+
+        override suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential {
+            trace += "claim"
+            return IssuedCredential(config, Long.MAX_VALUE)
+        }
+
+        override suspend fun activate(config: Config) {
+            trace += "activate"
+        }
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT.also { trace += "snapshot" }
         override suspend fun command(config: Config, command: Command) = Unit
     }
 
@@ -1284,6 +1517,6 @@ class SessionTest {
         )
 
         fun invitation(code: String): String =
-            "vibepocket://pair?origin=https%3A%2F%2Fm5.example.test&code=$code"
+            "vibepocket://pair?origin=https%3A%2F%2Fm5.example.test&code=$code&expiresAt=2099-01-01T00%3A05%3A00Z"
     }
 }

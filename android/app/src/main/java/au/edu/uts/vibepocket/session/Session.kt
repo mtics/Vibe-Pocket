@@ -97,13 +97,20 @@ class Session internal constructor(
         disconnected = ::connectionCleared,
         rejected = ::connectionRejected,
         recover = { if (foreground) startEvents(it) },
+        nowMillis = nowMillis,
         retry = retry,
     )
 
     init {
         val config = restored.config.valueOrNull()
         if (config != null) {
-            _state.update { it.copy(config = config, error = lifecycleErrorMessage()) }
+            _state.update {
+                it.copy(
+                    config = config,
+                    invitation = connection.pendingInvitation,
+                    error = lifecycleErrorMessage(),
+                )
+            }
             delivery.bind(config)
             refresh.activate(config, eventGeneration)
             refresh.request()
@@ -119,7 +126,7 @@ class Session internal constructor(
     fun connect(baseUrl: String, credential: String): Boolean = connection.connect(baseUrl, credential)
 
     fun offer(value: String): Boolean {
-        val invitation = runCatching { Invitation.parse(value) }
+        val invitation = runCatching { Invitation.parse(value, nowMillis) }
             .getOrElse {
                 connectionRejected(it)
                 return false
@@ -258,7 +265,10 @@ class Session internal constructor(
         eventError = null
         pending.clear()
         reloadLifecycleErrors()
-        _state.value = State(error = lifecycleErrorMessage())
+        _state.value = State(
+            invitation = connection.pendingInvitation,
+            error = lifecycleErrorMessage(),
+        )
     }
 
     private fun connectionRejected(error: Throwable) {

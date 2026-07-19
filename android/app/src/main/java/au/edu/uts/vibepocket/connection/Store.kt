@@ -19,6 +19,14 @@ interface Store {
     fun saveClaim(claim: Claim)
     fun loadClaim(): Claim?
     fun clearClaim()
+    fun retireClaim(claim: Claim): Boolean {
+        if (loadClaim() != claim) return false
+        claim.issued?.let(::enqueueRevocation)
+        if (loadClaim() != claim) return false
+        clearClaim()
+        return true
+    }
+
     fun saveRevocation(config: Config)
     fun loadRevocation(): Config?
     fun clearRevocation()
@@ -52,12 +60,10 @@ interface Store {
     fun forget(config: Config) {
         enqueueRevocation(config)
         clear()
-        clearClaim()
     }
 
     fun invalidate() {
         clear()
-        clearClaim()
     }
 }
 
@@ -114,7 +120,15 @@ private fun <T : Any> loadOutcome(
 data class Claim(
     val invitation: Invitation,
     val nonce: String,
-)
+    val issued: Config? = null,
+    val credentialExpiresAtMillis: Long? = null,
+) {
+    init {
+        require((issued == null) == (credentialExpiresAtMillis == null)) {
+            "A pending pairing credential and its expiry must be stored together."
+        }
+    }
+}
 
 data class VoiceStop(
     val config: Config,
@@ -154,14 +168,25 @@ class Vault(context: Context) : Store {
         val payload = JSONObject()
             .put("origin", claim.invitation.origin)
             .put("code", claim.invitation.code)
+            .put("invitationExpiresAtMillis", claim.invitation.expiresAtMillis)
             .put("nonce", claim.nonce)
+            .apply {
+                claim.issued?.let {
+                    put("issued", JSONObject(it.encode()))
+                    put("credentialExpiresAtMillis", claim.credentialExpiresAtMillis)
+                }
+            }
             .toString()
         check(preferences.edit().putString(CLAIM_KEY, encrypt(payload)).commit()) {
             "Vibe Pocket could not save the pending pairing claim."
         }
     }
 
-    override fun loadClaim(): Claim? = loadClaimRecord().valueOrNull()
+    override fun loadClaim(): Claim? = when (val loaded = loadClaimRecord()) {
+        LoadOutcome.Absent -> null
+        is LoadOutcome.Loaded -> loaded.value
+        is LoadOutcome.RecoverableError -> throw loaded.asException()
+    }
 
     override fun loadClaimRecord(): LoadOutcome<Claim> = loadRecord(
         key = CLAIM_KEY,
@@ -169,8 +194,16 @@ class Vault(context: Context) : Store {
     ) { value ->
         val payload = JSONObject(value)
         Claim(
-            invitation = Invitation(payload.getString("origin"), payload.getString("code")),
+            invitation = Invitation(
+                payload.getString("origin"),
+                payload.getString("code"),
+                payload.optLong("invitationExpiresAtMillis", Long.MAX_VALUE),
+            ),
             nonce = payload.getString("nonce"),
+            issued = payload.optJSONObject("issued")?.let { decodeConfig(it.toString()) },
+            credentialExpiresAtMillis = payload.optJSONObject("issued")?.let {
+                payload.getLong("credentialExpiresAtMillis")
+            },
         )
     }
 
@@ -178,6 +211,20 @@ class Vault(context: Context) : Store {
         check(preferences.edit().remove(CLAIM_KEY).commit()) {
             "Vibe Pocket could not clear the pending pairing claim."
         }
+    }
+
+    @Synchronized
+    override fun retireClaim(claim: Claim): Boolean {
+        if (loadClaim() != claim) return false
+        val queued = claim.issued?.let { issued ->
+            loadRevocations().let { existing ->
+                if (existing.any { it.matches(issued) }) existing else existing + issued
+            }
+        }
+        val edit = preferences.edit().remove(CLAIM_KEY)
+        if (queued != null) edit.putString(REVOCATION_KEY, encrypt(encodeRevocations(queued)))
+        check(edit.commit()) { "Vibe Pocket could not retire the pending pairing claim." }
+        return true
     }
 
     @Synchronized
@@ -194,7 +241,11 @@ class Vault(context: Context) : Store {
 
     @Synchronized
     override fun loadRevocations(): List<Config> {
-        return loadRevocationsRecord().valueOrNull().orEmpty()
+        return when (val loaded = loadRevocationsRecord()) {
+            LoadOutcome.Absent -> emptyList()
+            is LoadOutcome.Loaded -> loaded.value
+            is LoadOutcome.RecoverableError -> throw loaded.asException()
+        }
     }
 
     @Synchronized
@@ -281,7 +332,6 @@ class Vault(context: Context) : Store {
             preferences.edit()
                 .putString(REVOCATION_KEY, encrypt(encodeRevocations(queued)))
                 .remove(CONFIG_KEY)
-                .remove(CLAIM_KEY)
                 .commit(),
         ) {
             "Vibe Pocket could not forget the Bridge configuration."
@@ -292,7 +342,6 @@ class Vault(context: Context) : Store {
         check(
             preferences.edit()
                 .remove(CONFIG_KEY)
-                .remove(CLAIM_KEY)
                 .commit(),
         ) {
             "Vibe Pocket could not invalidate the Bridge configuration."

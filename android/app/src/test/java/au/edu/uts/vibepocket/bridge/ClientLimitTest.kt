@@ -1,11 +1,48 @@
 package au.edu.uts.vibepocket.bridge
 
+import au.edu.uts.vibepocket.connection.Invitation
 import java.io.ByteArrayInputStream
+import java.time.Instant
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ClientLimitTest {
+    @Test
+    fun protocolSevenClaimRequiresPendingCommitCredential() {
+        val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
+        val response = JSONObject()
+            .put("protocolVersion", 7)
+            .put("capabilities", JSONArray(listOf("device_credentials", "pairing_commit")))
+            .put("credentialState", "pending")
+            .put("credentialExpiresAt", "2099-01-01T00:05:00Z")
+            .put("baseUrl", invitation.origin)
+            .put("token", "vp1.phone123.abcdefghijklmnopqrstuvwxyzABCDEF")
+
+        val issued = decodePairingClaim(invitation, response)
+
+        assertEquals("vp1.phone123.abcdefghijklmnopqrstuvwxyzABCDEF", issued.config.credential)
+        assertEquals(Instant.parse("2099-01-01T00:05:00Z").toEpochMilli(), issued.expiresAtMillis)
+    }
+
+    @Test
+    fun protocolSevenClaimRejectsActiveOrNonCommittableCredential() {
+        val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
+        val response = JSONObject()
+            .put("protocolVersion", 7)
+            .put("capabilities", JSONArray(listOf("device_credentials")))
+            .put("credentialState", "active")
+            .put("credentialExpiresAt", "2099-01-01T00:05:00Z")
+            .put("baseUrl", invitation.origin)
+            .put("token", "vp1.phone123.abcdefghijklmnopqrstuvwxyzABCDEF")
+
+        assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
+        response.put("capabilities", JSONArray(listOf("device_credentials", "pairing_commit")))
+        assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
+    }
+
     @Test
     fun declaredOversizeResponseIsRejectedBeforeReading() {
         val input = object : ByteArrayInputStream(byteArrayOf()) {

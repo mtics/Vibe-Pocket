@@ -14,6 +14,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.io.IOException
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -22,10 +23,19 @@ interface Client {
     suspend fun command(config: Config, command: Command)
     suspend fun claim(invitation: Invitation, nonce: String): Config =
         throw Failure("This build cannot claim pairing invitations.")
+    suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential =
+        IssuedCredential(claim(invitation, nonce), invitation.expiresAtMillis)
+    suspend fun activate(config: Config): Unit =
+        throw Failure("This build cannot activate pairing credentials.")
     suspend fun revoke(config: Config) = Unit
     suspend fun stopVoice(config: Config, idempotencyKey: String) =
         command(config, Command.VoiceStop)
 }
+
+data class IssuedCredential(
+    val config: Config,
+    val expiresAtMillis: Long,
+)
 
 class Http : Client {
     override suspend fun revoke(config: Config) = withContext(Dispatchers.IO) {
@@ -52,26 +62,29 @@ class Http : Client {
         Unit
     }
 
-    override suspend fun claim(invitation: Invitation, nonce: String): Config = withContext(Dispatchers.IO) {
-        val body = JSONObject().put("code", invitation.code).put("nonce", nonce)
-        val response = try {
-            call(invitation.origin, "/v1/pairing/claim", "POST", body)
-        } catch (error: IOException) {
-            call(invitation.origin, "/v1/pairing/claim", "POST", body)
+    override suspend fun claim(invitation: Invitation, nonce: String): Config =
+        claimPending(invitation, nonce).config
+
+    override suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject().put("code", invitation.code).put("nonce", nonce)
+            val response = try {
+                call(invitation.origin, "/v1/pairing/claim", "POST", body)
+            } catch (error: IOException) {
+                call(invitation.origin, "/v1/pairing/claim", "POST", body)
+            }
+            decodePairingClaim(invitation, response)
         }
-        if (response.optInt("protocolVersion", -1) != ProtocolVersion) {
-            throw Failure("The Bridge uses an incompatible pairing protocol.")
-        }
-        val capabilities = response.optJSONArray("capabilities")
-        val hasDeviceCredential = capabilities != null && (0 until capabilities.length())
-            .any { capabilities.optString(it) == "device_credentials" }
-        if (!hasDeviceCredential) throw Failure("The Bridge cannot issue a device credential.")
-        val claimed = Config(response.getString("baseUrl"), response.getString("token"))
-        if (!claimed.isDeviceCredential) throw Failure("The Bridge returned an invalid device credential.")
-        if (claimed.normalizedUrl != invitation.origin) {
-            throw Failure("The Bridge returned pairing credentials for a different address.")
-        }
-        Config(invitation.origin, claimed.credential)
+
+    override suspend fun activate(config: Config) = withContext(Dispatchers.IO) {
+        call(
+            config.normalizedUrl,
+            "/v1/pairing/commit",
+            "POST",
+            credential = config.credential,
+            readTimeoutMillis = TransactionTimeoutMillis,
+        )
+        Unit
     }
 
     override suspend fun snapshot(config: Config): Snapshot = withContext(Dispatchers.IO) {
@@ -117,6 +130,7 @@ class Http : Client {
                 }.getOrDefault("The Vibe Pocket bridge rejected this action.")
                 throw Failure(detail, status)
             }
+            if (response.isBlank()) return JSONObject()
             return runCatching { JSONObject(response) }.getOrElse {
                 throw Failure("The Vibe Pocket bridge returned an invalid response.")
             }
@@ -124,6 +138,30 @@ class Http : Client {
             connection.disconnect()
         }
     }
+}
+
+internal fun decodePairingClaim(invitation: Invitation, response: JSONObject): IssuedCredential {
+    if (response.optInt("protocolVersion", -1) != ProtocolVersion) {
+        throw Failure("The Bridge uses an incompatible pairing protocol.")
+    }
+    val capabilities = response.optJSONArray("capabilities")
+    val values = if (capabilities == null) emptySet() else (0 until capabilities.length())
+        .mapTo(mutableSetOf()) { capabilities.optString(it) }
+    if ("device_credentials" !in values) throw Failure("The Bridge cannot issue a device credential.")
+    if ("pairing_commit" !in values) throw Failure("The Bridge cannot activate a pairing credential.")
+    if (response.optString("credentialState") != "pending") {
+        throw Failure("The Bridge returned a pairing credential in an invalid state.")
+    }
+    val expiresAtMillis = runCatching {
+        Instant.parse(response.getString("credentialExpiresAt")).toEpochMilli()
+    }.getOrElse { throw Failure("The Bridge returned an invalid pairing credential expiry.") }
+    val claimed = runCatching { Config(response.getString("baseUrl"), response.getString("token")) }
+        .getOrElse { throw Failure("The Bridge returned an invalid device credential.") }
+    if (!claimed.isDeviceCredential) throw Failure("The Bridge returned an invalid device credential.")
+    if (claimed.normalizedUrl != invitation.origin) {
+        throw Failure("The Bridge returned pairing credentials for a different address.")
+    }
+    return IssuedCredential(Config(invitation.origin, claimed.credential), expiresAtMillis)
 }
 
 internal fun readResponse(
@@ -319,7 +357,7 @@ private fun readEventLine(input: InputStream): String? {
 
 class Failure(message: String, val statusCode: Int? = null) : IllegalStateException(message)
 
-private const val ProtocolVersion = 6
+private const val ProtocolVersion = 7
 internal const val MaxResponseBytes = 1_048_576
 internal const val MaxEventLineBytes = 8_192
 private const val MaxEventFieldChars = 128

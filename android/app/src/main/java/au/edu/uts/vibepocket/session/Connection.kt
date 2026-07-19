@@ -29,6 +29,7 @@ internal class Connection(
     private val disconnected: () -> Unit,
     private val rejected: (Throwable) -> Unit,
     private val recover: (Config) -> Unit,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
     private val nonce: () -> String = { UUID.randomUUID().toString().replace("-", "") },
     private val retry: Retry = Retry(),
 ) {
@@ -67,7 +68,7 @@ internal class Connection(
             synchronized(lock) {
                 val previous = claim ?: return@synchronized null
                 if (previous.invitation == invitation) return@synchronized null
-                store.clearClaim()
+                check(store.retireClaim(previous)) { "The pending pairing claim changed unexpectedly." }
                 claim = null
                 active?.takeIf { it.claim != null }?.also {
                     generation += 1
@@ -80,6 +81,7 @@ internal class Connection(
         }
         superseded?.let { pending.remove(it.id) }
         if (superseded != null) publishPending()
+        retryRevocation()
         return true
     }
 
@@ -92,9 +94,11 @@ internal class Connection(
                     matched = false
                     return@synchronized null
                 }
-                store.clearClaim()
+                if (previous != null) {
+                    check(store.retireClaim(previous)) { "The pending pairing claim changed unexpectedly." }
+                }
                 claim = null
-                active?.takeIf { it.claim != null && it.claim == previous }?.also {
+                active?.takeIf { it.claim != null }?.also {
                     generation += 1
                     active = null
                 }
@@ -106,26 +110,34 @@ internal class Connection(
         if (!matched) return false
         superseded?.let { pending.remove(it.id) }
         if (superseded != null) publishPending()
+        retryRevocation()
         return true
     }
 
     fun pair(invitation: Invitation): Boolean {
         val pendingClaim = runCatching {
             synchronized(lock) {
-                claim?.takeIf { it.invitation == invitation }
-                    ?: Claim(invitation, nonce()).also {
-                        store.saveClaim(it)
-                        claim = it
+                val existing = claim?.takeIf { it.invitation == invitation }
+                if (existing?.issued == null && invitation.isExpired(nowMillis())) {
+                    existing?.let {
+                        check(store.retireClaim(it)) { "The pending pairing claim changed unexpectedly." }
+                        claim = null
                     }
+                    throw IllegalArgumentException("This pairing invitation has expired.")
+                }
+                existing ?: Claim(invitation, nonce()).also {
+                    store.saveClaim(it)
+                    claim = it
+                }
             }
         }.getOrElse {
             rejected(it)
             return false
         }
-        return start(pendingClaim) { client.claim(invitation, pendingClaim.nonce) }
+        return start(pendingClaim)
     }
 
-    private fun start(claim: Claim? = null, resolve: suspend () -> Config): Boolean {
+    private fun start(pendingClaim: Claim? = null, resolve: (suspend () -> Config)? = null): Boolean {
         val revocations = loadRevocations() ?: return false
         if (revocations.isNotEmpty()) {
             rejected(IllegalStateException("Vibe Pocket is still revoking the previous device credential."))
@@ -135,7 +147,7 @@ internal class Connection(
         val attempt = synchronized(lock) {
             if (active != null) return false
             val next = ++generation
-            Attempt(next, "$InFlightPrefix$next", claim).also { active = it }
+            Attempt(next, "$InFlightPrefix$next", pendingClaim).also { active = it }
         }
         if (!pending.add(attempt.id)) {
             synchronized(lock) { if (active === attempt) active = null }
@@ -145,8 +157,41 @@ internal class Connection(
         scope.launch(dispatcher) {
             var issued: Config? = null
             val verified = runCatching {
-                val config = resolve().also { if (attempt.claim != null) issued = it }
-                config to client.snapshot(config)
+                if (attempt.claim == null) {
+                    val config = requireNotNull(resolve).invoke()
+                    config to client.snapshot(config)
+                } else {
+                    var transaction = requireNotNull(attempt.claim)
+                    if (transaction.issued == null) {
+                        val pendingCredential = client.claimPending(transaction.invitation, transaction.nonce)
+                        issued = pendingCredential.config
+                        val updated = transaction.copy(
+                            issued = pendingCredential.config,
+                            credentialExpiresAtMillis = pendingCredential.expiresAtMillis,
+                        )
+                        synchronized(lock) {
+                            check(active === attempt && generation == attempt.generation && claim == transaction) {
+                                "Connection change was superseded."
+                            }
+                            store.saveClaim(updated)
+                            claim = updated
+                        }
+                        transaction = updated
+                    }
+                    val config = requireNotNull(transaction.issued)
+                    val expiresAt = requireNotNull(transaction.credentialExpiresAtMillis)
+                    if (nowMillis() >= expiresAt) {
+                        retirePending(attempt, transaction)
+                        throw Failure("The pending pairing credential has expired.", 401)
+                    }
+                    try {
+                        client.activate(config)
+                        config to client.snapshot(config)
+                    } catch (error: Throwable) {
+                        if ((error as? Failure)?.statusCode == 401) retirePending(attempt, transaction)
+                        throw error
+                    }
+                }
             }
             if (!isCurrent(attempt)) {
                 pending.remove(attempt.id)
@@ -161,6 +206,16 @@ internal class Connection(
                 }
         }
         return true
+    }
+
+    private fun retirePending(attempt: Attempt, expected: Claim) {
+        val retired = synchronized(lock) {
+            if (active !== attempt || generation != attempt.generation || claim != expected) return@synchronized false
+            check(store.retireClaim(expected)) { "The pending pairing claim changed unexpectedly." }
+            claim = null
+            true
+        }
+        if (retired) retryRevocation()
     }
 
     private fun commit(attempt: Attempt, config: Config, snapshot: Snapshot) {
@@ -203,6 +258,9 @@ internal class Connection(
         val superseded = runCatching {
             synchronized(lock) {
                 val existing = current().also { previous = it }
+                claim?.let {
+                    check(store.retireClaim(it)) { "The pending pairing claim changed unexpectedly." }
+                }
                 if (existing == null || !existing.isDeviceCredential) {
                     store.invalidate()
                 } else {
@@ -226,24 +284,18 @@ internal class Connection(
     }
 
     fun invalidate(config: Config): Boolean {
-        val superseded = runCatching {
+        return runCatching {
             synchronized(lock) {
                 val existing = current() ?: return false
                 if (!existing.matches(config)) return false
                 store.invalidate()
-                generation += 1
-                claim = null
-                active.also {
-                    active = null
-                    disconnected()
-                }
+                disconnected()
             }
+            true
         }.getOrElse { error ->
             rejected(error)
             return false
         }
-        superseded?.let { pending.remove(it.id) }
-        return true
     }
 
     private fun retireIssued(config: Config) {
