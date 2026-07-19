@@ -29,6 +29,7 @@ internal fun Screen(
     snapshot: Snapshot,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
+    contextTransitionPending: Boolean,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
@@ -43,7 +44,7 @@ internal fun Screen(
     val mode = (inputs + keys).distinctBy(Input::id)
         .firstOrNull { snapshot.actionFor(it.id)?.type == "mode_cycle" }
     val surface = snapshot.state()
-    val blocked = contextTransitionPending(inFlightIds)
+    val blocked = contextTransitionPending
     val actionInputCandidates = when (surface.kind) {
         State.Kind.ERROR -> setOf("key_attach", "key_new_task")
         State.Kind.READY, State.Kind.QUESTION, State.Kind.DECISION, State.Kind.RUNNING -> setOf(

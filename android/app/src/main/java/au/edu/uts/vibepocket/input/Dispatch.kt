@@ -27,6 +27,7 @@ internal interface Hid {
     fun releaseAny(): HidResult
     fun repeat(action: Action, completion: (HidResult) -> Unit): Boolean
     fun stopRepeat()
+    fun quiesce(): Boolean = true
 }
 
 internal interface Bridge {
@@ -34,6 +35,10 @@ internal interface Bridge {
     fun openModel(): Boolean
     fun startVoice(inputId: String): Boolean
     fun stopVoice(inputId: String): Boolean
+    fun contextTransitionPending(): Boolean = false
+    fun focusAgent(agentId: String): Boolean = false
+    fun selectModel(modelId: String): Boolean = false
+    fun selectLayer(layerId: String): Boolean = false
 }
 
 internal class Dispatch(
@@ -53,14 +58,20 @@ internal class Dispatch(
         snapshot: Snapshot?,
         inputId: String,
         gesture: Gesture.Kind,
-    ): Boolean = when (val plan = activation(snapshot, inputId, gesture)) {
+    ): Boolean {
+        if (bridge.contextTransitionPending()) return false
+        val plan = activation(snapshot, inputId, gesture)
+        if (plan is Plan.Bridge && plan.transition != null && snapshot?.desktop?.voice?.active == true) return false
+        return when (plan) {
         Plan.Disabled -> false
         is Plan.Bridge -> deliver(plan)
         is Plan.HidTap -> deliver(plan.action) { deliver(plan.fallback) }
         is Plan.HidHold -> false
+        }
     }
 
     fun openModel(snapshot: Snapshot?): Boolean {
+        if (bridge.contextTransitionPending()) return false
         val desktop = snapshot?.desktop ?: return false
         if (!desktop.foreground || desktop.question != null || !snapshot.capabilities.modelPicker) return false
         if (!snapshot.transportFresh) return bridge.openModel()
@@ -69,9 +80,10 @@ internal class Dispatch(
     }
 
     fun startRepeat(snapshot: Snapshot?, inputId: String): Boolean {
+        if (bridge.contextTransitionPending()) return false
         return when (val plan = activation(snapshot, inputId, Gesture.Kind.TAP)) {
             Plan.Disabled -> false
-            is Plan.Bridge -> bridge.activate(plan.inputId, plan.gesture)
+            is Plan.Bridge -> deliver(plan)
             is Plan.HidTap -> {
                 if (plan.action.type != "navigate") return false
                 if (held != null) return deliver(plan.fallback)
@@ -87,6 +99,7 @@ internal class Dispatch(
     fun stopRepeat() = hid.stopRepeat()
 
     fun startVoice(snapshot: Snapshot?, inputId: String): Boolean {
+        if (bridge.contextTransitionPending()) return false
         if (held != null) return false
         return when (val plan = voicePress(snapshot, inputId)) {
             Plan.Disabled -> false
@@ -127,6 +140,27 @@ internal class Dispatch(
         hid.releaseAny()
     }
 
+    fun focusAgent(snapshot: Snapshot?, agentId: String): Boolean {
+        if (snapshot?.agentFocusEnabled(agentId) != true || snapshot.desktop?.voice?.active == true) return false
+        return deliverTransition { bridge.focusAgent(agentId) }
+    }
+
+    fun selectModel(snapshot: Snapshot?, modelId: String): Boolean {
+        val desktop = snapshot?.desktop ?: return false
+        val model = desktop.model
+        if (!snapshot.transportFresh || !desktop.foreground || desktop.question != null) return false
+        if (!snapshot.capabilities.model || !model.available || model.id == modelId) return false
+        if (model.options.none { it.id == modelId } || desktop.voice?.active == true) return false
+        return deliverTransition { bridge.selectModel(modelId) }
+    }
+
+    fun selectLayer(snapshot: Snapshot?, layerId: String): Boolean {
+        val desktop = snapshot?.desktop ?: return false
+        if (desktop.profile?.layers?.none { it.id == layerId } != false) return false
+        if (desktop.activeLayerId == layerId || desktop.voice?.active == true) return false
+        return deliverTransition { bridge.selectLayer(layerId) }
+    }
+
     private fun deliver(action: Action, fallback: () -> Boolean): Boolean {
         if (held != null) return fallback()
         val requestGeneration = generation.get()
@@ -139,5 +173,21 @@ internal class Dispatch(
         } || fallback()
     }
 
-    private fun deliver(plan: Plan.Bridge): Boolean = bridge.activate(plan.inputId, plan.gesture)
+    private fun deliver(plan: Plan.Bridge): Boolean {
+        if (bridge.contextTransitionPending()) return false
+        return if (plan.transition == null) {
+            bridge.activate(plan.inputId, plan.gesture)
+        } else {
+            deliverTransition { bridge.activate(plan.inputId, plan.gesture) }
+        }
+    }
+
+    private fun deliverTransition(deliver: () -> Boolean): Boolean {
+        if (held != null || bridge.contextTransitionPending()) return false
+        generation.incrementAndGet()
+        hid.stopRepeat()
+        if (!hid.quiesce()) return false
+        if (held != null || bridge.contextTransitionPending()) return false
+        return deliver()
+    }
 }

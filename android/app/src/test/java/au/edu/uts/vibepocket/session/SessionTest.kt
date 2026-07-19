@@ -82,7 +82,14 @@ class SessionTest {
         assertTrue(viewModel.activateInput("key_voice", Gesture.Kind.TAP))
         runCurrent()
         assertEquals(
-            listOf(Command.Binding("key_accept", Gesture.Kind.TAP)),
+            listOf(
+                Command.Binding(
+                    "key_accept",
+                    Gesture.Kind.TAP,
+                    "layer-1",
+                    Action("approve"),
+                ),
+            ),
             client.commands,
         )
         assertEquals(
@@ -177,7 +184,14 @@ class SessionTest {
         runCurrent()
 
         assertEquals(
-            listOf(Command.Binding("key_mode", Gesture.Kind.TAP)),
+            listOf(
+                Command.Binding(
+                    "key_mode",
+                    Gesture.Kind.TAP,
+                    "layer-1",
+                    Action("mode_cycle"),
+                ),
+            ),
             client.commands,
         )
         assertEquals(2, viewModel.state.value.inFlightIds.size)

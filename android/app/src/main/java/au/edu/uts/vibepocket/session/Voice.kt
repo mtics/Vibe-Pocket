@@ -59,6 +59,10 @@ internal class Voice(
         if (shouldLaunch) drainStop()
     }
 
+    fun isActive(): Boolean = synchronized(lock) {
+        owner != null || obligation != null
+    }
+
     fun start(inputId: String, config: Config): Boolean {
         val request = try {
             synchronized(lock) {

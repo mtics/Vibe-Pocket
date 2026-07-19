@@ -14,7 +14,6 @@ import au.edu.uts.vibepocket.session.Feedback
 import au.edu.uts.vibepocket.session.Session
 import au.edu.uts.vibepocket.ui.control.Screen
 import au.edu.uts.vibepocket.ui.control.Voice
-import au.edu.uts.vibepocket.ui.control.contextTransitionPending
 import au.edu.uts.vibepocket.ui.control.dedicatedVoiceInput
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -246,17 +245,19 @@ internal fun App(viewModel: Session) {
         voiceOwnerInputId = null
     }
     val onAgent: (String) -> Unit = { agentId ->
-        if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        if (inputOrchestrator.focusAgent(state.snapshot, agentId)) {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
     }
     val onModel: (String) -> Boolean = { modelId ->
-        viewModel.selectModel(modelId).also {
+        inputOrchestrator.selectModel(state.snapshot, modelId).also {
             if (it) {
                 view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             }
         }
     }
     val onLayer: (String) -> Boolean = { layerId ->
-        viewModel.selectLayer(layerId).also { selected ->
+        inputOrchestrator.selectLayer(state.snapshot, layerId).also { selected ->
             if (selected) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
     }
@@ -270,7 +271,7 @@ internal fun App(viewModel: Session) {
         }
     }
     val snapshot = state.snapshot
-    val transitionPending = contextTransitionPending(state.inFlightIds)
+    val transitionPending = state.contextTransitionPending
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -340,6 +341,7 @@ internal fun App(viewModel: Session) {
                     snapshot = snapshot,
                     hidNavigationAvailable = hidState.connected,
                     inFlightIds = state.inFlightIds,
+                    contextTransitionPending = state.contextTransitionPending,
                     onInput = onInput,
                     onNavigationRepeat = onNavigationRepeat,
                     onVoiceStart = onVoiceStart,
@@ -376,6 +378,7 @@ internal fun App(viewModel: Session) {
             snapshot = state.snapshot,
             hidState = hidState,
             inFlightIds = state.inFlightIds,
+            contextTransitionPending = state.contextTransitionPending,
             connectionError = state.error,
             onDismiss = { showSettings = false },
             onSaveConnection = viewModel::connect,

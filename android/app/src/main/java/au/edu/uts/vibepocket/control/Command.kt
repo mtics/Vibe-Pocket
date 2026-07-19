@@ -8,6 +8,8 @@ sealed interface Command {
     data class Binding(
         val inputId: String,
         val gesture: Gesture.Kind = Gesture.Kind.TAP,
+        val layerId: String,
+        val action: Action,
     ) : Command
 
     data class SelectLayer(val layerId: String) : Command
@@ -56,8 +58,14 @@ internal fun Snapshot.commandFor(
     inputId: String,
     gesture: Gesture.Kind,
 ): Command {
-    if (desktop?.profile != null) return Command.Binding(inputId, gesture)
-    if (gesture != Gesture.Kind.TAP) return Command.Binding(inputId, gesture)
+    if (desktop?.profile != null) {
+        return Command.Binding(
+            inputId = inputId,
+            gesture = gesture,
+            layerId = requireNotNull(desktop.activeLayerId),
+            action = requireNotNull(actionFor(inputId, gesture)),
+        )
+    }
     return when (inputId) {
         "key_accept" -> Command.Approve
         "key_reject" -> Command.Reject
@@ -65,6 +73,6 @@ internal fun Snapshot.commandFor(
         "key_stop" -> Command.Stop
         "key_new_task" -> Command.NewTask
         "key_attach" -> Command.Attach
-        else -> Command.Binding(inputId, gesture)
+        else -> error("A legacy snapshot cannot safely resolve this controller gesture.")
     }
 }

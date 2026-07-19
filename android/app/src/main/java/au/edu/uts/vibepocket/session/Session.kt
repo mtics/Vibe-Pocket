@@ -11,10 +11,16 @@ import au.edu.uts.vibepocket.bridge.Http
 import au.edu.uts.vibepocket.bridge.NetworkEvents
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Invitation
+import au.edu.uts.vibepocket.connection.LoadOutcome
+import au.edu.uts.vibepocket.connection.PendingCommand
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.connection.loadLifecycle
 import au.edu.uts.vibepocket.connection.valueOrNull
+import au.edu.uts.vibepocket.control.Command
+import au.edu.uts.vibepocket.control.ContextTransition
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.contextTransition
+import au.edu.uts.vibepocket.control.matches
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import kotlinx.coroutines.CoroutineDispatcher
@@ -38,14 +44,27 @@ class Session internal constructor(
     private val eventFactory: EventFactory = NetworkEvents,
     retry: Retry = Retry(),
 ) : ViewModel() {
+    private data class TransitionBarrier(
+        val uiId: String,
+        val target: ContextTransition,
+        val command: PendingCommand? = null,
+        val refreshVersion: Long? = null,
+    )
+
     private val restored = store.loadLifecycle()
     private var lifecycleErrors = restored.errors
+    private val transitionLock = Any()
+    private var transitionBarrier = restored.pendingCommand.valueOrNull()
+        ?.takeIf { it.transition != null }
+        ?.let { TransitionBarrier(it.uiId, requireNotNull(it.transition), command = it) }
+    private var transitionStateUnreadable = restored.pendingCommand is LoadOutcome.RecoverableError
     private val pending = Pending().apply {
         restored.pendingCommand.valueOrNull()?.uiId?.let(::add)
     }
     private val _state = MutableStateFlow(
         State(
             inFlightIds = pending.snapshot(),
+            contextTransitionPending = transitionPending(),
             error = lifecycleErrorMessage()
                 ?: restored.pendingCommand.valueOrNull()?.let { CommandResultUnconfirmed },
         ),
@@ -69,7 +88,7 @@ class Session internal constructor(
         client = client,
         state = _state,
         reconcile = prediction::reconcile,
-        reconciled = ::predictionReconciled,
+        reconciled = ::snapshotReconciled,
         persistentError = ::lifecycleErrorMessage,
     )
     private val voice = Voice(
@@ -88,13 +107,13 @@ class Session internal constructor(
         restored = restored.pendingCommand,
         pending = pending,
         publishPending = ::publishPending,
-        accepted = ::commandAccepted,
-        rejected = ::commandRejected,
+        accepted = ::deliveryAccepted,
+        rejected = ::deliveryRejected,
         unconfirmed = ::commandUnconfirmed,
     )
     private val commands = Commands(
         snapshot = { _state.value.snapshot },
-        deliver = delivery::send,
+        deliver = ::enqueueCommand,
     )
     private val connection = Connection(
         scope = viewModelScope,
@@ -184,6 +203,8 @@ class Session internal constructor(
 
     fun refresh() = refresh.request()
 
+    fun contextTransitionPending(): Boolean = transitionPending()
+
     fun activateInput(
         inputId: String,
         gesture: Gesture.Kind = Gesture.Kind.TAP,
@@ -192,11 +213,14 @@ class Session internal constructor(
     fun openModel(): Boolean = commands.openModel()
 
     fun startVoice(inputId: String): Boolean {
-        val current = _state.value
-        val config = current.config ?: return false
-        val snapshot = current.snapshot ?: return false
-        if (!snapshot.voiceTapEnabled(inputId)) return false
-        return voice.start(inputId, config)
+        return synchronized(transitionLock) {
+            if (transitionPendingLocked()) return false
+            val current = _state.value
+            val config = current.config ?: return false
+            val snapshot = current.snapshot ?: return false
+            if (!snapshot.voiceTapEnabled(inputId)) return false
+            voice.start(inputId, config)
+        }
     }
 
     fun stopVoice(inputId: String): Boolean = voice.stop(inputId, _state.value.config)
@@ -243,6 +267,27 @@ class Session internal constructor(
 
     fun resetProfile(): Boolean = commands.resetProfile()
 
+    private fun enqueueCommand(command: Command, uiId: String, family: String?): Boolean {
+        return synchronized(transitionLock) {
+            if (transitionPendingLocked()) return false
+            val snapshot = _state.value.snapshot ?: return false
+            val transition = command.contextTransition(snapshot)
+            if (
+                transition != null &&
+                (voice.isActive() || snapshot.desktop?.voice?.active == true)
+            ) {
+                return false
+            }
+            if (transition != null) {
+                transitionBarrier = TransitionBarrier(uiId, transition)
+                _state.update { it.copy(contextTransitionPending = true) }
+            }
+            val accepted = delivery.send(command, uiId, family, transition)
+            if (!accepted && transition != null) clearTransitionLocked(uiId, transition)
+            accepted
+        }
+    }
+
     private fun connectionAccepted(config: Config, snapshot: Snapshot) {
         voice.stop()
         stopEvents()
@@ -257,6 +302,7 @@ class Session internal constructor(
             snapshot = snapshot,
             invitation = null,
             inFlightIds = pending.snapshot(),
+            contextTransitionPending = transitionPending(),
             error = lifecycleErrorMessage()
                 ?: CommandResultUnconfirmed.takeIf { delivery.hasPendingResult() },
         )
@@ -282,6 +328,7 @@ class Session internal constructor(
         _state.value = State(
             invitation = connection.pendingInvitation,
             inFlightIds = pending.snapshot(),
+            contextTransitionPending = transitionPending(),
             error = lifecycleErrorMessage()
                 ?: CommandResultUnconfirmed.takeIf { delivery.hasPendingResult() },
         )
@@ -301,14 +348,56 @@ class Session internal constructor(
         if (!foreground) refresh.request()
     }
 
+    private fun deliveryAccepted(command: PendingCommand) {
+        if (command.transition == null) {
+            commandAccepted(command.config)
+            return
+        }
+        if (_state.value.config != command.config) return
+        val ownsBarrier = synchronized(transitionLock) {
+            val current = transitionBarrier
+            if (current?.uiId != command.uiId || current.target != command.transition) {
+                false
+            } else {
+                transitionBarrier = current.copy(command = command)
+                true
+            }
+        }
+        if (!ownsBarrier) return
+        _state.update { current ->
+            if (current.error == CommandResultUnconfirmed) current.copy(error = null) else current
+        }
+        _feedback.tryEmit(Feedback.Success)
+        refresh.request(stale = true) { version ->
+            synchronized(transitionLock) {
+                val current = transitionBarrier
+                if (current?.command?.operationId == command.operationId) {
+                    transitionBarrier = current.copy(refreshVersion = version)
+                }
+            }
+        }
+    }
+
     private fun commandRejected(config: Config, error: Throwable) {
         if (_state.value.config != config) return
         _state.update { it.copy(error = error.message) }
         _feedback.tryEmit(Feedback.Error)
     }
 
-    private fun commandUnconfirmed(config: Config, error: Throwable?) {
-        if (_state.value.config != config) return
+    private fun deliveryRejected(
+        config: Config,
+        uiId: String,
+        command: PendingCommand?,
+        error: Throwable,
+    ) {
+        synchronized(transitionLock) {
+            clearTransitionLocked(uiId, command?.transition)
+        }
+        commandRejected(config, error)
+    }
+
+    private fun commandUnconfirmed(command: PendingCommand, error: Throwable?) {
+        if (_state.value.config != command.config) return
         _state.update { it.copy(error = error?.message ?: CommandResultUnconfirmed) }
         _feedback.tryEmit(Feedback.Error)
     }
@@ -318,6 +407,7 @@ class Session internal constructor(
         _state.update { current ->
             current.copy(
                 inFlightIds = pending.snapshot(),
+                contextTransitionPending = transitionPending(),
                 error = lifecycleErrorMessage() ?: when {
                     current.error == CommandResultUnconfirmed && !delivery.hasPendingResult() -> null
                     else -> current.error
@@ -405,7 +495,20 @@ class Session internal constructor(
     }
 
     private fun reloadLifecycleErrors() {
-        lifecycleErrors = store.loadLifecycle().errors
+        val current = store.loadLifecycle()
+        lifecycleErrors = current.errors
+        synchronized(transitionLock) {
+            transitionStateUnreadable = current.pendingCommand is LoadOutcome.RecoverableError
+            current.pendingCommand.valueOrNull()?.takeIf { it.transition != null }?.let { command ->
+                if (transitionBarrier == null) {
+                    transitionBarrier = TransitionBarrier(
+                        command.uiId,
+                        requireNotNull(command.transition),
+                        command = command,
+                    )
+                }
+            }
+        }
     }
 
     private fun lifecycleErrorMessage(): String? = lifecycleErrors
@@ -424,10 +527,38 @@ class Session internal constructor(
         }
     }
 
+    private fun snapshotReconciled(snapshot: Snapshot, version: Long) {
+        predictionReconciled()
+        val matched = synchronized(transitionLock) {
+            transitionBarrier?.takeIf { barrier ->
+                val requiredVersion = barrier.refreshVersion
+                requiredVersion != null && version >= requiredVersion && barrier.target.matches(snapshot)
+            }
+        } ?: return
+        val command = matched.command ?: return
+        if (!delivery.clearRetainedTransition(command)) return
+        synchronized(transitionLock) {
+            clearTransitionLocked(matched.uiId, matched.target)
+        }
+    }
+
     private fun predictionReconciled() {
         if (prediction.isPending()) return
         predictionExpiry?.cancel()
         predictionExpiry = null
+    }
+
+    private fun transitionPending(): Boolean = synchronized(transitionLock) {
+        transitionPendingLocked()
+    }
+
+    private fun transitionPendingLocked(): Boolean = transitionBarrier != null || transitionStateUnreadable
+
+    private fun clearTransitionLocked(uiId: String, target: ContextTransition?) {
+        val current = transitionBarrier ?: return
+        if (current.uiId != uiId || target != null && current.target != target) return
+        transitionBarrier = null
+        _state.update { it.copy(contextTransitionPending = transitionPendingLocked()) }
     }
 
     override fun onCleared() {

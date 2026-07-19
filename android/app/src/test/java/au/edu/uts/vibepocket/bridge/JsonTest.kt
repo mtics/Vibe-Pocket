@@ -206,7 +206,12 @@ class JsonTest {
 
     @Test
     fun serializesOnlyStructuredControllerCommands() {
-        val binding = Command.Binding("key_voice", Gesture.Kind.DOUBLE_TAP).encode()
+        val binding = Command.Binding(
+            "key_voice",
+            Gesture.Kind.DOUBLE_TAP,
+            "layer-2",
+            Action("workflow", workflowId = "debug"),
+        ).encode()
         val layer = Command.SelectLayer("layer-3").encode()
         val focus = Command.FocusAgent("agent-444444444444444444444444").encode()
         val update = Command.UpdateBinding(
@@ -229,6 +234,8 @@ class JsonTest {
         assertEquals("binding", binding.getString("kind"))
         assertEquals("key_voice", binding.getString("inputId"))
         assertEquals("double_tap", binding.getString("gesture"))
+        assertEquals("layer-2", binding.getString("layerId"))
+        assertEquals("debug", binding.getJSONObject("action").getString("workflowId"))
         assertEquals("select_layer", layer.getString("kind"))
         assertEquals("layer-3", layer.getString("layerId"))
         assertEquals("focus_agent", focus.getString("kind"))

@@ -11,13 +11,13 @@ import org.junit.Test
 
 class ClientLimitTest {
     @Test
-    fun protocolEightClaimRequiresCommandResultRecovery() {
+    fun protocolNineClaimRequiresCommandRecoveryAndBindingContext() {
         val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
         val response = JSONObject()
-            .put("protocolVersion", 8)
+            .put("protocolVersion", 9)
             .put(
                 "capabilities",
-                JSONArray(listOf("device_credentials", "pairing_commit", "command_results")),
+                JSONArray(listOf("device_credentials", "pairing_commit", "command_results", "binding_context")),
             )
             .put("credentialState", "pending")
             .put("credentialExpiresAt", "2099-01-01T00:05:00Z")
@@ -31,10 +31,10 @@ class ClientLimitTest {
     }
 
     @Test
-    fun protocolEightClaimRejectsActiveOrIncompleteCapabilities() {
+    fun protocolNineClaimRejectsActiveOrIncompleteCapabilities() {
         val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
         val response = JSONObject()
-            .put("protocolVersion", 8)
+            .put("protocolVersion", 9)
             .put("capabilities", JSONArray(listOf("device_credentials")))
             .put("credentialState", "active")
             .put("credentialExpiresAt", "2099-01-01T00:05:00Z")
@@ -44,12 +44,24 @@ class ClientLimitTest {
         assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
         response.put(
             "capabilities",
-            JSONArray(listOf("device_credentials", "pairing_commit", "command_results")),
+            JSONArray(listOf("device_credentials", "pairing_commit", "command_results", "binding_context")),
         )
         assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
 
         response.put("credentialState", "pending")
         response.put("capabilities", JSONArray(listOf("device_credentials", "pairing_commit")))
+        assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
+
+        response.put(
+            "capabilities",
+            JSONArray(listOf("device_credentials", "pairing_commit", "command_results")),
+        )
+        assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
+
+        response.put(
+            "capabilities",
+            JSONArray(listOf("device_credentials", "pairing_commit", "binding_context")),
+        )
         assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
     }
 

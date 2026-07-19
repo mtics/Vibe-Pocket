@@ -1,6 +1,9 @@
 package au.edu.uts.vibepocket.input
 
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.ContextTransition
+import au.edu.uts.vibepocket.control.commandFor
+import au.edu.uts.vibepocket.control.contextTransition
 import au.edu.uts.vibepocket.hid.Mapping
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
@@ -11,6 +14,7 @@ internal sealed interface Plan {
     data class Bridge(
         val inputId: String,
         val gesture: Gesture.Kind,
+        val transition: ContextTransition? = null,
     ) : Plan
 
     data class HidTap(
@@ -41,7 +45,8 @@ internal fun activation(
     gesture: Gesture.Kind,
 ): Plan {
     if (snapshot == null || !snapshot.inputEnabled(inputId, gesture)) return Plan.Disabled
-    val fallback = Plan.Bridge(inputId, gesture)
+    val command = snapshot.commandFor(inputId, gesture)
+    val fallback = Plan.Bridge(inputId, gesture, command.contextTransition(snapshot))
     if (!snapshot.transportFresh) return fallback
     val action = resolve(snapshot, inputId, gesture) ?: return fallback
     val desktop = snapshot.desktop

@@ -283,6 +283,8 @@ internal fun Command.encode(): JSONObject = when (this) {
         .put("kind", "binding")
         .put("inputId", inputId)
         .put("gesture", gesture.wireValue)
+        .put("layerId", layerId)
+        .put("action", action.encode())
     is Command.SelectLayer -> JSONObject().put("kind", "select_layer").put("layerId", layerId)
     is Command.FocusAgent -> JSONObject().put("kind", "focus_agent").put("agentId", agentId)
     is Command.SelectModel -> JSONObject().put("kind", "select_model").put("modelId", modelId)

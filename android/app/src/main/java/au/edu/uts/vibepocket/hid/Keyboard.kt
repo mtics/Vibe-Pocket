@@ -23,11 +23,16 @@ import au.edu.uts.vibepocket.profile.Action
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.CancellationException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class Host(
@@ -54,18 +59,88 @@ internal fun afterPermissionLoss(status: Status): Status = status.copy(
     message = "Nearby devices permission was removed. Bridge fallback remains available.",
 )
 
+internal fun afterReportFailure(status: Status): Status = status.copy(
+    connectedHostAddress = null,
+    connectingHostAddress = null,
+    message = "Bluetooth report outcome was uncertain. Releasing keys and disconnecting before reuse.",
+)
+
 private fun TransactionResult.toHidResult(): HidResult = when (this) {
     TransactionResult.COMPLETE -> HidResult.DELIVERED
     TransactionResult.NOT_DISPATCHED -> HidResult.NOT_DISPATCHED
     TransactionResult.INDETERMINATE -> HidResult.INDETERMINATE
 }
 
-private fun QueueResult<Boolean>.toPressResult(): HidResult = when (this) {
+internal fun TransactionResult.afterReportException(reportException: Boolean): TransactionResult =
+    if (reportException) TransactionResult.INDETERMINATE else this
+
+internal fun QueueResult<Boolean>.toPressResult(): HidResult = when (this) {
     is QueueResult.Completed -> if (value) HidResult.DELIVERED else HidResult.NOT_DISPATCHED
     QueueResult.Rejected -> HidResult.NOT_DISPATCHED
     QueueResult.Cancelled -> HidResult.CANCELLED
     QueueResult.TimedOut -> HidResult.TIMED_OUT
     QueueResult.Failed -> HidResult.INDETERMINATE
+}
+
+internal class RecoveryQuarantine<T>(
+    private val executor: Executor,
+) {
+    private val lock = Any()
+    private var owner: T? = null
+
+    fun enter(
+        candidate: T,
+        onEntered: () -> Unit,
+        recover: (T) -> Unit,
+    ): Boolean {
+        synchronized(lock) {
+            if (owner != null) return false
+            owner = candidate
+            onEntered()
+        }
+        runCatching { executor.execute { recover(candidate) } }
+        return true
+    }
+
+    fun isActive(): Boolean = synchronized(lock) { owner != null }
+
+    fun owns(predicate: (T) -> Boolean): Boolean = synchronized(lock) {
+        owner?.let(predicate) == true
+    }
+
+    fun leave(predicate: (T) -> Boolean): Boolean = synchronized(lock) {
+        val current = owner ?: return@synchronized false
+        if (!predicate(current)) return@synchronized false
+        owner = null
+        true
+    }
+
+    fun clear() = synchronized(lock) {
+        owner = null
+    }
+}
+
+internal fun awaitReleaseThenDisconnect(
+    release: Future<*>?,
+    awaitRelease: (Future<*>) -> Unit,
+    disconnect: () -> Unit,
+) {
+    if (release != null) {
+        try {
+            awaitRelease(release)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (_: CancellationException) {
+            Unit
+        } catch (_: ExecutionException) {
+            Unit
+        } catch (_: TimeoutException) {
+            Unit
+        } finally {
+            if (!release.isDone) release.cancel(true)
+        }
+    }
+    runCatching(disconnect)
 }
 
 private fun QueueResult<Boolean>.toReleaseResult(): HidResult = when (this) {
@@ -83,6 +158,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
     private val callbackExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val reportExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val recoveryExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val repeatExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     private val closed = AtomicBoolean(false)
     private val receiverRegistered = AtomicBoolean(false)
@@ -92,6 +168,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
     private val reconnectLock = Any()
     private val profileLifecycle = ProfileLifecycle()
     private val reportQueue = ReportQueue(reportExecutor)
+    private val recoveryQuarantine = RecoveryQuarantine<RecoveryOwner>(callbackExecutor)
     @Volatile private var hidDevice: BluetoothHidDevice? = null
     @Volatile private var connectedHost: BluetoothDevice? = null
     private var navigationRepeat: ScheduledFuture<*>? = null
@@ -209,7 +286,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
 
     @SuppressLint("MissingPermission")
     private fun connect(address: String, rememberHost: Boolean): Boolean {
-        if (!hasConnectPermission() || !_state.value.registered) return false
+        if (!hasConnectPermission() || !_state.value.registered || recoveryQuarantine.isActive()) return false
         val device = runCatching {
             adapter?.bondedDevices?.firstOrNull { safeAddress(it) == address && isComputer(it) }
         }.getOrElse {
@@ -254,6 +331,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
                     TransactionResult.NOT_DISPATCHED
                 } else {
                     var permissionLost = false
+                    var reportException = false
                     sendTransaction(
                         chords = chords,
                         send = { report ->
@@ -262,20 +340,26 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
                             } catch (_: SecurityException) {
                                 permissionLost = true
                                 false
+                            } catch (_: RuntimeException) {
+                                reportException = true
+                                false
                             }
                         },
                         pause = Thread::sleep,
                         holdMillis = KEY_HOLD_MILLIS,
                         gapMillis = KEY_GAP_MILLIS,
-                    ).also {
+                    ).afterReportException(reportException).also {
                         if (permissionLost) permissionUnavailable()
                     }
                 }
-                if (result == TransactionResult.INDETERMINATE) recoverReleaseFailure(transport, device)
+                if (result == TransactionResult.INDETERMINATE) quarantineTransport(transport, device)
                 runCatching { completion(result.toHidResult()) }
             },
             cancelled = { runCatching { completion(HidResult.CANCELLED) } },
-            failed = { runCatching { completion(HidResult.INDETERMINATE) } },
+            failed = {
+                quarantineTransport(transport, device)
+                runCatching { completion(HidResult.INDETERMINATE) }
+            },
         )
     }
 
@@ -306,7 +390,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
         if (result.fallbackSafe) {
             synchronized(heldKeyLock) { if (heldChord == chord) heldChord = null }
         } else if (result == HidResult.TIMED_OUT || result == HidResult.INDETERMINATE) {
-            markReleaseFailure(device)
+            quarantineTransport(transport, device)
         }
         return result
     }
@@ -329,7 +413,9 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
         val shouldRelease = synchronized(heldKeyLock) {
             (heldChord != null).also { heldChord = null }
         }
-        if (!shouldRelease) return HidResult.NOT_DISPATCHED
+        if (!shouldRelease) {
+            return if (recoveryQuarantine.isActive()) HidResult.INDETERMINATE else HidResult.NOT_DISPATCHED
+        }
         return releaseHeldChord()
     }
 
@@ -345,11 +431,10 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
                 permissionUnavailable()
                 false
             }
-            if (!sent) recoverReleaseFailure(transport, device)
             sent
         }.toReleaseResult()
         if (result == HidResult.TIMED_OUT || result == HidResult.INDETERMINATE) {
-            markReleaseFailure(device)
+            quarantineTransport(transport, device)
         }
         return result
     }
@@ -401,6 +486,12 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
         reportQueue.cancelPending()
     }
 
+    override fun quiesce(): Boolean {
+        stopRepeat()
+        if (!reportQueue.cancelPending()) return false
+        return reportQueue.submitAndWait { Unit } is QueueResult.Completed
+    }
+
     @SuppressLint("MissingPermission")
     fun refreshHosts() {
         if (!hasConnectPermission()) {
@@ -441,6 +532,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
             }
         }
         synchronized(heldKeyLock) { heldChord = null }
+        recoveryQuarantine.clear()
         resetPreferredReconnect()
         val proxy = synchronized(profileLock) {
             profileLifecycle.close()
@@ -450,6 +542,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
         runCatching { proxy?.let { adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, it) } }
         if (receiverRegistered.compareAndSet(true, false)) runCatching { appContext.unregisterReceiver(bluetoothReceiver) }
         connectedHost = null
+        recoveryExecutor.shutdownNow()
         callbackExecutor.shutdownNow()
         repeatExecutor.shutdownNow()
     }
@@ -517,6 +610,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
             if (!lost) return
             stopRepeat()
             synchronized(heldKeyLock) { heldChord = null }
+            recoveryQuarantine.clear()
             connectedHost = null
             autoReconnectAttempted = false
             resetPreferredReconnect()
@@ -541,16 +635,18 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
             } else {
                 stopRepeat()
                 synchronized(heldKeyLock) { heldChord = null }
+                recoveryQuarantine.clear()
             }
-            connectedHost = pluggedDevice?.takeIf { registered && isComputer(it) }
+            val recovering = recoveryQuarantine.isActive()
+            connectedHost = pluggedDevice?.takeIf { registered && !recovering && isComputer(it) }
             _state.value = _state.value.copy(
                 registered = registered,
                 connectedHostAddress = safeAddress(connectedHost),
                 connectingHostAddress = null,
-                message = if (registered) {
-                    "Bluetooth keyboard ready. Pair or connect a Mac."
-                } else {
-                    "Bluetooth keyboard registration ended. Return to the app to restart it."
+                message = when {
+                    recovering -> afterReportFailure(_state.value).message
+                    registered -> "Bluetooth keyboard ready. Pair or connect a Mac."
+                    else -> "Bluetooth keyboard registration ended. Return to the app to restart it."
                 },
             )
             if (registered) {
@@ -576,6 +672,17 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
                     } catch (_: SecurityException) {
                         Unit
                     }
+                }
+                return
+            }
+            if (recoveryQuarantine.isActive()) {
+                if (
+                    state == BluetoothProfile.STATE_DISCONNECTED &&
+                    recoveryQuarantine.owns { sameDevice(it.device, device) }
+                ) {
+                    completeQuarantine(device)
+                } else if (state == BluetoothProfile.STATE_CONNECTED) {
+                    runCatching { proxy.disconnect(device) }
                 }
                 return
             }
@@ -675,6 +782,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
 
     @SuppressLint("MissingPermission")
     private fun reconcileConnectedHost() {
+        if (recoveryQuarantine.isActive()) return
         val proxy = hidDevice ?: return
         val actual = runCatching { proxy.connectedDevices.firstOrNull(::isComputer) }.getOrNull()
         if (actual != null) {
@@ -769,6 +877,11 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
         val proxy: BluetoothHidDevice,
     )
 
+    private data class RecoveryOwner(
+        val transport: Transport,
+        val device: BluetoothDevice,
+    )
+
     private fun currentTransport(): Transport? = synchronized(profileLock) {
         val proxy = hidDevice ?: return@synchronized null
         val generation = profileLifecycle.currentGeneration() ?: return@synchronized null
@@ -789,27 +902,55 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
     ): Boolean = reportQueue.submit(block, cancelled, failed)
 
     @SuppressLint("MissingPermission")
-    private fun recoverReleaseFailure(transport: Transport, device: BluetoothDevice) {
-        runCatching { transport.proxy.sendReport(device, REPORT_ID, Report.release) }
-        runCatching { transport.proxy.disconnect(device) }
-        markReleaseFailure(device)
+    private fun quarantineTransport(transport: Transport, device: BluetoothDevice) {
+        if (!sameDevice(connectedHost, device)) return
+        recoveryQuarantine.enter(
+            candidate = RecoveryOwner(transport, device),
+            onEntered = {
+                stopRepeat()
+                connectedHost = null
+                _state.value = afterReportFailure(_state.value)
+            },
+            recover = ::recoverQuarantinedTransport,
+        )
     }
 
-    private fun markReleaseFailure(device: BluetoothDevice) {
-        if (connectedHost !== device) return
-        stopRepeat()
+    @SuppressLint("MissingPermission")
+    private fun recoverQuarantinedTransport(owner: RecoveryOwner) {
+        if (!recoveryQuarantine.owns { it === owner }) return
+        val release = runCatching {
+            recoveryExecutor.submit<Boolean> {
+                owner.transport.proxy.sendReport(owner.device, REPORT_ID, Report.release)
+            }
+        }.getOrNull()
+        awaitReleaseThenDisconnect(
+            release = release,
+            awaitRelease = { it.get(RECOVERY_RELEASE_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS) },
+            disconnect = {
+                if (recoveryQuarantine.owns { it === owner }) {
+                    owner.transport.proxy.disconnect(owner.device)
+                }
+            },
+        )
+    }
+
+    private fun completeQuarantine(device: BluetoothDevice): Boolean {
+        if (!recoveryQuarantine.leave { sameDevice(it.device, device) }) return false
         synchronized(heldKeyLock) { heldChord = null }
-        connectedHost = null
+        if (sameDevice(connectedHost, device)) connectedHost = null
         _state.value = _state.value.copy(
             connectedHostAddress = null,
             connectingHostAddress = null,
-            message = "Bluetooth key release failed. Reconnect the keyboard before continuing.",
+            message = "Bluetooth keyboard recovery completed. Reconnect before continuing.",
         )
+        schedulePreferredReconnect()
+        return true
     }
 
     private fun adapterUnavailable() {
         stopRepeat()
         synchronized(heldKeyLock) { heldChord = null }
+        recoveryQuarantine.clear()
         synchronized(profileLock) { profileLifecycle.rejectPendingProxy() }
         connectedHost = null
         _state.value = _state.value.copy(
@@ -821,6 +962,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
     private fun permissionUnavailable() {
         stopRepeat()
         synchronized(heldKeyLock) { heldChord = null }
+        recoveryQuarantine.clear()
         synchronized(profileLock) { profileLifecycle.rejectPendingProxy() }
         connectedHost = null
         _state.value = afterPermissionLoss(_state.value)
@@ -846,6 +988,13 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
     @SuppressLint("MissingPermission")
     private fun safeAddress(device: BluetoothDevice?): String? = runCatching { device?.address }.getOrNull()
 
+    private fun sameDevice(first: BluetoothDevice?, second: BluetoothDevice?): Boolean {
+        if (first == null || second == null) return false
+        if (first === second) return true
+        val firstAddress = safeAddress(first) ?: return false
+        return firstAddress == safeAddress(second)
+    }
+
     @SuppressLint("MissingPermission")
     private fun safeName(device: BluetoothDevice): String = runCatching { device.name }
         .getOrNull()
@@ -861,6 +1010,7 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
         private const val KEY_GAP_MILLIS = 12L
         private const val NAVIGATION_REPEAT_INITIAL_DELAY_MILLIS = 280L
         private const val NAVIGATION_REPEAT_INTERVAL_MILLIS = 90L
+        private const val RECOVERY_RELEASE_TIMEOUT_MILLIS = 500L
 
         private val KEYBOARD_DESCRIPTOR = byteArrayOf(
             0x05, 0x01, 0x09, 0x06, 0xA1.toByte(), 0x01,

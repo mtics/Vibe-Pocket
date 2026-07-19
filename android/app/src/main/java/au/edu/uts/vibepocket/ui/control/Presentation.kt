@@ -14,11 +14,6 @@ internal data class VoiceMappingIdentity(
     val inputId: String,
 )
 
-internal fun contextTransitionPending(inFlightIds: Set<String>): Boolean =
-    inFlightIds.any { id ->
-        id.startsWith("agent:") || id.startsWith("layer:") || id.startsWith("model:")
-    }
-
 internal fun Snapshot.voiceMappingIdentity(inputId: String): VoiceMappingIdentity? {
     val profile = desktop?.profile
     if (profile == null) {

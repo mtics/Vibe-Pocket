@@ -23,6 +23,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -102,7 +103,7 @@ class DeliveryTest {
     }
 
     @Test
-    fun postTimeoutThenUnknownIsTerminalAndPreservesErrorCode() = runTest {
+    fun postTimeoutThenUnknownRetainsOutboxAndPreservesErrorCode() = runTest {
         val result = CommandResult.Found(
             CommandStatus.UNKNOWN,
             RemoteError("result_evicted", "Result history expired."),
@@ -113,8 +114,8 @@ class DeliveryTest {
         runCurrent()
 
         assertEquals(1, fixture.client.commandCalls)
-        assertNull(fixture.store.pendingCommand)
-        val failure = fixture.harness.rejected.single() as Failure
+        assertNotNull(fixture.store.pendingCommand)
+        val failure = fixture.harness.unconfirmed.single() as Failure
         assertEquals("result_evicted", failure.errorCode)
         assertEquals("Result history expired.", failure.message)
     }
@@ -240,7 +241,7 @@ class DeliveryTest {
             pending = pending,
             publishPending = {},
             accepted = { accepted += 1 },
-            rejected = { _, error -> rejected += error },
+            rejected = { _, _, _, error -> rejected += error },
             unconfirmed = { _, error -> unconfirmed += error },
         ).also { it.bind(ConfigValue) }
         return Harness(delivery, pending, rejected, unconfirmed) { accepted }

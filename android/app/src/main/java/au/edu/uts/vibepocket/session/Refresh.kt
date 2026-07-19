@@ -18,7 +18,7 @@ internal class Refresh(
     private val client: Client,
     private val state: MutableStateFlow<State>,
     private val reconcile: (Snapshot, Snapshot?) -> Snapshot,
-    private val reconciled: () -> Unit,
+    private val reconciled: (Snapshot, Long) -> Unit,
     private val persistentError: () -> String? = { null },
 ) {
     private data class Lease(
@@ -44,18 +44,23 @@ internal class Refresh(
         invalidate(null)
     }
 
-    fun request(generation: Long? = null, stale: Boolean = false) {
-        val prepared = synchronized(lock) {
-            val current = lease ?: return
-            if (generation != null && current.generation != generation) return
+    fun request(
+        generation: Long? = null,
+        stale: Boolean = false,
+        onPrepared: (Long) -> Unit = {},
+    ): Long? {
+        val request = synchronized(lock) {
+            val current = lease ?: return null
+            if (generation != null && current.generation != generation) return null
             val request = Request(current, ++version)
             val previous = job
             job = null
             request to previous
         }
-        prepared.second?.cancel()
+        request.second?.cancel()
+        onPrepared(request.first.version)
         state.update { current ->
-            if (current.config != prepared.first.lease.config) {
+            if (current.config != request.first.lease.config) {
                 current
             } else {
                 current.copy(
@@ -67,11 +72,11 @@ internal class Refresh(
 
         lateinit var candidate: Job
         candidate = scope.launch(dispatcher, start = CoroutineStart.LAZY) {
-            val result = runCatching { client.snapshot(prepared.first.lease.config) }
-            if (!isCurrent(prepared.first)) return@launch
+            val result = runCatching { client.snapshot(request.first.lease.config) }
+            if (!isCurrent(request.first)) return@launch
             result.onSuccess { remote ->
                 state.update { current ->
-                    if (current.config != prepared.first.lease.config || !isCurrent(prepared.first)) {
+                    if (current.config != request.first.lease.config || !isCurrent(request.first)) {
                         current
                     } else {
                         val visible = current.snapshot
@@ -84,10 +89,10 @@ internal class Refresh(
                         )
                     }
                 }
-                if (isCurrent(prepared.first)) reconciled()
+                if (isCurrent(request.first)) reconciled(remote.copy(transportFresh = true), request.first.version)
             }.onFailure { error ->
                 state.update { current ->
-                    if (current.config != prepared.first.lease.config || !isCurrent(prepared.first)) {
+                    if (current.config != request.first.lease.config || !isCurrent(request.first)) {
                         current
                     } else {
                         current.copy(
@@ -100,7 +105,7 @@ internal class Refresh(
             }
         }
         val installed = synchronized(lock) {
-            if (isCurrentLocked(prepared.first) && job == null) {
+            if (isCurrentLocked(request.first) && job == null) {
                 job = candidate
                 true
             } else {
@@ -109,7 +114,7 @@ internal class Refresh(
         }
         if (!installed) {
             candidate.cancel()
-            return
+            return null
         }
         candidate.invokeOnCompletion {
             synchronized(lock) {
@@ -117,6 +122,7 @@ internal class Refresh(
             }
         }
         candidate.start()
+        return request.first.version
     }
 
     private fun invalidate(next: Lease?) {

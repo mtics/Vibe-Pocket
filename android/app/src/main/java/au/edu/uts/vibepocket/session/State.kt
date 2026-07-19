@@ -10,6 +10,7 @@ data class State(
     val snapshot: Snapshot? = null,
     val isRefreshing: Boolean = false,
     val inFlightIds: Set<String> = emptySet(),
+    val contextTransitionPending: Boolean = false,
     val error: String? = null,
 )
 

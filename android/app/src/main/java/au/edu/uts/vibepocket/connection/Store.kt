@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import au.edu.uts.vibepocket.control.ContextTransition
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.KeyStore
@@ -154,6 +155,7 @@ data class PendingCommand(
     val config: Config,
     val operationId: String,
     val uiId: String,
+    val transition: ContextTransition? = null,
 ) {
     init {
         require(runCatching { UUID.fromString(operationId) }.isSuccess) {
@@ -338,10 +340,7 @@ class Vault(context: Context) : Store {
 
     @Synchronized
     override fun savePendingCommand(command: PendingCommand) {
-        val payload = JSONObject(command.config.encode())
-            .put("operationId", command.operationId)
-            .put("uiId", command.uiId)
-            .toString()
+        val payload = encodePendingCommand(command)
         check(preferences.edit().putString(COMMAND_OUTBOX_KEY, encrypt(payload)).commit()) {
             "Vibe Pocket could not save the pending command."
         }
@@ -508,7 +507,13 @@ private fun decodeVoiceStop(value: String): VoiceStop {
     )
 }
 
-private fun decodePendingCommand(value: String): PendingCommand {
+internal fun encodePendingCommand(command: PendingCommand): String = JSONObject(command.config.encode())
+    .put("operationId", command.operationId)
+    .put("uiId", command.uiId)
+    .apply { command.transition?.let { put("transition", encodeTransition(it)) } }
+    .toString()
+
+internal fun decodePendingCommand(value: String): PendingCommand {
     val payload = JSONObject(value)
     return PendingCommand(
         config = Config(
@@ -517,5 +522,34 @@ private fun decodePendingCommand(value: String): PendingCommand {
         ),
         operationId = payload.getString("operationId"),
         uiId = payload.getString("uiId"),
+        transition = when {
+            !payload.has("transition") -> null
+            else -> payload.optJSONObject("transition")
+                ?.let(::decodeTransition)
+                ?: throw IllegalArgumentException("The pending command transition target is invalid.")
+        },
     )
+}
+
+private fun encodeTransition(transition: ContextTransition): JSONObject = when (transition) {
+    is ContextTransition.NewDesktop -> JSONObject()
+        .put("kind", "new_desktop")
+        .apply {
+            transition.baselineFocusedAgentId?.let { put("baselineFocusedAgentId", it) }
+        }
+    ContextTransition.Attached -> JSONObject().put("kind", "attached")
+    is ContextTransition.Agent -> JSONObject().put("kind", "agent").put("id", transition.id)
+    is ContextTransition.Model -> JSONObject().put("kind", "model").put("id", transition.id)
+    is ContextTransition.Layer -> JSONObject().put("kind", "layer").put("id", transition.id)
+}
+
+private fun decodeTransition(value: JSONObject): ContextTransition = when (value.getString("kind")) {
+    "new_desktop" -> ContextTransition.NewDesktop(
+        value.optString("baselineFocusedAgentId").takeIf(String::isNotBlank),
+    )
+    "attached" -> ContextTransition.Attached
+    "agent" -> ContextTransition.Agent(value.getString("id"))
+    "model" -> ContextTransition.Model(value.getString("id"))
+    "layer" -> ContextTransition.Layer(value.getString("id"))
+    else -> throw IllegalArgumentException("The pending command transition target is invalid.")
 }

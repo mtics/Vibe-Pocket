@@ -1,8 +1,10 @@
 package au.edu.uts.vibepocket.input
 
 import au.edu.uts.vibepocket.control.Activity
+import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Capabilities
 import au.edu.uts.vibepocket.control.Desktop
+import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
@@ -356,6 +358,73 @@ class DispatchTest {
         assertEquals(listOf(BridgeCall.VoiceStart(INPUT_ID), BridgeCall.VoiceStop(INPUT_ID)), bridge.calls)
     }
 
+    @Test
+    fun directTransitionFencesLateHidFallbackBeforeBridgeDelivery() {
+        val hid = FakeHid(deferSend = true)
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(orchestrator.activate(snapshot(Action("mode_cycle")), INPUT_ID, Gesture.Kind.TAP))
+        assertTrue(orchestrator.focusAgent(transitionSnapshot(Action("approve")), AGENT_B))
+        hid.completeSend(false)
+
+        assertEquals(listOf(BridgeCall.FocusAgent(AGENT_B)), bridge.calls)
+        assertEquals(1, hid.stopRepeatCount)
+        assertEquals(1, hid.quiesceCount)
+    }
+
+    @Test
+    fun directTransitionStopsRepeatAndSuppressesItsLateFallback() {
+        val hid = FakeHid(deferSend = true)
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+        val snapshot = transitionSnapshot(Action("navigate", direction = "down"))
+
+        assertTrue(orchestrator.startRepeat(snapshot, INPUT_ID))
+        assertTrue(orchestrator.selectLayer(snapshot, "layer-2"))
+        hid.completeSend(false)
+
+        assertEquals(listOf(BridgeCall.SelectLayer("layer-2")), bridge.calls)
+        assertEquals(1, hid.stopRepeatCount)
+        assertEquals(1, hid.quiesceCount)
+    }
+
+    @Test
+    fun heldVoiceRejectsTransitionWithoutRacingVoiceStop() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+        val snapshot = transitionSnapshot(Action("voice"))
+
+        assertTrue(orchestrator.startVoice(snapshot, INPUT_ID))
+        assertFalse(orchestrator.focusAgent(snapshot, AGENT_B))
+        assertEquals(0, hid.quiesceCount)
+        assertTrue(orchestrator.stopVoice(INPUT_ID))
+
+        assertEquals(listOf(BridgeCall.VoiceStop(INPUT_ID)), bridge.calls)
+        assertEquals(listOf(Action("voice")), hid.released)
+    }
+
+    @Test
+    fun activeBarrierRejectsOrdinaryHidAndVoiceStartButAllowsStopAndRelease() {
+        val hid = FakeHid()
+        val bridge = FakeBridge(transitionPending = true)
+        val orchestrator = Dispatch(hid, bridge)
+        val ordinary = transitionSnapshot(Action("mode_cycle"))
+
+        assertFalse(orchestrator.activate(ordinary, INPUT_ID, Gesture.Kind.TAP))
+        assertFalse(orchestrator.openModel(ordinary))
+        assertFalse(orchestrator.startRepeat(transitionSnapshot(Action("navigate", direction = "up")), INPUT_ID))
+        assertFalse(orchestrator.startVoice(transitionSnapshot(Action("voice")), INPUT_ID))
+        assertFalse(orchestrator.focusAgent(ordinary, AGENT_B))
+        assertTrue(orchestrator.stopVoice(INPUT_ID))
+        orchestrator.release()
+
+        assertTrue(hid.sent.isEmpty())
+        assertEquals(listOf(BridgeCall.VoiceStop(INPUT_ID)), bridge.calls)
+        assertEquals(1, hid.releaseAllCount)
+    }
+
     private class FakeHid(
         private val sendResult: Boolean = true,
         private val deliveryResult: HidResult = HidResult.DELIVERED,
@@ -368,6 +437,7 @@ class DispatchTest {
         val released = mutableListOf<Action>()
         var releaseAllCount = 0
         var stopRepeatCount = 0
+        var quiesceCount = 0
         private val sendCompletions = ArrayDeque<(HidResult) -> Unit>()
 
         override fun send(action: Action, completion: (HidResult) -> Unit): Boolean {
@@ -398,6 +468,11 @@ class DispatchTest {
             stopRepeatCount += 1
         }
 
+        override fun quiesce(): Boolean {
+            quiesceCount += 1
+            return true
+        }
+
         fun completeSend(delivered: Boolean) {
             sendCompletions.removeFirst()(
                 if (delivered) HidResult.DELIVERED else HidResult.NOT_DISPATCHED,
@@ -409,10 +484,15 @@ class DispatchTest {
         data class Activate(val inputId: String, val gesture: Gesture.Kind) : BridgeCall
         data class VoiceStart(val inputId: String) : BridgeCall
         data class VoiceStop(val inputId: String) : BridgeCall
+        data class FocusAgent(val agentId: String) : BridgeCall
+        data class SelectModel(val modelId: String) : BridgeCall
+        data class SelectLayer(val layerId: String) : BridgeCall
         data object OpenModel : BridgeCall
     }
 
-    private class FakeBridge : Bridge {
+    private class FakeBridge(
+        var transitionPending: Boolean = false,
+    ) : Bridge {
         val calls = mutableListOf<BridgeCall>()
 
         override fun activate(inputId: String, gesture: Gesture.Kind): Boolean {
@@ -434,6 +514,53 @@ class DispatchTest {
             calls += BridgeCall.OpenModel
             return true
         }
+
+        override fun contextTransitionPending(): Boolean = transitionPending
+
+        override fun focusAgent(agentId: String): Boolean {
+            calls += BridgeCall.FocusAgent(agentId)
+            return true
+        }
+
+        override fun selectModel(modelId: String): Boolean {
+            calls += BridgeCall.SelectModel(modelId)
+            return true
+        }
+
+        override fun selectLayer(layerId: String): Boolean {
+            calls += BridgeCall.SelectLayer(layerId)
+            return true
+        }
+    }
+
+    private fun transitionSnapshot(action: Action): Snapshot {
+        val base = snapshot(action, capabilities = allCapabilities.copy(model = true))
+        val desktop = requireNotNull(base.desktop)
+        val profile = requireNotNull(desktop.profile)
+        val secondLayer = Layer(
+            id = "layer-2",
+            name = "Second",
+            color = "#000000",
+            bindings = profile.layers.first().bindings,
+        )
+        val agents = listOf(
+            Agent(AGENT_A, "Agent 1", Activity.IDLE, true),
+            Agent(AGENT_B, "Agent 2", Activity.IDLE, false),
+        )
+        return base.copy(
+            desktop = desktop.copy(
+                profile = profile.copy(layers = profile.layers + secondLayer),
+                agents = agents,
+                focusedAgentIndex = 0,
+                focusedAgentId = AGENT_A,
+                model = Model(
+                    available = true,
+                    id = "model-1",
+                    label = "Model 1",
+                    options = listOf(Model.Option("model-2", "Model 2", false)),
+                ),
+            ),
+        )
     }
 
     private fun snapshot(
@@ -487,6 +614,8 @@ class DispatchTest {
 
     private companion object {
         const val INPUT_ID = "key_test"
+        const val AGENT_A = "agent-aaaaaaaaaaaaaaaaaaaaaaaa"
+        const val AGENT_B = "agent-bbbbbbbbbbbbbbbbbbbbbbbb"
         val allCapabilities = Capabilities(
             voice = true,
             stop = true,

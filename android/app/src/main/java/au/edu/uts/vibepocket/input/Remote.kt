@@ -12,4 +12,12 @@ internal fun remote(session: Session): Bridge = object : Bridge {
     override fun startVoice(inputId: String): Boolean = session.startVoice(inputId)
 
     override fun stopVoice(inputId: String): Boolean = session.stopVoice(inputId)
+
+    override fun contextTransitionPending(): Boolean = session.contextTransitionPending()
+
+    override fun focusAgent(agentId: String): Boolean = session.focusAgent(agentId)
+
+    override fun selectModel(modelId: String): Boolean = session.selectModel(modelId)
+
+    override fun selectLayer(layerId: String): Boolean = session.selectLayer(layerId)
 }

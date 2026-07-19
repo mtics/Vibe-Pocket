@@ -53,14 +53,16 @@ data class Snapshot(
         "stop" -> capabilities.stop
         "new_task" -> capabilities.newTask
         "mode_cycle" -> capabilities.modeCycle
-        "model_picker" -> capabilities.modelPicker && desktop?.foreground == true
+        "model_picker" -> capabilities.modelPicker &&
+            desktop?.foreground == true && desktop.question == null
         "access_cycle" -> capabilities.accessCycle && desktop?.foreground == true
         "delete_backward", "clear_input" -> capabilities.clearInput
         "focus_next", "focus_agent" -> capabilities.focusAgent
         "select_layer" -> desktop?.profile?.layers?.any { it.id == action.layerId } == true
         "navigate" -> capabilities.navigate && desktop?.foreground == true
-        "reasoning_depth" -> capabilities.reasoning &&
-            desktop?.reasoning?.allows(action.delta) == true
+        "reasoning_depth" -> desktop?.let {
+            capabilities.reasoning && it.foreground && it.reasoning.allows(action.delta)
+        } == true
         "workflow" -> capabilities.workflow && desktop?.foreground == true
         "attach" -> status.state == "ready"
         else -> false

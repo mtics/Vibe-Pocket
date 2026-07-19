@@ -11,7 +11,6 @@ import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.profile.Workflow
-import au.edu.uts.vibepocket.ui.control.contextTransitionPending
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -120,6 +119,7 @@ internal fun Settings(
     snapshot: Snapshot?,
     hidState: HidStatus,
     inFlightIds: Set<String>,
+    contextTransitionPending: Boolean,
     connectionError: String?,
     onDismiss: () -> Unit,
     onSaveConnection: (String, String) -> Boolean,
@@ -151,7 +151,7 @@ internal fun Settings(
             || pending.startsWith("color:")
             || pending.startsWith("workflow:")
             || pending == "reset-profile"
-    } || contextTransitionPending(inFlightIds)
+    } || contextTransitionPending
     val candidate = remember(config, url) {
         runCatching { Config(url, config.credential) }
     }

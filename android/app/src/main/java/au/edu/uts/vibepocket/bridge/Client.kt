@@ -216,6 +216,7 @@ internal fun decodePairingClaim(invitation: Invitation, response: JSONObject): I
     if ("device_credentials" !in values) throw Failure("The Bridge cannot issue a device credential.")
     if ("pairing_commit" !in values) throw Failure("The Bridge cannot activate a pairing credential.")
     if ("command_results" !in values) throw Failure("The Bridge cannot recover command results.")
+    if ("binding_context" !in values) throw Failure("The Bridge cannot reject stale controller bindings.")
     if (response.optString("credentialState") != "pending") {
         throw Failure("The Bridge returned a pairing credential in an invalid state.")
     }
@@ -480,7 +481,7 @@ class Failure(
     val errorCode: String? = null,
 ) : IllegalStateException(message)
 
-private const val ProtocolVersion = 8
+private const val ProtocolVersion = 9
 internal const val MaxResponseBytes = 1_048_576
 internal const val MaxEventLineBytes = 8_192
 private const val MaxEventFieldChars = 128

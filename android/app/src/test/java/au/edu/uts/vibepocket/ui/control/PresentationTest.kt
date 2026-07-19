@@ -93,11 +93,13 @@ class PresentationTest {
     }
 
     @Test
-    fun contextTransitionsBlockForAgentLayerAndModelOnly() {
-        assertTrue(contextTransitionPending(setOf("agent:a")))
-        assertTrue(contextTransitionPending(setOf("layer:default")))
-        assertTrue(contextTransitionPending(setOf("model:o3")))
-        assertFalse(contextTransitionPending(setOf("input:key_accept:tap", "mapping:key_accept:tap")))
+    fun contextTransitionPendingIsStructuredSessionState() {
+        assertTrue(au.edu.uts.vibepocket.session.State(contextTransitionPending = true).contextTransitionPending)
+        assertFalse(
+            au.edu.uts.vibepocket.session.State(
+                inFlightIds = setOf("agent:a", "layer:default", "model:o3"),
+            ).contextTransitionPending,
+        )
     }
 
     @Test
