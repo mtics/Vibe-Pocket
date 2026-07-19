@@ -1,6 +1,8 @@
 package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.profile.Layer
+import au.edu.uts.vibepocket.ui.contrastingColor
+import au.edu.uts.vibepocket.ui.layerSemanticsLabel
 import au.edu.uts.vibepocket.ui.profileColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,7 +13,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,9 +27,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -52,7 +56,7 @@ internal fun Layers(
     ) {
         layers.chunked(3).forEachIndexed { rowIndex, rowLayers ->
             Row(
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -84,29 +88,36 @@ private fun LayerButton(
     modifier: Modifier = Modifier,
 ) {
     val profileAccent = profileColor(layer.color)
-    val accent = if (profileAccent.luminance() > 0.82f) {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    } else {
-        profileAccent
-    }
+    val accent = contrastingColor(
+        preferred = profileAccent,
+        background = MaterialTheme.colorScheme.surface,
+        fallback = MaterialTheme.colorScheme.onSurface,
+        minimumRatio = 3f,
+    )
+    val selectable = enabled && !active && !loading
     Row(
         modifier = modifier
-            .height(48.dp)
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(if (active) accent.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface)
+            .background(if (active) profileAccent.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface)
             .border(
                 width = 1.dp,
                 color = if (active) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
                 shape = RoundedCornerShape(8.dp),
             )
-            .semantics {
+            .clickable(enabled = selectable) { onLayer(layer.id) }
+            .alpha(if (enabled || active) 1f else 0.62f)
+            .padding(PaddingValues(horizontal = 10.dp))
+            .clearAndSetSemantics {
                 role = Role.Button
                 selected = active
-                contentDescription = "Layer ${index + 1}, ${layer.name}"
-            }
-            .clickable(enabled = enabled && !active && !loading) { onLayer(layer.id) }
-            .alpha(if (enabled || active) 1f else 0.62f)
-            .padding(PaddingValues(horizontal = 10.dp)),
+                contentDescription = layerSemanticsLabel(index, layer.name)
+                if (selectable) {
+                    onClick { onLayer(layer.id) }
+                } else if (!active) {
+                    disabled()
+                }
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (loading) {

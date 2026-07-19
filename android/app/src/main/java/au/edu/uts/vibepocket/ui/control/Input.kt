@@ -5,7 +5,6 @@ import au.edu.uts.vibepocket.control.inputAllowsQueuedRepeat
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
-import au.edu.uts.vibepocket.ui.ErrorColor
 import au.edu.uts.vibepocket.ui.iconForInput
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,6 +13,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -50,11 +50,16 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -65,16 +70,19 @@ internal enum class LabelPlacement {
     TEXT,
 }
 
+internal fun voiceControlAvailable(inputId: String, mapped: Boolean, active: Boolean): Boolean =
+    mapped || active && inputId == "key_voice"
+
 @Composable
 internal fun InputButton(
     input: Input,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     navigationRepeatEnabled: Boolean = false,
     onNavigationRepeat: (String, Boolean) -> Unit = { _, _ -> },
-    onVoiceStart: (String) -> Boolean = { false },
-    onVoiceStop: (String) -> Unit = {},
     blocked: Boolean = false,
     labelPlacement: LabelPlacement = LabelPlacement.BELOW,
     labelOverride: String? = null,
@@ -84,20 +92,38 @@ internal fun InputButton(
 ) {
     val gestures = Gesture.Kind.entries.filter { snapshot.inputEnabled(input.id, it) }
     val action = snapshot.actionFor(input.id)
-    val voice = snapshot.voiceTapEnabled(input.id)
-    val voiceActive = voice && snapshot.desktop?.voice?.active == true
-    val label = if (voiceActive) "Listening..." else labelOverride ?: label(action, input, snapshot)
+    val voiceMapped = snapshot.voiceTapEnabled(input.id)
+    val desktopVoiceActive = snapshot.desktop?.voice?.active == true
+    val voiceControl = voiceControlAvailable(input.id, voiceMapped, desktopVoiceActive)
+    val voiceActive = voiceControl && desktopVoiceActive
+    val label = if (voiceActive) {
+        "Listening..."
+    } else {
+        labelOverride ?: inputLabel(action, input, snapshot.desktop?.choices.orEmpty())
+    }
     val icon = icon(action, input)
     val accent = accent(action, voiceActive)
     val container = container(action, voiceActive)
     val pending = inFlightIds.any { it.startsWith("input:${input.id}:") } &&
         !snapshot.inputAllowsQueuedRepeat(input.id)
-    val interactive = !blocked && (voice || gestures.isNotEmpty())
-    val voiceEnabled = voice && !pending && !blocked
+    val interactive = voiceActive || !blocked && (voiceControl || gestures.isNotEmpty())
+    val voicePressEnabled = voiceMapped && !voiceActive && !pending && !blocked
     val repeat = navigationRepeatEnabled && !pending && !blocked
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     val currentRepeat by rememberUpdatedState(onNavigationRepeat)
+    val voiceToggleEnabled = voiceControl && (voiceActive || (!blocked && !pending))
+    val voiceActionLabel = voiceAccessibilityAction(voiceActive)
+    val toggleVoice: () -> Boolean = {
+        when {
+            !voiceToggleEnabled -> false
+            voiceActive -> {
+                currentVoiceStop(input.id)
+                true
+            }
+            else -> currentVoiceStart(input.id)
+        }
+    }
     val mapped = gestures.joinToString { kind ->
         snapshot.desktop?.gestures?.firstOrNull { it.kind == kind }?.label
             ?: kind.wireValue.replace('_', ' ')
@@ -112,10 +138,20 @@ internal fun InputButton(
                 role = Role.Button
                 val description = supportingLabel?.let { "$it, $label" } ?: label
                 contentDescription = if (mapped.isEmpty()) description else "$description. Gestures $mapped"
-                if (voice) stateDescription = if (voiceActive) "Listening" else "Ready to listen"
+                if (voiceControl) {
+                    stateDescription = if (voiceActive) "Listening" else "Ready to listen"
+                    if (voiceToggleEnabled) {
+                        onClick(label = voiceActionLabel) { toggleVoice() }
+                        customActions = listOf(
+                            CustomAccessibilityAction(voiceActionLabel) { toggleVoice() },
+                        )
+                    } else {
+                        disabled()
+                    }
+                }
             }
-            .pointerInput(input.id, voiceEnabled) {
-                if (!voiceEnabled) return@pointerInput
+            .pointerInput(input.id, voicePressEnabled) {
+                if (!voicePressEnabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val started = currentVoiceStart(input.id)
@@ -147,16 +183,27 @@ internal fun InputButton(
                     }
                 }
             }
-            .combinedClickable(
-                enabled = !voice && gestures.isNotEmpty() && !pending && !blocked && !repeat,
-                onClick = { if (Gesture.Kind.TAP in gestures) onInput(input.id, Gesture.Kind.TAP) },
-                onDoubleClick = if (Gesture.Kind.DOUBLE_TAP in gestures) {
-                    { onInput(input.id, Gesture.Kind.DOUBLE_TAP) }
-                } else null,
-                onLongClick = if (Gesture.Kind.HOLD in gestures) {
-                    { onInput(input.id, Gesture.Kind.HOLD) }
-                } else null,
-                onLongClickLabel = if (Gesture.Kind.HOLD in gestures) "Run hold binding" else null,
+            .then(
+                if (voiceActive) {
+                    Modifier.combinedClickable(
+                        enabled = true,
+                        onClick = { toggleVoice() },
+                    )
+                } else if (voiceMapped) {
+                    Modifier
+                } else {
+                    Modifier.combinedClickable(
+                        enabled = gestures.isNotEmpty() && !pending && !blocked && !repeat,
+                        onClick = { if (Gesture.Kind.TAP in gestures) onInput(input.id, Gesture.Kind.TAP) },
+                        onDoubleClick = if (Gesture.Kind.DOUBLE_TAP in gestures) {
+                            { onInput(input.id, Gesture.Kind.DOUBLE_TAP) }
+                        } else null,
+                        onLongClick = if (Gesture.Kind.HOLD in gestures) {
+                            { onInput(input.id, Gesture.Kind.HOLD) }
+                        } else null,
+                        onLongClickLabel = if (Gesture.Kind.HOLD in gestures) "Run hold binding" else null,
+                    )
+                },
             )
             .alpha(if (interactive) 1f else 0.62f)
             .padding(
@@ -165,7 +212,7 @@ internal fun InputButton(
                     LabelPlacement.TEXT -> 4.dp
                     else -> 8.dp
                 },
-                vertical = if (labelPlacement == LabelPlacement.BELOW) 7.dp else 0.dp,
+                vertical = if (labelPlacement == LabelPlacement.HIDDEN) 0.dp else 7.dp,
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -184,26 +231,30 @@ internal fun InputButton(
                 LabelPlacement.BELOW -> {
                     Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(23.dp))
                     Spacer(Modifier.height(5.dp))
-                    Label(label)
+                    Label(label, modifier = Modifier.fillMaxWidth())
                 }
                 LabelPlacement.BESIDE -> {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
                         Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(21.dp))
                         Spacer(Modifier.width(7.dp))
-                        Label(label)
+                        Label(label, modifier = Modifier.weight(1f))
                     }
                 }
                 LabelPlacement.TEXT -> if (supportingLabel == null) {
-                    Label(label, compact = true)
+                    Label(label, compact = true, modifier = Modifier.fillMaxWidth())
                 } else {
                     Text(
                         supportingLabel,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelSmall,
                     )
-                    Label(label, compact = true)
+                    Label(label, compact = true, modifier = Modifier.fillMaxWidth())
                 }
             }
         }
@@ -211,30 +262,20 @@ internal fun InputButton(
 }
 
 @Composable
-private fun Label(value: String, compact: Boolean = false) {
+private fun Label(
+    value: String,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
     Text(
         value,
-        maxLines = 1,
+        modifier = modifier,
+        maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.Medium,
+        textAlign = TextAlign.Center,
     )
-}
-
-private fun label(action: Action?, input: Input, snapshot: Snapshot): String = when (action?.type) {
-    "approve" -> "Accept"
-    "reject" -> "Reject"
-    "voice" -> "Voice"
-    "clear_input" -> "Clear"
-    "new_task" -> "New task"
-    "stop" -> "Stop"
-    "mode_cycle" -> "Mode"
-    "model_picker" -> "Model"
-    "access_cycle" -> "Access"
-    "delete_backward" -> "Delete"
-    "focus_next" -> "Next agent"
-    "attach" -> "Focus Codex"
-    else -> snapshot.desktop?.choices?.firstOrNull { it.action == action }?.label ?: input.label
 }
 
 @Composable
@@ -242,12 +283,12 @@ private fun accent(action: Action?, active: Boolean): Color = when {
     active -> MaterialTheme.colorScheme.tertiary
     else -> when (action?.type) {
         "approve" -> MaterialTheme.colorScheme.primary
-        "reject", "stop" -> ErrorColor
+        "reject", "stop" -> MaterialTheme.colorScheme.error
         "voice" -> MaterialTheme.colorScheme.tertiary
         "new_task" -> MaterialTheme.colorScheme.secondary
         "workflow" -> when (action.workflowId) {
             "review-pr" -> MaterialTheme.colorScheme.primary
-            "debug" -> ErrorColor
+            "debug" -> MaterialTheme.colorScheme.error
             "refactor" -> MaterialTheme.colorScheme.secondary
             "test" -> MaterialTheme.colorScheme.tertiary
             else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -261,12 +302,12 @@ private fun container(action: Action?, active: Boolean): Color = when {
     active -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.24f)
     else -> when (action?.type) {
         "approve" -> MaterialTheme.colorScheme.primary.copy(alpha = 0.11f)
-        "reject", "stop" -> ErrorColor.copy(alpha = 0.08f)
+        "reject", "stop" -> MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
         "voice" -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.11f)
         "new_task" -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.09f)
         "workflow" -> when (action.workflowId) {
             "review-pr" -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-            "debug" -> ErrorColor.copy(alpha = 0.08f)
+            "debug" -> MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
             "refactor" -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.09f)
             "test" -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.09f)
             else -> MaterialTheme.colorScheme.surface

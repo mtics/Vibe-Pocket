@@ -12,7 +12,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,15 +43,15 @@ internal fun Reasoning(
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val decrease = inputs.firstOrNull { it.id.endsWith("ccw") }
-    val increase = inputs.firstOrNull { it.id.endsWith("cw") && !it.id.endsWith("ccw") }
+    val decrease = reasoningInput(inputs, snapshot, delta = -1)
+    val increase = reasoningInput(inputs, snapshot, delta = 1)
 
     Row(
-        modifier = modifier.height(60.dp),
+        modifier = modifier.heightIn(min = 60.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Step(decrease, Icons.Default.Remove, snapshot, inFlightIds, onInput, blocked)
+        Step(decrease, Icons.Default.Remove, "Decrease reasoning", snapshot, inFlightIds, onInput, blocked)
         Column(
             modifier = Modifier.weight(1f),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -70,7 +71,7 @@ internal fun Reasoning(
                 fontWeight = FontWeight.Medium,
             )
         }
-        Step(increase, Icons.Default.Add, snapshot, inFlightIds, onInput, blocked)
+        Step(increase, Icons.Default.Add, "Increase reasoning", snapshot, inFlightIds, onInput, blocked)
     }
 }
 
@@ -78,16 +79,20 @@ internal fun Reasoning(
 private fun Step(
     input: Input?,
     icon: ImageVector,
+    contentDescription: String,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     blocked: Boolean,
 ) {
-    val gestures = if (input == null) emptyList() else Gesture.Kind.entries.filter { snapshot.inputEnabled(input.id, it) }
-    val pending = input?.let { candidate ->
-        inFlightIds.any { it.startsWith("input:${candidate.id}:") } && !snapshot.inputAllowsQueuedRepeat(candidate.id)
-    } == true
-    val enabled = !blocked && input != null && gestures.isNotEmpty() && !pending
+    if (input == null) {
+        Spacer(Modifier.size(42.dp))
+        return
+    }
+    val gestures = Gesture.Kind.entries.filter { snapshot.inputEnabled(input.id, it) }
+    val pending = inFlightIds.any { it.startsWith("input:${input.id}:") } &&
+        !snapshot.inputAllowsQueuedRepeat(input.id)
+    val enabled = !blocked && gestures.isNotEmpty() && !pending
     Box(
         modifier = Modifier
             .size(42.dp)
@@ -96,21 +101,21 @@ private fun Step(
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
             .combinedClickable(
                 enabled = enabled,
-                onClick = { if (Gesture.Kind.TAP in gestures) input?.id?.let { onInput(it, Gesture.Kind.TAP) } },
+                onClick = { if (Gesture.Kind.TAP in gestures) onInput(input.id, Gesture.Kind.TAP) },
                 onDoubleClick = if (Gesture.Kind.DOUBLE_TAP in gestures) {
-                    { input?.id?.let { onInput(it, Gesture.Kind.DOUBLE_TAP) } }
+                    { onInput(input.id, Gesture.Kind.DOUBLE_TAP) }
                 } else null,
                 onLongClick = if (Gesture.Kind.HOLD in gestures) {
-                    { input?.id?.let { onInput(it, Gesture.Kind.HOLD) } }
+                    { onInput(input.id, Gesture.Kind.HOLD) }
                 } else null,
             )
-            .alpha(if (input != null && gestures.isNotEmpty()) 1f else 0.62f),
+            .alpha(if (gestures.isNotEmpty()) 1f else 0.62f),
         contentAlignment = Alignment.Center,
     ) {
         if (pending) {
             CircularProgressIndicator(Modifier.size(19.dp), strokeWidth = 2.dp)
         } else {
-            Icon(icon, contentDescription = input?.label, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(22.dp))
         }
     }
 }

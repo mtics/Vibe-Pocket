@@ -8,12 +8,11 @@ import au.edu.uts.vibepocket.ui.control.InputButton
 import au.edu.uts.vibepocket.ui.control.LabelPlacement
 import au.edu.uts.vibepocket.ui.control.state.State
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,6 +28,8 @@ internal fun Actions(
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val byId = inputs.associateBy(Input::id)
@@ -38,10 +39,11 @@ internal fun Actions(
             snapshot = snapshot,
             inFlightIds = inFlightIds,
             onInput = onInput,
+            onVoiceStart = onVoiceStart,
+            onVoiceStop = onVoiceStop,
             modifier = modifier,
         )
         State.Kind.READY, State.Kind.QUESTION, State.Kind.DECISION, State.Kind.RUNNING -> Controller(
-            state = state,
             byId = byId,
             modeInput = modeInput,
             snapshot = snapshot,
@@ -49,6 +51,8 @@ internal fun Actions(
             inFlightIds = inFlightIds,
             onInput = onInput,
             onNavigationRepeat = onNavigationRepeat,
+            onVoiceStart = onVoiceStart,
+            onVoiceStop = onVoiceStop,
             modifier = modifier,
         )
     }
@@ -56,7 +60,6 @@ internal fun Actions(
 
 @Composable
 private fun Controller(
-    state: State,
     byId: Map<String, Input>,
     modeInput: Input?,
     snapshot: Snapshot,
@@ -64,11 +67,17 @@ private fun Controller(
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     modifier: Modifier,
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val footer = listOfNotNull(byId["key_reject"], byId["key_stop"])
-        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 208.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Dpad(
                 inputs = listOf("key_up", "key_down", "key_left", "key_right").mapNotNull(byId::get),
                 snapshot = snapshot,
@@ -76,11 +85,13 @@ private fun Controller(
                 inFlightIds = inFlightIds,
                 onInput = onInput,
                 onNavigationRepeat = onNavigationRepeat,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
                 blocked = false,
-                modifier = Modifier.weight(1.15f).fillMaxHeight(),
+                modifier = Modifier.weight(1.15f).aspectRatio(1f),
             )
             Column(
-                modifier = Modifier.weight(0.85f).fillMaxHeight(),
+                modifier = Modifier.weight(0.85f),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 listOfNotNull(
@@ -95,27 +106,31 @@ private fun Controller(
                         snapshot = snapshot,
                         inFlightIds = inFlightIds,
                         onInput = onInput,
+                        onVoiceStart = onVoiceStart,
+                        onVoiceStop = onVoiceStop,
                         blocked = false,
                         labelPlacement = if (isMode) LabelPlacement.TEXT else LabelPlacement.BESIDE,
                         labelOverride = if (isMode) {
                             snapshot.desktop?.mode?.label?.takeIf(String::isNotBlank) ?: "Default"
                         } else null,
                         supportingLabel = if (isMode) "Mode" else null,
-                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                     )
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().height(60.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             footer.forEach { input ->
                 InputButton(
                     input = input,
                     snapshot = snapshot,
                     inFlightIds = inFlightIds,
                     onInput = onInput,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
                     blocked = false,
                     labelPlacement = LabelPlacement.BESIDE,
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    modifier = Modifier.weight(1f).heightIn(min = 60.dp),
                 )
             }
         }
@@ -128,10 +143,12 @@ private fun Error(
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     modifier: Modifier,
 ) {
     Column(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
     ) {
         listOfNotNull(byId["key_attach"], byId["key_new_task"]).forEach { input ->
@@ -140,9 +157,11 @@ private fun Error(
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
                 onInput = onInput,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
                 blocked = false,
                 labelPlacement = LabelPlacement.BESIDE,
-                modifier = Modifier.fillMaxWidth().height(64.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
             )
         }
     }

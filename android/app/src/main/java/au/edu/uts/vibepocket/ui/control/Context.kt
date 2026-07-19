@@ -2,7 +2,6 @@ package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Snapshot
-import au.edu.uts.vibepocket.ui.WaitingColor
 import au.edu.uts.vibepocket.ui.colorFor
 import au.edu.uts.vibepocket.ui.iconFor
 import au.edu.uts.vibepocket.ui.labelFor
@@ -12,7 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,14 +37,14 @@ internal fun Context(snapshot: Snapshot) {
     val desktop = snapshot.desktop
     val question = desktop?.question
     val activity = desktop?.activity ?: if (snapshot.status.state == "ready") Activity.IDLE else Activity.ERROR
-    val tint = if (question == null) colorFor(activity) else WaitingColor
+    val tint = if (question == null) colorFor(activity) else MaterialTheme.colorScheme.secondary
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .heightIn(min = 56.dp)
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 11.dp),
+            .padding(horizontal = 11.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (question != null) {

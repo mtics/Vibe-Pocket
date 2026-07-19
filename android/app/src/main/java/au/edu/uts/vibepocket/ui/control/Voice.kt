@@ -4,7 +4,7 @@ import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -18,6 +18,7 @@ internal fun Voice(
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     blocked: Boolean,
+    modifier: Modifier = Modifier,
 ) {
     input ?: return
     InputButton(
@@ -29,6 +30,6 @@ internal fun Voice(
         onVoiceStop = onVoiceStop,
         blocked = blocked,
         labelPlacement = LabelPlacement.BESIDE,
-        modifier = Modifier.fillMaxWidth().height(76.dp),
+        modifier = modifier.fillMaxWidth().heightIn(min = 64.dp),
     )
 }

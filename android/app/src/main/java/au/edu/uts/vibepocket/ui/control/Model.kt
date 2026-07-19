@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -49,17 +51,28 @@ internal fun Model(
     modifier: Modifier = Modifier,
 ) {
     val pending = inFlightIds.any { it.startsWith("model:") }
-    val enabled = !blocked && !pending && snapshot.capabilities.model && state.available &&
-        snapshot.desktop?.question == null
+    val enabled = modelSelectionAllowed(
+        blocked = blocked,
+        pending = pending,
+        capability = snapshot.capabilities.model,
+        available = state.available,
+        hasQuestion = snapshot.desktop?.question != null,
+        foreground = snapshot.desktop?.foreground == true,
+        fresh = snapshot.transportFresh,
+    )
     var showOptions by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(enabled) {
+        if (!enabled) showOptions = false
+    }
 
     Row(
         modifier = modifier
-            .height(60.dp)
+            .heightIn(min = 60.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-            .clickable(enabled = enabled) { showOptions = true }
+            .clickable(enabled = enabled) { if (enabled) showOptions = true }
             .alpha(if (enabled) 1f else 0.62f)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -98,6 +111,7 @@ internal fun Model(
             )
             state.options.forEach { option ->
                 val optionPending = inFlightIds.contains("model:${option.id}")
+                val optionEnabled = enabled && !optionPending && !option.selected
                 ListItem(
                     headlineContent = { Text(option.label) },
                     supportingContent = if (option.selected) ({ Text("Current model") }) else null,
@@ -106,8 +120,8 @@ internal fun Model(
                         option.selected -> ({ Icon(Icons.Default.Check, contentDescription = "Selected") })
                         else -> null
                     },
-                    modifier = Modifier.fillMaxWidth().clickable(enabled = !pending && !option.selected) {
-                        if (onModel(option.id)) showOptions = false
+                    modifier = Modifier.fillMaxWidth().clickable(enabled = optionEnabled) {
+                        if (optionEnabled && onModel(option.id)) showOptions = false
                     },
                 )
             }
@@ -115,3 +129,13 @@ internal fun Model(
         }
     }
 }
+
+internal fun modelSelectionAllowed(
+    blocked: Boolean,
+    pending: Boolean,
+    capability: Boolean,
+    available: Boolean,
+    hasQuestion: Boolean,
+    foreground: Boolean,
+    fresh: Boolean,
+): Boolean = !blocked && !pending && capability && available && !hasQuestion && foreground && fresh

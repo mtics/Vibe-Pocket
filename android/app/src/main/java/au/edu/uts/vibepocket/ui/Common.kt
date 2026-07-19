@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -53,6 +54,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -65,7 +67,7 @@ import kotlin.math.min
 @Composable
 internal fun Section(label: String) {
     Row(
-        modifier = Modifier.fillMaxWidth().height(26.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 26.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
@@ -132,14 +134,20 @@ internal fun joystickInput(
     return inputs[direction]
 }
 
+@Composable
 internal fun colorFor(state: Activity): Color = when (state) {
-    Activity.IDLE -> IdleColor
-    Activity.UNREAD -> UnreadColor
-    Activity.THINKING -> ThinkingColor
-    Activity.EXECUTING -> ExecutingColor
-    Activity.WAITING -> WaitingColor
-    Activity.COMPLETE -> CompleteColor
-    Activity.ERROR -> ErrorColor
+    Activity.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
+    Activity.UNREAD -> contrastingColor(
+        preferred = UnreadColor,
+        background = MaterialTheme.colorScheme.surface,
+        fallback = MaterialTheme.colorScheme.tertiary,
+        minimumRatio = 3f,
+    )
+    Activity.THINKING -> MaterialTheme.colorScheme.tertiary
+    Activity.EXECUTING -> MaterialTheme.colorScheme.primary
+    Activity.WAITING -> MaterialTheme.colorScheme.secondary
+    Activity.COMPLETE -> MaterialTheme.colorScheme.primary
+    Activity.ERROR -> MaterialTheme.colorScheme.error
 }
 
 internal fun iconFor(state: Activity): ImageVector = when (state) {
@@ -194,3 +202,22 @@ internal fun iconForDirection(inputId: String): ImageVector = when {
 internal fun profileColor(value: String?): Color = runCatching {
     Color(android.graphics.Color.parseColor(value))
 }.getOrDefault(CompleteColor)
+
+internal fun contrastRatio(foreground: Color, background: Color): Float {
+    val lighter = maxOf(foreground.luminance(), background.luminance())
+    val darker = minOf(foreground.luminance(), background.luminance())
+    return (lighter + 0.05f) / (darker + 0.05f)
+}
+
+internal fun contrastingColor(
+    preferred: Color,
+    background: Color,
+    fallback: Color,
+    minimumRatio: Float = 4.5f,
+): Color = if (contrastRatio(preferred, background) >= minimumRatio) preferred else fallback
+
+internal fun layerSemanticsLabel(index: Int, name: String): String {
+    val ordinal = "Layer ${index + 1}"
+    val trimmed = name.trim()
+    return if (trimmed.isBlank() || trimmed.equals(ordinal, ignoreCase = true)) ordinal else "$ordinal: $trimmed"
+}

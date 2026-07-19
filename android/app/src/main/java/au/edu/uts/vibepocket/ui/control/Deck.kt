@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
@@ -30,6 +30,8 @@ internal fun Deck(
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -42,7 +44,7 @@ internal fun Deck(
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
-            modifier = Modifier.fillMaxWidth().height(180.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Dpad(
@@ -52,6 +54,8 @@ internal fun Deck(
                 inFlightIds = inFlightIds,
                 onInput = onInput,
                 onNavigationRepeat = onNavigationRepeat,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
                 blocked = blocked,
                 modifier = Modifier.weight(0.92f).fillMaxHeight(),
             )
@@ -60,6 +64,8 @@ internal fun Deck(
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
                 onInput = onInput,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
                 blocked = blocked,
                 modifier = Modifier.weight(1f).fillMaxSize(),
             )
@@ -75,9 +81,11 @@ internal fun Deck(
                             onInput = onInput,
                             navigationRepeatEnabled = snapshot.supportsHidNavigationRepeat(input.id, hidNavigationAvailable),
                             onNavigationRepeat = onNavigationRepeat,
+                            onVoiceStart = onVoiceStart,
+                            onVoiceStop = onVoiceStop,
                             blocked = blocked,
                             labelPlacement = LabelPlacement.BESIDE,
-                            modifier = Modifier.weight(1f).height(52.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 52.dp),
                         )
                     }
                 }
@@ -92,6 +100,8 @@ private fun Faces(
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     blocked: Boolean,
     modifier: Modifier,
 ) {
@@ -109,6 +119,8 @@ private fun Faces(
                         snapshot = snapshot,
                         inFlightIds = inFlightIds,
                         onInput = onInput,
+                        onVoiceStart = onVoiceStart,
+                        onVoiceStop = onVoiceStop,
                         blocked = blocked,
                         labelPlacement = LabelPlacement.BESIDE,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -127,6 +139,8 @@ internal fun Dpad(
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     blocked: Boolean,
     modifier: Modifier,
 ) {
@@ -154,6 +168,8 @@ internal fun Dpad(
                     onInput = onInput,
                     navigationRepeatEnabled = snapshot.supportsHidNavigationRepeat(input.id, hidNavigationAvailable),
                     onNavigationRepeat = onNavigationRepeat,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
                     blocked = blocked,
                     labelPlacement = LabelPlacement.HIDDEN,
                     shape = CircleShape,

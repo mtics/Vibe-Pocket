@@ -6,7 +6,7 @@ import au.edu.uts.vibepocket.profile.Input
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -17,6 +17,8 @@ internal fun Workflows(
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -28,16 +30,11 @@ internal fun Workflows(
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
                 onInput = onInput,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
                 blocked = blocked,
                 labelPlacement = LabelPlacement.BELOW,
-                labelOverride = when (input.id) {
-                    "joystick_up" -> "Review PR"
-                    "joystick_down" -> "Debug"
-                    "joystick_left" -> "Refactor"
-                    "joystick_right" -> "Tests"
-                    else -> input.label
-                },
-                modifier = Modifier.weight(1f).height(72.dp),
+                modifier = Modifier.weight(1f).heightIn(min = 72.dp),
             )
         }
     }

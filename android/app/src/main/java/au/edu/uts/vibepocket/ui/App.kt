@@ -13,13 +13,21 @@ import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.session.Feedback
 import au.edu.uts.vibepocket.session.Session
 import au.edu.uts.vibepocket.ui.control.Screen
+import au.edu.uts.vibepocket.ui.control.Voice
+import au.edu.uts.vibepocket.ui.control.keyInputs
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeContent
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Build
@@ -61,12 +69,16 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
+internal fun voiceStopTarget(ownerInputId: String?, visibleInputId: String): String =
+    ownerInputId ?: visibleInputId
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun App(viewModel: Session) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var voiceOwnerInputId by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmReset by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
@@ -100,7 +112,7 @@ internal fun App(viewModel: Session) {
         hidController.start()
         if (pairRequested && hidController.state.value.enabled) launchDiscoverable()
     }
-    val bluetoothPermissions = remember {
+    val pairPermissions = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
         } else {
@@ -109,8 +121,8 @@ internal fun App(viewModel: Session) {
     }
     val nearbyPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        if (bluetoothPermissions.all { grants[it] == true }) {
+    ) {
+        if (hidController.hasConnectPermission() && hidController.hasAdvertisePermission()) {
             hidController.start()
             if (pairRequested) {
                 if (hidController.state.value.enabled) launchDiscoverable()
@@ -123,13 +135,16 @@ internal fun App(viewModel: Session) {
     }
 
     LaunchedEffect(hidController) {
-        if (hidController.hasPermissions()) hidController.start()
+        if (hidController.hasConnectPermission()) hidController.start()
     }
 
-    DisposableEffect(lifecycleOwner, viewModel, inputOrchestrator) {
+    DisposableEffect(lifecycleOwner, viewModel, inputOrchestrator, hidController) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> viewModel.setForeground(true)
+                Lifecycle.Event.ON_START -> {
+                    hidController.start()
+                    viewModel.setForeground(true)
+                }
                 Lifecycle.Event.ON_STOP -> {
                     inputOrchestrator.release()
                     viewModel.setForeground(false)
@@ -139,6 +154,7 @@ internal fun App(viewModel: Session) {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            hidController.start()
             viewModel.setForeground(true)
         }
         onDispose {
@@ -209,11 +225,15 @@ internal fun App(viewModel: Session) {
     val onVoiceStart: (String) -> Boolean = { inputId ->
         val started = inputOrchestrator.startVoice(state.snapshot, inputId)
         started.also {
-            if (it) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            if (it) {
+                voiceOwnerInputId = inputId
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            }
         }
     }
     val onVoiceStop: (String) -> Unit = { inputId ->
-        inputOrchestrator.stopVoice(inputId)
+        inputOrchestrator.stopVoice(voiceStopTarget(voiceOwnerInputId, inputId))
+        voiceOwnerInputId = null
     }
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -233,19 +253,42 @@ internal fun App(viewModel: Session) {
     val onPairHid: () -> Unit = {
         pairRequested = true
         when {
-            !hidController.hasPermissions() -> nearbyPermissionLauncher.launch(bluetoothPermissions)
+            !hidController.hasConnectPermission() || !hidController.hasAdvertisePermission() ->
+                nearbyPermissionLauncher.launch(pairPermissions)
             !hidState.enabled -> bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             else -> launchDiscoverable()
         }
     }
+    val snapshot = state.snapshot
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = {
             SnackbarHost(
                 hostState = snackbar,
-                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 104.dp),
+                modifier = Modifier.padding(horizontal = 12.dp),
             )
+        },
+        bottomBar = {
+            snapshot?.let { current ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background)
+                        .windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Bottom))
+                        .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 4.dp),
+                ) {
+                    Voice(
+                        input = keyInputs(current).firstOrNull { it.id == "key_voice" },
+                        snapshot = current,
+                        inFlightIds = state.inFlightIds,
+                        onInput = onInput,
+                        onVoiceStart = onVoiceStart,
+                        onVoiceStop = onVoiceStop,
+                        blocked = false,
+                    )
+                }
+            }
         },
         topBar = {
             TopAppBar(
@@ -277,7 +320,6 @@ internal fun App(viewModel: Session) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            val snapshot = state.snapshot
             if (snapshot == null) {
                 Loading(isRefreshing = state.isRefreshing, error = state.error, onRefresh = viewModel::refresh)
             } else {
@@ -328,7 +370,7 @@ internal fun App(viewModel: Session) {
             onPairHid = onPairHid,
             onConnectHid = hidController::connect,
             onRefreshHid = {
-                if (hidController.hasPermissions()) hidController.start()
+                if (hidController.hasConnectPermission()) hidController.start()
                 hidController.refreshHosts()
             },
             onLayer = onLayer,

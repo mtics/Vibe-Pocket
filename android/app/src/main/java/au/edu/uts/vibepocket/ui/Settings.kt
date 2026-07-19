@@ -9,6 +9,7 @@ import au.edu.uts.vibepocket.profile.Choice
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
+import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.profile.Workflow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,9 +22,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,6 +56,8 @@ import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -75,10 +80,32 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-private data class Target(
-    val input: Input,
+internal data class MappingTarget(
+    val layerId: String,
+    val inputId: String,
     val gesture: Gesture.Kind,
 )
+
+internal data class ResolvedMappingTarget(
+    val layer: Layer,
+    val input: Input,
+    val binding: Binding?,
+    val action: Action?,
+)
+
+internal fun resolveMappingTarget(profile: Profile?, target: MappingTarget): ResolvedMappingTarget? {
+    val layer = profile?.layers?.firstOrNull { it.id == target.layerId } ?: return null
+    val input = profile.inputs.firstOrNull { it.id == target.inputId } ?: return null
+    return ResolvedMappingTarget(
+        layer = layer,
+        input = input,
+        binding = layer.bindings[target.inputId],
+        action = layer.bindings[target.inputId]?.actions?.get(target.gesture),
+    )
+}
+
+internal fun Binding?.allowsVoiceMapping(): Boolean =
+    this?.actions.orEmpty().keys.none { it != Gesture.Kind.TAP }
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -107,10 +134,11 @@ internal fun Settings(
     val layer = profile?.layers?.firstOrNull { it.id == controller.activeLayerId } ?: profile?.layers?.firstOrNull()
     var url by remember(config.normalizedUrl) { mutableStateOf(config.normalizedUrl) }
     var saveTarget by remember { mutableStateOf<Config?>(null) }
-    var target by remember { mutableStateOf<Target?>(null) }
+    var target by remember { mutableStateOf<MappingTarget?>(null) }
     var layerName by rememberSaveable(layer?.id, layer?.name) { mutableStateOf(layer?.name.orEmpty()) }
     var confirmDisconnect by remember { mutableStateOf(false) }
     var recoveryExpanded by rememberSaveable { mutableStateOf(false) }
+    val errorHost = remember { SnackbarHostState() }
     val busy = inFlightIds.any { pending ->
         pending.startsWith("mapping:")
             || pending.startsWith("rename:")
@@ -133,18 +161,33 @@ internal fun Settings(
         }
     }
 
+    LaunchedEffect(profile, target) {
+        val selected = target ?: return@LaunchedEffect
+        if (resolveMappingTarget(profile, selected) == null) target = null
+    }
+
+    LaunchedEffect(connectionError) {
+        connectionError?.takeIf { it.isNotBlank() }?.let { errorHost.showSnackbar(it) }
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.background,
         dragHandle = { BottomSheetDefaults.DragHandle() },
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .imePadding(),
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 72.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 FilledTonalButton(
@@ -156,7 +199,7 @@ internal fun Settings(
                         }
                     },
                     enabled = connectionDirty && inFlightIds.isEmpty(),
-                    modifier = Modifier.width(96.dp).height(44.dp),
+                    modifier = Modifier.widthIn(min = 96.dp).heightIn(min = 44.dp),
                     shape = RoundedCornerShape(6.dp),
                     contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
                 ) {
@@ -252,7 +295,7 @@ internal fun Settings(
                     FilledTonalButton(
                         onClick = { onRename(layer.id, layerName) },
                         enabled = !busy && layerName.trim().isNotEmpty() && layerName.trim() != layer.name,
-                        modifier = Modifier.height(48.dp),
+                        modifier = Modifier.heightIn(min = 48.dp),
                         shape = RoundedCornerShape(6.dp),
                     ) { Text("Rename") }
                 }
@@ -284,7 +327,13 @@ internal fun Settings(
                         binding = layer.bindings[input.id],
                         catalog = controller.choices,
                         enabled = !busy,
-                        onSelect = { gesture -> target = Target(input, gesture) },
+                        onSelect = { gesture ->
+                            target = MappingTarget(
+                                layerId = layer.id,
+                                inputId = input.id,
+                                gesture = gesture,
+                            )
+                        },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f))
                 }
@@ -300,7 +349,7 @@ internal fun Settings(
                 }
                 OutlinedButton(
                     onClick = onResetProfile,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                     enabled = !busy,
                     shape = RoundedCornerShape(6.dp),
                 ) {
@@ -314,7 +363,7 @@ internal fun Settings(
             SectionHeader(Icons.AutoMirrored.Filled.Logout, "Connection")
             OutlinedButton(
                 onClick = { confirmDisconnect = true },
-                modifier = Modifier.fillMaxWidth().height(50.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
                 shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
             ) {
@@ -322,24 +371,33 @@ internal fun Settings(
                 Spacer(Modifier.width(8.dp))
                 Text("Disconnect and forget pairing")
             }
-            Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(24.dp))
+            }
+            SnackbarHost(
+                hostState = errorHost,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
         }
     }
 
     target?.let { selected ->
-        val selectedLayer = layer ?: return@let
         val selectedController = controller ?: return@let
+        val resolved = resolveMappingTarget(profile, selected) ?: return@let
         ActionPicker(
             target = selected,
-            currentAction = selectedLayer.bindings[selected.input.id]?.actions?.get(selected.gesture),
+            inputLabel = resolved.input.label,
+            binding = resolved.binding,
+            currentAction = resolved.action,
             catalog = selectedController.choices,
             onDismiss = { target = null },
             onSelect = { actionId ->
-                onUpdate(selectedLayer.id, selected.input.id, selected.gesture, actionId)
+                onUpdate(selected.layerId, selected.inputId, selected.gesture, actionId)
                 target = null
             },
             onClear = {
-                onClear(selectedLayer.id, selected.input.id, selected.gesture)
+                onClear(selected.layerId, selected.inputId, selected.gesture)
                 target = null
             },
         )
@@ -388,21 +446,31 @@ private fun SettingsLayers(
         layers.forEachIndexed { index, layer ->
             val selected = layer.id == activeLayerId
             val color = profileColor(layer.color)
+            val accent = contrastingColor(
+                preferred = color,
+                background = MaterialTheme.colorScheme.surface,
+                fallback = MaterialTheme.colorScheme.onSurface,
+                minimumRatio = 4.5f,
+            )
             val loading = "layer:${layer.id}" in inFlightIds
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp)
+                    .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(if (selected) color.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface)
-                    .border(if (selected) 2.dp else 1.dp, color.copy(alpha = if (selected) 1f else 0.42f), RoundedCornerShape(6.dp))
+                    .border(
+                        if (selected) 2.dp else 1.dp,
+                        accent.copy(alpha = if (selected) 1f else 0.55f),
+                        RoundedCornerShape(6.dp),
+                    )
                     .clickable(enabled = enabled && !selected && !loading, onClick = { onLayer(layer.id) }),
                 contentAlignment = Alignment.Center,
             ) {
                 if (loading) {
-                    CircularProgressIndicator(Modifier.size(17.dp), color = color, strokeWidth = 2.dp)
+                    CircularProgressIndicator(Modifier.size(17.dp), color = accent, strokeWidth = 2.dp)
                 } else {
-                    Text("${index + 1}", color = color, fontWeight = FontWeight.Bold)
+                    Text("${index + 1}", color = accent, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -489,7 +557,9 @@ private fun MappingRow(
 
 @Composable
 private fun ActionPicker(
-    target: Target,
+    target: MappingTarget,
+    inputLabel: String,
+    binding: Binding?,
     currentAction: Action?,
     catalog: List<Choice>,
     onDismiss: () -> Unit,
@@ -498,7 +568,7 @@ private fun ActionPicker(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${target.input.label} · ${target.gesture.shortLabel}") },
+        title = { Text("$inputLabel · ${target.gesture.shortLabel}") },
         text = {
             Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
                 if (currentAction != null) {
@@ -511,15 +581,25 @@ private fun ActionPicker(
                     target.gesture == Gesture.Kind.TAP || entry.action.type != "voice"
                 }.forEach { entry ->
                     val selected = entry.action == currentAction
-                    Row(
+                    val enabled = entry.action.type != "voice" || binding.allowsVoiceMapping()
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onSelect(entry.id) }
+                            .clickable(enabled = enabled) { onSelect(entry.id) }
+                            .alpha(if (enabled) 1f else 0.48f)
                             .padding(horizontal = 4.dp, vertical = 11.dp),
-                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(entry.label, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(entry.label, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary)
+                        }
+                        if (!enabled) {
+                            Text(
+                                "Clear Double and Hold mappings first",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 }
             }

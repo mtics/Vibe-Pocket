@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +28,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,7 +50,7 @@ internal fun Hardware(
             Icon(
                 if (state.connected) Icons.Default.BluetoothConnected else Icons.Default.Bluetooth,
                 contentDescription = null,
-                tint = if (state.connected) CompleteColor else MaterialTheme.colorScheme.tertiary,
+                tint = if (state.connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.size(21.dp),
             )
             Spacer(Modifier.width(8.dp))
@@ -65,7 +68,7 @@ internal fun Hardware(
             FilledTonalButton(
                 onClick = onPair,
                 enabled = state.supported,
-                modifier = Modifier.height(48.dp),
+                modifier = Modifier.heightIn(min = 48.dp),
                 shape = RoundedCornerShape(6.dp),
                 contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
             ) {
@@ -77,13 +80,24 @@ internal fun Hardware(
         state.pairedHosts.take(4).forEach { host ->
             val connected = host.address == state.connectedHostAddress
             val connecting = host.address == state.connectingHostAddress
+            val selectable = bluetoothHostSelectable(state.registered, connected, connecting)
             FilledTonalButton(
-                onClick = { onConnect(host.address) },
-                enabled = state.registered && !connecting,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
+                onClick = { if (selectable) onConnect(host.address) },
+                enabled = selectable,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .semantics {
+                        selected = connected
+                        if (connected) stateDescription = "Connected"
+                    },
                 shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = if (connected) CompleteColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
+                    containerColor = if (connected) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
                 ),
             ) {
                 if (connecting) {
@@ -101,3 +115,9 @@ internal fun Hardware(
         }
     }
 }
+
+internal fun bluetoothHostSelectable(
+    registered: Boolean,
+    connected: Boolean,
+    connecting: Boolean,
+): Boolean = registered && !connected && !connecting

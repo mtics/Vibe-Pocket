@@ -75,7 +75,7 @@ internal fun Stage(state: State, modifier: Modifier = Modifier) {
                     it,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
+                    maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -91,12 +91,12 @@ internal fun Stage(state: State, modifier: Modifier = Modifier) {
                     color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
             if (state.kind == State.Kind.RUNNING) {
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(12.dp))
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)),
                     color = accent,
