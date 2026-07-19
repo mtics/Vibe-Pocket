@@ -91,14 +91,14 @@ class PocketSnapshotParserTest {
     }
 
     @Test
-    fun agentNavigationIsDisabledWhenCodexIsNotFrontmost() {
+    fun nativeAgentNavigationRemainsEnabledWhenCodexIsNotFrontmost() {
         val root = JSONObject(CONTROLLER_SNAPSHOT)
         root.getJSONObject("controller").put("foreground", false)
 
         val snapshot = parsePocketSnapshot(root)
 
-        assertFalse(snapshot.agentFocusEnabled("agent-0123456789abcdef01234567"))
-        assertFalse(snapshot.inputEnabled("touch"))
+        assertTrue(snapshot.agentFocusEnabled("agent-0123456789abcdef01234567"))
+        assertTrue(snapshot.inputEnabled("touch"))
     }
 
     @Test

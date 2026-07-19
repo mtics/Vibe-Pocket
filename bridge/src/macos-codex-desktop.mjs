@@ -9,7 +9,6 @@ export class MacCodexDesktopController {
   #threadCatalog;
   #wait;
   #voiceActive = false;
-  #foreground = false;
   #lastAgents = [];
   #operationQueue = Promise.resolve();
 
@@ -29,7 +28,6 @@ export class MacCodexDesktopController {
 
   async status() {
     const result = await this.#invoke("status");
-    this.#foreground = result.foreground === true;
     if (!this.#threadCatalog) return result;
     try {
       const agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
@@ -39,7 +37,7 @@ export class MacCodexDesktopController {
         agents,
         controls: {
           ...result.controls,
-          "focus-agent": this.#foreground && agents.some((agent) => !agent.focused),
+          "focus-agent": agents.some((agent) => !agent.focused),
         },
       };
     } catch {
@@ -49,7 +47,7 @@ export class MacCodexDesktopController {
         agents,
         controls: {
           ...result.controls,
-          "focus-agent": this.#foreground && agents.some((agent) => !agent.focused),
+          "focus-agent": agents.some((agent) => !agent.focused),
         },
       };
     }
@@ -113,9 +111,6 @@ export class MacCodexDesktopController {
 
   async focusAgent(agentId) {
     if (!this.#threadCatalog) return this.#invoke("focus-agent", [agentId]);
-    if (!this.#foreground) {
-      throw new Error("Open Codex on the Mac before selecting another task.");
-    }
     return this.#threadCatalog.focusAgent(agentId);
   }
 

@@ -121,7 +121,7 @@ test("resolves and focuses Agent keys through native task links instead of Acces
   assert.ok(!calls.some((call) => call[1] === "focus-agent"));
 });
 
-test("disables native Agent navigation while Codex is not frontmost", async () => {
+test("allows native Agent navigation while Codex is not frontmost", async () => {
   let focused = false;
   const controller = new MacCodexDesktopController({
     socketPath: "/tmp/vibe-pocket-test.sock",
@@ -140,9 +140,9 @@ test("disables native Agent navigation while Codex is not frontmost", async () =
   });
 
   const status = await controller.status();
-  assert.equal(status.controls["focus-agent"], false);
-  await assert.rejects(() => controller.focusAgent(status.agents[0].id), /Open Codex on the Mac/i);
-  assert.equal(focused, false);
+  assert.equal(status.controls["focus-agent"], true);
+  await controller.focusAgent(status.agents[0].id);
+  assert.equal(focused, true);
 });
 
 test("retains the last task catalog across a transient catalog refresh failure", async () => {

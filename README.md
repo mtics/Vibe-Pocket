@@ -7,7 +7,7 @@ scoped semantic operations.
 
 ## Controller
 
-The Android 0.7.7 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.8 controller uses protocol v5 and a versioned profile from the
 M5:
 
 - The Agent list keeps the focused desktop task first, then ranks tasks by
@@ -28,8 +28,10 @@ M5:
   carry structured user input continue through the authenticated Bridge.
 - Agent focus uses a read-only `codex app-server` task catalog and the native
   `codex://threads/<id>` link. The catalog never resumes or modifies a task,
-  and macOS opens the link in the background without activating Codex. Native
-  task navigation does not wait behind an Accessibility status scan.
+  and macOS routes the link without pointer or Accessibility synthesis. Native
+  task navigation can start while Codex is not frontmost, may bring the target
+  window forward when Codex handles the URL, and does not wait behind an
+  Accessibility status scan.
   Read-only rollout lifecycle markers add active tasks from projects whose task
   rows are not mounted in the current sidebar.
 - New task, Clear, Access, and workflows use narrow Bridge operations. Clear

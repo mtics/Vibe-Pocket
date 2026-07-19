@@ -11,8 +11,8 @@ android {
         applicationId = "au.edu.uts.vibepocket"
         minSdk = 29
         targetSdk = 37
-        versionCode = 19
-        versionName = "0.7.7"
+        versionCode = 20
+        versionName = "0.7.8"
     }
 
     buildFeatures {
