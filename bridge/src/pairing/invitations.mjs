@@ -31,6 +31,7 @@ export class Invitations {
     const url = new URL("vibepocket://pair");
     url.searchParams.set("origin", baseUrl);
     url.searchParams.set("code", code);
+    url.searchParams.set("expiresAt", new Date(expiresAt).toISOString());
     return {
       pairingUrl: url.toString(),
       expiresAt: new Date(expiresAt).toISOString(),
@@ -53,13 +54,15 @@ export class Invitations {
     if (invitation.nonceDigest && invitation.nonceDigest !== nonceDigest) throw unavailable();
     if (!invitation.credential) {
       invitation.nonceDigest = nonceDigest;
-      invitation.credential = this.issue();
+      invitation.credential = this.issue(new Date(invitation.expiresAt).toISOString());
     }
     return {
       baseUrl: invitation.baseUrl,
       token: invitation.credential,
-      protocolVersion: 6,
-      capabilities: ["device_credentials", "events", "virtual_hardware"],
+      credentialState: "pending",
+      credentialExpiresAt: new Date(invitation.expiresAt).toISOString(),
+      protocolVersion: 7,
+      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit"],
     };
   }
 

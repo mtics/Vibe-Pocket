@@ -5,14 +5,21 @@ import { Invitations } from "../pairing/invitations.mjs";
 import { readJson } from "./json.mjs";
 import { manage, normalizeDeadlines, RequestTracker } from "./request-tracker.mjs";
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 export function create({
   service,
   events,
   token,
   credentials,
-  invitations = new Invitations({ issue: () => token }),
+  invitations = new Invitations({
+    issue: (expiresAt) => {
+      if (typeof credentials?.issue !== "function") {
+        throw new Failure(503, "pairing_unavailable", "Device credential issuance is unavailable.");
+      }
+      return credentials.issue(expiresAt);
+    },
+  }),
   deadlines: deadlineOverrides = {},
 }) {
   const deadlines = normalizeDeadlines(deadlineOverrides);
@@ -43,6 +50,14 @@ export function create({
         sendJson(request, response, 401, { error: { code: "unauthorized", message: "Pair Vibe Pocket before connecting." } });
         return;
       }
+      if (request.method === "POST" && url.pathname === "/v1/pairing/commit") {
+        requireBodyless(request);
+        if (!principal.revocable || !credentials?.activate(bearer(request))) {
+          throw new Failure(400, "device_credential_required", "Only a paired device can commit pairing.");
+        }
+        sendJson(request, response, 200, { paired: true });
+        return;
+      }
       if (request.method === "DELETE" && url.pathname === "/v1/pocket/devices/current") {
         requireBodyless(request);
         if (!principal.revocable || !credentials?.revoke(bearer(request))) {
@@ -52,6 +67,7 @@ export function create({
         sendJson(request, response, 200, { revoked: true });
         return;
       }
+      requireActive(principal);
       if (request.method === "GET" && url.pathname === "/v1/pocket/snapshot") {
         requireBodyless(request);
         sendJson(request, response, 200, await service.snapshot());
@@ -100,21 +116,24 @@ function authenticate(request, token, credentials) {
   if (raw == null) return null;
   const resolved = credentials?.resolve?.(raw);
   if (resolved) {
-    return Object.freeze({
+    const principal = Object.freeze({
       ...resolved,
       role: resolved.role ?? (resolved.revocable ? "device" : "root"),
+      state: resolved.state ?? "active",
     });
+    return principal.valid?.() === false ? null : principal;
   }
   if (credentials?.accepts(raw)) {
     return {
       id: identity(raw),
       role: equal(raw, token) ? "root" : "device",
+      state: "active",
       revocable: raw !== token,
       valid: () => credentials.accepts(raw),
     };
   }
   if (!equal(raw, token)) return null;
-  return { id: identity(raw), role: "root", revocable: false, valid: () => true };
+  return { id: identity(raw), role: "root", state: "active", revocable: false, valid: () => true };
 }
 
 function bearer(request) {
@@ -135,6 +154,12 @@ function equal(candidate, expected) {
 function requireRoot(principal) {
   if (principal.role !== "root") {
     throw new Failure(403, "root_credential_required", "This endpoint requires the local bridge root credential.");
+  }
+}
+
+function requireActive(principal) {
+  if (principal.state !== "active") {
+    throw new Failure(403, "credential_not_active", "Complete pairing before using this credential.");
   }
 }
 

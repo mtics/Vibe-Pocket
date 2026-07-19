@@ -35,7 +35,7 @@ export async function main() {
     desktop,
   });
   const credentials = new Credentials({ path: config.devicesPath, rootToken: config.token });
-  const invitations = new Invitations({ issue: () => credentials.issue() });
+  const invitations = new Invitations({ issue: (expiresAt) => credentials.issue(expiresAt) });
   const server = create({ service, events, token: config.token, credentials, invitations });
   const admin = createAdmin({ invitations });
 

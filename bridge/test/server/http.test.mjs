@@ -11,7 +11,7 @@ import { Invitations } from "../../src/pairing/invitations.mjs";
 const TOKEN = "test-token-with-at-least-24-characters";
 const DEVICE_TOKEN = "vp1.testdevice.abcdefghijklmnopqrstuvwxyzABCDEFG";
 
-async function withServer(run, { eventHub = null, deadlines = {} } = {}) {
+async function withServer(run, { eventHub = null, deadlines = {}, activationFailure = null } = {}) {
   const calls = [];
   const commandPrincipals = [];
   const attachedThreads = [];
@@ -33,20 +33,39 @@ async function withServer(run, { eventHub = null, deadlines = {} } = {}) {
     },
   };
   const events = eventHub ?? { connect() { throw new Error("SSE is not used in this test."); } };
-  const invitations = new Invitations({ issue: () => DEVICE_TOKEN });
-  let deviceActive = true;
+  let deviceState = "active";
+  const invitations = new Invitations({
+    issue: () => {
+      deviceState = "pending";
+      return DEVICE_TOKEN;
+    },
+  });
   const credentials = {
-    accepts: (candidate) => candidate === DEVICE_TOKEN && deviceActive,
+    accepts: (candidate) => candidate === DEVICE_TOKEN && deviceState != null,
     resolve: (candidate) => {
-      if (candidate === DEVICE_TOKEN && deviceActive) {
-        return { id: "device:test", role: "device", revocable: true, valid: () => deviceActive };
+      if (candidate === DEVICE_TOKEN && deviceState != null) {
+        return {
+          id: "device:test",
+          role: "device",
+          state: deviceState,
+          revocable: true,
+          valid: () => deviceState != null,
+        };
       }
-      if (candidate === TOKEN) return { id: "root:test", role: "root", revocable: false, valid: () => true };
+      if (candidate === TOKEN) {
+        return { id: "root:test", role: "root", state: "active", revocable: false, valid: () => true };
+      }
       return null;
     },
+    activate: (candidate) => {
+      if (candidate !== DEVICE_TOKEN || deviceState == null) return false;
+      if (deviceState === "pending" && activationFailure) throw activationFailure;
+      deviceState = "active";
+      return true;
+    },
     revoke: (candidate) => {
-      if (candidate !== DEVICE_TOKEN || !deviceActive) return false;
-      deviceActive = false;
+      if (candidate !== DEVICE_TOKEN || deviceState == null) return false;
+      deviceState = null;
       return true;
     },
   };
@@ -70,6 +89,7 @@ async function withServer(run, { eventHub = null, deadlines = {} } = {}) {
 }
 
 test("health check distinguishes reachability without exposing controller state", async () => {
+  assert.equal(PROTOCOL_VERSION, 7);
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/healthz`);
     assert.equal(response.status, 200);
@@ -111,11 +131,13 @@ test("snapshot and commands remain authenticated", async () => {
   });
 });
 
-test("pairing claims are public, phone-bound, and invitation creation is not exposed", async () => {
-  await withServer(async ({ baseUrl, invitations }) => {
+test("pairing claims stay gated until a bodyless, repeatable commit", async () => {
+  await withServer(async ({ baseUrl, invitations, calls, attachedThreads }) => {
     const invitation = invitations.create("https://m5.example.ts.net");
-    const code = new URL(invitation.pairingUrl).searchParams.get("code");
+    const pairingUrl = new URL(invitation.pairingUrl);
+    const code = pairingUrl.searchParams.get("code");
     const nonce = "n".repeat(43);
+    assert.equal(pairingUrl.searchParams.get("expiresAt"), invitation.expiresAt);
 
     const claim = await fetch(`${baseUrl}/v1/pairing/claim`, {
       method: "POST",
@@ -126,8 +148,10 @@ test("pairing claims are public, phone-bound, and invitation creation is not exp
     assert.deepEqual(await claim.json(), {
       baseUrl: "https://m5.example.ts.net",
       token: DEVICE_TOKEN,
-      protocolVersion: 6,
-      capabilities: ["device_credentials", "events", "virtual_hardware"],
+      credentialState: "pending",
+      credentialExpiresAt: invitation.expiresAt,
+      protocolVersion: 7,
+      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit"],
     });
 
     const replay = await fetch(`${baseUrl}/v1/pairing/claim`, {
@@ -136,6 +160,61 @@ test("pairing claims are public, phone-bound, and invitation creation is not exp
       body: JSON.stringify({ code, nonce: "o".repeat(43) }),
     });
     assert.equal(replay.status, 410);
+
+    const pendingRequests = await Promise.all([
+      fetch(`${baseUrl}/v1/pocket/snapshot`, {
+        headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+      }),
+      fetch(`${baseUrl}/v1/pocket/events`, {
+        headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+      }),
+      fetch(`${baseUrl}/v1/pocket/commands`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${DEVICE_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ kind: "stop" }),
+      }),
+      fetch(`${baseUrl}/v1/pocket/desktop/attach`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${DEVICE_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ threadId: "pending-thread" }),
+      }),
+    ]);
+    for (const response of pendingRequests) {
+      assert.equal(response.status, 403);
+      assert.equal((await response.json()).error.code, "credential_not_active");
+    }
+    assert.deepEqual(calls, []);
+    assert.deepEqual(attachedThreads, []);
+
+    const bodyRejected = await fetch(`${baseUrl}/v1/pairing/commit`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${DEVICE_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    assert.equal(bodyRejected.status, 400);
+    assert.equal((await bodyRejected.json()).error.code, "unexpected_body");
+
+    const commit = await fetch(`${baseUrl}/v1/pairing/commit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(commit.status, 200);
+    assert.deepEqual(await commit.json(), { paired: true });
+    const repeated = await fetch(`${baseUrl}/v1/pairing/commit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(repeated.status, 200);
+    assert.deepEqual(await repeated.json(), { paired: true });
 
     const deviceSnapshot = await fetch(`${baseUrl}/v1/pocket/snapshot`, {
       headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
@@ -162,6 +241,34 @@ test("pairing claims are public, phone-bound, and invitation creation is not exp
     });
     assert.equal(remoteCreation.status, 404);
   });
+});
+
+test("pending credentials can revoke and failed activation remains pending", async () => {
+  await withServer(async ({ baseUrl, invitations }) => {
+    const invitation = invitations.create("https://m5.example.ts.net");
+    const code = new URL(invitation.pairingUrl).searchParams.get("code");
+    await fetch(`${baseUrl}/v1/pairing/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, nonce: "p".repeat(43) }),
+    });
+
+    const commit = await fetch(`${baseUrl}/v1/pairing/commit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(commit.status, 500);
+    const gated = await fetch(`${baseUrl}/v1/pocket/snapshot`, {
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(gated.status, 403);
+    assert.equal((await gated.json()).error.code, "credential_not_active");
+    const revoked = await fetch(`${baseUrl}/v1/pocket/devices/current`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(revoked.status, 200);
+  }, { activationFailure: new Error("activation write failed") });
 });
 
 test("desktop task attachment is authenticated and forwards only the task ID", async () => {

@@ -17,22 +17,34 @@ test("pairing invitations contain only a short-lived claim code", () => {
   assert.equal(url.host, "pair");
   assert.equal(url.searchParams.get("origin"), "https://m5.example.ts.net");
   assert.equal(url.searchParams.get("code"), CODE);
+  assert.equal(url.searchParams.get("expiresAt"), "1970-01-01T00:05:01.000Z");
   assert.equal(invitation.pairingUrl.includes(TOKEN), false);
   assert.equal(invitation.expiresAt, "1970-01-01T00:05:01.000Z");
 });
 
-test("claiming is idempotent only for the same phone", () => {
-  const pairing = new Invitations({ issue: () => DEVICE_TOKEN, now: () => 1_000, random: () => CODE });
+test("a lost claim response retries the same credential only for the same phone nonce", () => {
+  const issued = [];
+  const pairing = new Invitations({
+    issue: (expiresAt) => {
+      issued.push(expiresAt);
+      return DEVICE_TOKEN;
+    },
+    now: () => 1_000,
+    random: () => CODE,
+  });
   pairing.create("https://m5.example.ts.net");
 
   const expected = {
     baseUrl: "https://m5.example.ts.net",
     token: DEVICE_TOKEN,
-    protocolVersion: 6,
-    capabilities: ["device_credentials", "events", "virtual_hardware"],
+    credentialState: "pending",
+    credentialExpiresAt: "1970-01-01T00:05:01.000Z",
+    protocolVersion: 7,
+    capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit"],
   };
   assert.deepEqual(pairing.claim(CODE, NONCE), expected);
   assert.deepEqual(pairing.claim(CODE, NONCE), expected);
+  assert.deepEqual(issued, ["1970-01-01T00:05:01.000Z"]);
   assert.throws(() => pairing.claim(CODE, "c".repeat(43)), /expired or has already been used/);
 });
 
