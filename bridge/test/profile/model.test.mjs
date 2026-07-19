@@ -16,7 +16,7 @@ import {
   workflowPrompt,
 } from "../../src/profile/model.mjs";
 
-test("migrates version 1 direct actions into version 3 tap gestures and defaults", () => {
+test("migrates legacy profiles and upgrades the default delete gesture", () => {
   const legacy = createDefault();
   legacy.version = 1;
   for (const layer of legacy.layers) {
@@ -24,14 +24,24 @@ test("migrates version 1 direct actions into version 3 tap gestures and defaults
       Object.entries(layer.bindings).map(([inputId, gestures]) => [inputId, gestures.tap]),
     );
   }
+  legacy.layers[0].bindings.key_clear = { type: "clear_input" };
 
   const migrated = normalize(legacy);
   assert.equal(migrated.version, VERSION);
   assert.deepEqual(migrated.layers[0].bindings.key_voice, { tap: { type: "voice" } });
   assert.deepEqual(bindingFor(migrated, "layer-1", "key_voice"), { type: "voice" });
   assert.equal(bindingFor(migrated, "layer-1", "key_voice", "hold"), null);
+  assert.deepEqual(bindingFor(migrated, "layer-1", "key_clear"), { type: "delete_backward" });
+  assert.deepEqual(bindingFor(migrated, "layer-1", "key_clear", "hold"), { type: "clear_input" });
   assert.match(workflowPrompt(migrated, "debug"), /Investigate the current failure/);
   assert.equal(migrated.layers[0].color, "#F4F4F2");
+});
+
+test("uses tap to delete and hold to clear on a new profile", () => {
+  const profile = createDefault();
+
+  assert.deepEqual(bindingFor(profile, "layer-1", "key_clear"), { type: "delete_backward" });
+  assert.deepEqual(bindingFor(profile, "layer-1", "key_clear", "hold"), { type: "clear_input" });
 });
 
 test("persists validated workflow prompts, layer colors, and layer actions", () => {

@@ -1,4 +1,4 @@
-export const VERSION = 3;
+export const VERSION = 4;
 
 const WORKFLOW_PROMPTS = Object.freeze({
   "review-pr": "Review the current change for correctness, security, regressions, and missing tests. Report concrete findings first.",
@@ -14,7 +14,7 @@ const INPUTS = [
   { id: "key_new_task", kind: "key", label: "New task", icon: "add" },
   { id: "key_stop", kind: "key", label: "Stop", icon: "stop" },
   { id: "key_mode", kind: "key", label: "Mode", icon: "cycle" },
-  { id: "key_clear", kind: "key", label: "Clear", icon: "clear" },
+  { id: "key_clear", kind: "key", label: "Delete", icon: "clear" },
   { id: "key_focus", kind: "key", label: "Next agent", icon: "agent" },
   { id: "key_up", kind: "key", label: "Up", icon: "up" },
   { id: "key_down", kind: "key", label: "Down", icon: "down" },
@@ -50,7 +50,9 @@ const NO_ARGUMENT_ACTIONS = new Map([
   ["new_task", "New task"],
   ["stop", "Stop"],
   ["mode_cycle", "Next mode"],
+  ["model_picker", "Choose model"],
   ["access_cycle", "Next access level"],
+  ["delete_backward", "Delete backward"],
   ["clear_input", "Clear input"],
   ["focus_next", "Next agent"],
   ["attach", "Focus Codex"],
@@ -71,7 +73,7 @@ const DEFAULT_TAP_ACTIONS = {
   key_new_task: { type: "new_task" },
   key_stop: { type: "stop" },
   key_mode: { type: "mode_cycle" },
-  key_clear: { type: "clear_input" },
+  key_clear: { type: "delete_backward" },
   key_focus: { type: "focus_next" },
   key_up: { type: "navigate", direction: "up" },
   key_down: { type: "navigate", direction: "down" },
@@ -128,7 +130,7 @@ export function createDefault() {
 
 export function normalize(candidate) {
   requireRecord(candidate, "Controller profile");
-  if (![1, 2, VERSION].includes(candidate.version)) {
+  if (![1, 2, 3, VERSION].includes(candidate.version)) {
     throw new ValidationError("Controller profile version is not supported.");
   }
   if (!Array.isArray(candidate.layers) || candidate.layers.length !== LAYER_IDS.length) {
@@ -155,7 +157,7 @@ export function normalize(candidate) {
         id,
         name: validateLayerName(layer.name),
         color: candidate.version >= 3 ? validateLayerColor(layer.color) : LAYER_COLORS[index],
-        bindings: normalizeBindings(layer.bindings),
+        bindings: migrateBindings(normalizeBindings(layer.bindings), candidate.version),
       };
     }),
   };
@@ -314,11 +316,35 @@ function buildDefaultProfile() {
       id: LAYER_IDS[index],
       name: index === 0 ? "Default" : `Layer ${index + 1}`,
       color,
-      bindings: index === 0
-        ? Object.fromEntries(Object.entries(DEFAULT_TAP_ACTIONS).map(([inputId, action]) => [inputId, { tap: action }]))
-        : {},
+      bindings: index === 0 ? defaultBindings() : {},
     })),
   };
+}
+
+function defaultBindings() {
+  const bindings = Object.fromEntries(
+    Object.entries(DEFAULT_TAP_ACTIONS).map(([inputId, action]) => [inputId, { tap: action }]),
+  );
+  bindings.key_clear.hold = { type: "clear_input" };
+  return bindings;
+}
+
+function migrateBindings(bindings, version) {
+  const clear = bindings.key_clear;
+  if (
+    version < 4 &&
+    clear?.tap?.type === "clear_input" &&
+    Object.keys(clear).length === 1
+  ) {
+    return {
+      ...bindings,
+      key_clear: {
+        tap: { type: "delete_backward" },
+        hold: { type: "clear_input" },
+      },
+    };
+  }
+  return bindings;
 }
 
 function normalizeBindings(bindings) {

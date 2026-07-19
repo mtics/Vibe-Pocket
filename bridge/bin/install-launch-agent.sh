@@ -89,7 +89,7 @@ HOST_SOURCE_HASH=$(
   {
     shasum -a 256 "$HOST_SOURCE" "$CONTROL_SOURCE" "$PAIRING_SOURCE"
     printf '%s\n' 'signing-profile:stable-designated-requirement-v1'
-    printf '%s\n' 'bundle-version:0.10.0-16'
+    printf '%s\n' 'bundle-version:0.12.0-17'
   } | shasum -a 256 | awk '{print $1}'
 )
 INSTALLED_HOST_HASH=$(cat "$HOST_HASH_FILE" 2>/dev/null || true)
@@ -112,9 +112,9 @@ if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; the
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.10.0</string>
+  <string>0.12.0</string>
   <key>CFBundleVersion</key>
-  <string>16</string>
+  <string>17</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
@@ -215,7 +215,7 @@ cat > "$PAIR_TEMP/Contents/Info.plist" <<'EOF'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.10.0</string>
+  <string>0.12.0</string>
   <key>CFBundleVersion</key>
   <string>2</string>
   <key>LSMinimumSystemVersion</key>

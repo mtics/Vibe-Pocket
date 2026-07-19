@@ -113,6 +113,68 @@ test("accepts a unique ellipsized title and rejects ambiguous or stale targets",
   await assert.rejects(() => catalog.focusAgent("unsafe"), /valid Codex task ID/i);
 });
 
+test("matches a desktop title after Codex renders its Markdown links", async () => {
+  const catalog = new Catalog({
+    appServer: new FakeAppServer([
+      {
+        id: "thread-markdown",
+        name: "给 [TKDE-SANE](paper/TKDE-SANE/) 配置 .gitignore",
+        parentThreadId: null,
+      },
+    ]),
+    openThread: async () => {},
+  });
+
+  const agents = await catalog.resolveVisibleAgents([
+    { label: "给 TKDE-SANE 配置 .gitignore", state: "idle", focused: true },
+  ]);
+
+  assert.equal(agents.length, 1);
+  assert.equal(agents[0].focused, true);
+  assert.match(agents[0].id, /^agent-[a-f0-9]{24}$/);
+});
+
+test("keeps a native focus target through the desktop transition", async () => {
+  let now = 1_000;
+  const catalog = new Catalog({
+    appServer: new FakeAppServer([
+      { id: "thread-current", name: "Current task", parentThreadId: null },
+      { id: "thread-target", name: "Target task", parentThreadId: null },
+    ]),
+    openThread: async () => {},
+    now: () => now,
+  });
+  const initial = await catalog.resolveVisibleAgents([
+    { label: "Current task", state: "idle", focused: true },
+  ]);
+  const target = initial.find(({ label }) => label === "Target task");
+  await catalog.focusAgent(target.id);
+
+  const staleDesktop = await catalog.resolveVisibleAgents([
+    { label: "Current task", state: "idle", focused: true },
+  ]);
+  assert.equal(staleDesktop.find(({ focused }) => focused)?.label, "Target task");
+
+  now += 500;
+  const confirmed = await catalog.resolveVisibleAgents([
+    { label: "Target task", state: "idle", focused: true },
+  ]);
+  assert.equal(confirmed.find(({ focused }) => focused)?.label, "Target task");
+
+  now += 500;
+  const transientGap = await catalog.resolveVisibleAgents([]);
+  assert.equal(transientGap.find(({ focused }) => focused)?.label, "Target task");
+
+  now += 10_001;
+  const persistentGap = await catalog.resolveVisibleAgents([]);
+  assert.equal(persistentGap.find(({ focused }) => focused)?.label, "Target task");
+
+  const unresolvedTask = await catalog.resolveVisibleAgents([
+    { label: "A task outside the catalog", state: "idle", focused: true },
+  ]);
+  assert.equal(unresolvedTask.some(({ focused }) => focused), false);
+});
+
 test("finds an active visible task beyond the recent catalog through a bounded title search", async () => {
   const title = "Evaluate recommendation harness feasibility";
   const appServer = new FakeAppServer([], {

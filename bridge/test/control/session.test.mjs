@@ -21,6 +21,12 @@ class FakeDesktop {
     canIncrease: true,
     canDecrease: true,
   };
+  model = {
+    available: true,
+    id: "gpt-test",
+    label: "Codex",
+    options: [{ id: "gpt-test", label: "Codex", selected: true }],
+  };
   agents = [
     { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true },
     { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false },
@@ -41,6 +47,8 @@ class FakeDesktop {
         "clear-input": true,
         "focus-agent": true,
         "mode-cycle": true,
+        "model-picker": true,
+        model: true,
         "access-cycle": true,
         navigate: true,
         reasoning: true,
@@ -50,6 +58,7 @@ class FakeDesktop {
       voice: this.voice,
       mode: { available: true, label: "Codex" },
       access: { available: true, label: "Workspace" },
+      model: this.model,
       reasoning: this.reasoning,
     };
   }
@@ -64,6 +73,9 @@ class FakeDesktop {
   async navigate(direction) { this.calls.push(["navigate", direction]); }
   async cycleMode() { this.calls.push(["cycleMode"]); }
   async cycleAccess() { this.calls.push(["cycleAccess"]); }
+  async openModel() { this.calls.push(["openModel"]); }
+  async selectModel(modelId) { this.calls.push(["selectModel", modelId]); }
+  async deleteBackward() { this.calls.push(["deleteBackward"]); }
   async clearInput() { this.calls.push(["clearInput"]); }
   async focusAgent(index) { this.calls.push(["focusAgent", index]); }
   async adjustReasoning(delta) { this.calls.push(["adjustReasoning", delta]); }
@@ -121,11 +133,14 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controller.mode.label, "Codex");
   assert.equal(snapshot.controller.access.label, "Workspace");
   assert.equal(snapshot.controller.reasoning.label, "High");
-  assert.equal(snapshot.controller.reasoning.modelLabel, "Codex");
+  assert.equal(snapshot.controller.model.label, "Codex");
+  assert.equal(snapshot.controller.model.id, "gpt-test");
   assert.equal(snapshot.controller.reasoning.level, "high");
   assert.equal(snapshot.controller.reasoning.canIncrease, true);
   assert.equal(snapshot.controller.reasoning.canDecrease, true);
   assert.equal(snapshot.controls.reasoning, true);
+  assert.equal(snapshot.controls["model-picker"], true);
+  assert.equal(snapshot.controls.model, true);
 });
 
 test("keeps reasoning adjustable upward at the minimum level", async () => {
@@ -138,12 +153,25 @@ test("keeps reasoning adjustable upward at the minimum level", async () => {
     canIncrease: true,
     canDecrease: false,
   };
+  desktop.model = {
+    available: true,
+    id: "gpt-5.6-sol",
+    label: "5.6 Sol",
+    options: [{ id: "gpt-5.6-sol", label: "5.6 Sol", selected: true }],
+  };
   const service = makeService(desktop);
   await service.start();
 
   const snapshot = await service.snapshot();
   assert.equal(snapshot.controls.reasoning, true);
-  assert.deepEqual(snapshot.controller.reasoning, desktop.reasoning);
+  assert.equal(snapshot.controller.model.label, "5.6 Sol");
+  assert.deepEqual(snapshot.controller.reasoning, {
+    available: true,
+    label: "5.6 Sol 最小",
+    level: "minimal",
+    canIncrease: true,
+    canDecrease: false,
+  });
 });
 
 test("keeps both reasoning directions available when the host sees an unknown label", async () => {
@@ -217,7 +245,7 @@ test("publishes hook-driven desktop state before returning the hook response", a
   assert.notEqual((await service.snapshot()).revision, initialRevision);
 });
 
-test("routes default-layer keys, joystick, touch, and dial inputs", async () => {
+test("routes default-layer keys, gestures, joystick, touch, and dial inputs", async () => {
   const desktop = new FakeDesktop();
   const service = makeService(desktop);
   await service.start();
@@ -238,6 +266,9 @@ test("routes default-layer keys, joystick, touch, and dial inputs", async () => 
   for (const [index, inputId] of inputs.entries()) {
     await service.command({ kind: "binding", inputId }, `binding-${index}`);
   }
+  await service.command({ kind: "binding", inputId: "key_clear", gesture: "hold" }, "clear-hold");
+  await service.command({ kind: "model_picker" }, "model-picker");
+  await service.command({ kind: "select_model", modelId: "gpt-test" }, "select-model");
 
   assert.deepEqual(desktop.calls.slice(0, 9), [
     ["press", "approve"],
@@ -246,13 +277,16 @@ test("routes default-layer keys, joystick, touch, and dial inputs", async () => 
     ["press", "new-task"],
     ["press", "stop"],
     ["cycleMode"],
-    ["clearInput"],
+    ["deleteBackward"],
     ["navigate", "up"],
     ["focusAgent", "agent-222222222222222222222222"],
   ]);
   assert.equal(desktop.calls[9][0], "workflow");
   assert.match(desktop.calls[9][1], /Review the current change/);
   assert.deepEqual(desktop.calls[10], ["adjustReasoning", 1]);
+  assert.deepEqual(desktop.calls[11], ["clearInput"]);
+  assert.deepEqual(desktop.calls[12], ["openModel"]);
+  assert.deepEqual(desktop.calls[13], ["selectModel", "gpt-test"]);
 });
 
 test("keeps workflow controls available while the visible task is running", async () => {
@@ -299,6 +333,141 @@ test("acknowledges a desktop action before a slow state scan completes", async (
   assert.deepEqual(desktop.calls, [["press", "approve"]]);
   desktop.releaseStatus.resolve();
   await service.dispose();
+});
+
+test("waits for initial desktop discovery before accepting a control command", async () => {
+  class StartingDesktop extends FakeDesktop {
+    discovery = Promise.withResolvers();
+
+    async status() {
+      await this.discovery.promise;
+      return super.status();
+    }
+  }
+
+  const desktop = new StartingDesktop();
+  const service = makeService(desktop);
+  const starting = service.start();
+  let completed = false;
+  const command = service.command({ kind: "binding", inputId: "key_accept" }, "startup-command")
+    .then((result) => {
+      completed = true;
+      return result;
+    });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(completed, false);
+  assert.deepEqual(desktop.calls, []);
+
+  desktop.discovery.resolve();
+  await starting;
+  assert.equal((await command).accepted, true);
+  assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  await service.dispose();
+});
+
+test("publishes native model and reasoning confirmations without a desktop rescan", async () => {
+  class NativeSettingsDesktop extends FakeDesktop {
+    statusCalls = 0;
+
+    constructor() {
+      super();
+      this.model = {
+        available: true,
+        id: "gpt-old",
+        label: "Old",
+        options: [
+          { id: "gpt-old", label: "Old", selected: true },
+          { id: "gpt-new", label: "New", selected: false },
+        ],
+      };
+      this.reasoning = {
+        available: true,
+        label: "Minimal",
+        level: "minimal",
+        canIncrease: true,
+        canDecrease: false,
+      };
+    }
+
+    async status() {
+      this.statusCalls += 1;
+      return super.status();
+    }
+
+    async selectModel(modelId) {
+      this.calls.push(["selectModel", modelId]);
+      this.model = {
+        ...this.model,
+        id: modelId,
+        label: "New",
+        options: this.model.options.map((option) => ({ ...option, selected: option.id === modelId })),
+      };
+      return { message: "Selected New.", settings: { model: this.model, reasoning: this.reasoning } };
+    }
+
+    async adjustReasoning(delta) {
+      this.calls.push(["adjustReasoning", delta]);
+      this.reasoning = {
+        available: true,
+        label: "Low",
+        level: "low",
+        canIncrease: true,
+        canDecrease: true,
+      };
+      return { message: "Selected Low reasoning.", settings: { model: this.model, reasoning: this.reasoning } };
+    }
+  }
+
+  const desktop = new NativeSettingsDesktop();
+  const events = new FakeEvents();
+  const service = makeService(desktop, events);
+  await service.start();
+  const initialEvents = events.published.length;
+
+  await service.command({ kind: "select_model", modelId: "gpt-new" }, "native-model");
+  assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
+  await service.command({ kind: "binding", inputId: "dial_cw" }, "native-reasoning");
+  assert.equal((await service.snapshot()).controller.reasoning.level, "low");
+
+  assert.equal(desktop.statusCalls, 1);
+  assert.deepEqual(desktop.calls, [
+    ["selectModel", "gpt-new"],
+    ["adjustReasoning", 1],
+  ]);
+  assert.equal(events.published.length, initialEvents + 2);
+});
+
+test("publishes a confirmed mode change without waiting for a desktop rescan", async () => {
+  class NativeModeDesktop extends FakeDesktop {
+    statusCalls = 0;
+
+    async status() {
+      this.statusCalls += 1;
+      return super.status();
+    }
+
+    async cycleMode() {
+      this.calls.push(["cycleMode"]);
+      return {
+        message: "Selected the next Codex collaboration mode.",
+        settings: { mode: { available: true, label: "Plan" } },
+      };
+    }
+  }
+
+  const desktop = new NativeModeDesktop();
+  const events = new FakeEvents();
+  const service = makeService(desktop, events);
+  await service.start();
+  const initialEvents = events.published.length;
+
+  await service.command({ kind: "binding", inputId: "key_mode" }, "native-mode");
+
+  assert.deepEqual((await service.snapshot()).controller.mode, { available: true, label: "Plan" });
+  assert.equal(desktop.statusCalls, 1);
+  assert.deepEqual(desktop.calls, [["cycleMode"]]);
+  assert.equal(events.published.length, initialEvents + 1);
 });
 
 test("defers ordinary action snapshots until the controller surface changes", async () => {

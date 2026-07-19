@@ -29,28 +29,38 @@ export class Desktop {
   async status() {
     const result = await this.#invoke("status");
     if (!this.#threadCatalog) return result;
+    let agents;
     try {
-      const agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
+      agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
       this.#lastAgents = agents;
-      return {
-        ...result,
-        agents,
-        controls: {
-          ...result.controls,
-          "focus-agent": agents.some((agent) => !agent.focused),
-        },
-      };
     } catch {
-      const agents = this.#lastAgents;
-      return {
-        ...result,
-        agents,
-        controls: {
-          ...result.controls,
-          "focus-agent": agents.some((agent) => !agent.focused),
-        },
-      };
+      agents = this.#lastAgents;
     }
+    let settings = null;
+    try {
+      settings = await this.#threadCatalog.settings(result.reasoning);
+    } catch {
+      settings = null;
+    }
+    const modelAvailable = settings?.model.available === true && result.controls?.["model-picker"] === true;
+    const reasoningAvailable = settings?.reasoning.available === true && result.controls?.reasoning === true;
+    return {
+      ...result,
+      agents,
+      model: settings?.model ? { ...settings.model, available: modelAvailable } : undefined,
+      reasoning: settings?.reasoning ? {
+        ...settings.reasoning,
+        available: reasoningAvailable,
+        canIncrease: reasoningAvailable && settings.reasoning.canIncrease,
+        canDecrease: reasoningAvailable && settings.reasoning.canDecrease,
+      } : result.reasoning,
+      controls: {
+        ...result.controls,
+        "focus-agent": agents.some((agent) => !agent.focused),
+        model: modelAvailable,
+        reasoning: reasoningAvailable,
+      },
+    };
   }
 
   get voiceActive() {
@@ -101,12 +111,32 @@ export class Desktop {
     return this.#invoke("access-cycle");
   }
 
+  async openModel() {
+    return this.#invoke("model-picker");
+  }
+
+  async selectModel(modelId) {
+    if (!this.#threadCatalog) throw new Error("Native Codex model selection is unavailable.");
+    await this.#invoke("select-model", [modelId]);
+    const current = await this.status();
+    const settings = { model: current.model, reasoning: current.reasoning };
+    return { ok: true, message: `Selected ${settings.model.label}.`, settings };
+  }
+
   async adjustReasoning(delta) {
-    return this.#invoke("reasoning", [String(delta)]);
+    if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
+    await this.#invoke("reasoning", [`${delta}`]);
+    const current = await this.status();
+    const settings = { model: current.model, reasoning: current.reasoning };
+    return { ok: true, message: `Selected ${settings.reasoning.label} reasoning.`, settings };
   }
 
   async clearInput() {
     return this.#invoke("clear-input");
+  }
+
+  async deleteBackward() {
+    return this.#invoke("delete-backward");
   }
 
   async focusAgent(agentId) {

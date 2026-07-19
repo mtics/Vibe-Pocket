@@ -31,6 +31,7 @@ export class Hybrid {
           ? status.controls["clear-input"] === true
           : visible.controls["clear-input"] === true,
         "mode-cycle": visible.controls["plan-mode"] === true,
+        "model-picker": visible.controls["model-picker"] === true,
         "access-cycle": visible.controls["mode-cycle"] === true,
         navigate: structuredInput ? status.controls.navigate === true : visible.controls.navigate === true,
         reasoning: visible.controls.reasoning === true,
@@ -101,6 +102,14 @@ export class Hybrid {
 
   async cycleAccess() {
     return this.#visible.cycleAccess();
+  }
+
+  async openModel() {
+    return this.#visible.openModel();
+  }
+
+  async deleteBackward() {
+    return this.#visible.deleteBackward();
   }
 
   async clearInput() {

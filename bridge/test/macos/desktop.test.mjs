@@ -30,7 +30,8 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
   await controller.press("new-task");
   await controller.cycleMode();
   await controller.cycleAccess();
-  await controller.adjustReasoning(-1);
+  await controller.openModel();
+  await controller.deleteBackward();
   await controller.clearInput();
   await controller.workflow("Review the visible task.");
 
@@ -40,10 +41,89 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
     ["/tmp/vibe-pocket-test.sock", "control", ["new-task"], ""],
     ["/tmp/vibe-pocket-test.sock", "plan-mode", [], ""],
     ["/tmp/vibe-pocket-test.sock", "access-cycle", [], ""],
-    ["/tmp/vibe-pocket-test.sock", "reasoning", ["-1"], ""],
+    ["/tmp/vibe-pocket-test.sock", "model-picker", [], ""],
+    ["/tmp/vibe-pocket-test.sock", "delete-backward", [], ""],
     ["/tmp/vibe-pocket-test.sock", "clear-input", [], ""],
     ["/tmp/vibe-pocket-test.sock", "workflow", [], "Review the visible task."],
   ]);
+});
+
+test("changes model and reasoning in the visible desktop before confirming state", async () => {
+  const calls = [];
+  const settings = {
+    model: {
+      available: true,
+      id: "gpt-sol",
+      label: "Sol",
+      options: [{ id: "gpt-sol", label: "Sol", selected: true }],
+    },
+    reasoning: {
+      available: true,
+      label: "Minimal",
+      level: "minimal",
+      canIncrease: true,
+      canDecrease: false,
+    },
+  };
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() { return []; },
+      async settings() { return settings; },
+    },
+    run: async (_socketPath, action, args) => {
+      calls.push(["helper", action, args]);
+      return {
+        ok: true,
+        foreground: true,
+        controls: { "model-picker": true, reasoning: true },
+        agents: [],
+        reasoning: { modelLabel: "Sol", level: "minimal" },
+      };
+    },
+  });
+
+  const status = await controller.status();
+  assert.equal(status.controls.model, true);
+  assert.equal(status.controls.reasoning, true);
+  await controller.selectModel("gpt-sol");
+  await controller.adjustReasoning(1);
+
+  assert.deepEqual(calls, [
+    ["helper", "status", []],
+    ["helper", "select-model", ["gpt-sol"]],
+    ["helper", "status", []],
+    ["helper", "reasoning", ["1"]],
+    ["helper", "status", []],
+  ]);
+});
+
+test("does not advertise companion settings while visible desktop controls are unavailable", async () => {
+  const settings = {
+    model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
+    reasoning: { available: true, label: "Medium", level: "medium", canIncrease: true, canDecrease: true },
+  };
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() { return []; },
+      async settings() { return settings; },
+    },
+    run: async () => ({
+      ok: true,
+      foreground: false,
+      controls: { "model-picker": false, reasoning: false },
+      agents: [],
+      reasoning: { modelLabel: "Sol", level: "medium" },
+    }),
+  });
+
+  const status = await controller.status();
+
+  assert.equal(status.controls.model, false);
+  assert.equal(status.controls.reasoning, false);
+  assert.equal(status.model.available, false);
+  assert.equal(status.reasoning.available, false);
 });
 
 test("routes push-to-talk to the verified desktop dictation state", async () => {

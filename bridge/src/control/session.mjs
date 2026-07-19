@@ -27,6 +27,7 @@ export class Session {
   #state;
   #queue = new Queue();
   #refresh;
+  #ready = null;
 
   constructor({
     workspaces,
@@ -52,7 +53,12 @@ export class Session {
     });
   }
 
-  async start() {
+  start() {
+    if (!this.#ready) this.#ready = this.#start();
+    return this.#ready;
+  }
+
+  async #start() {
     if (this.#profileStore) {
       this.#profile = await this.#profileStore.load();
       this.#activeLayerId = this.#profile.layers[0].id;
@@ -77,6 +83,7 @@ export class Session {
   }
 
   async bindDesktopThread(threadId) {
+    await this.#ready;
     return this.#queue.run(async () => {
       await this.#perform(
         () => this.#desktop.bindThread(threadId),
@@ -87,6 +94,7 @@ export class Session {
   }
 
   async codexHook(event, payload) {
+    await this.#ready;
     if (!HOOK_EVENTS.has(event)) {
       throw new Failure(400, "invalid_hook_event", "Unsupported Codex lifecycle event.");
     }
@@ -102,6 +110,7 @@ export class Session {
   }
 
   async command(command, idempotencyKey) {
+    await this.#ready;
     return this.#queue.once(idempotencyKey, command, async () => {
       await this.#execute(command);
       return { commandId: `cmd_${randomUUID()}`, accepted: true, revision: this.#state.revision };
@@ -117,6 +126,10 @@ export class Session {
       }
       if (intent.kind === "agent") {
         await this.#focusAgent(intent.id);
+        return;
+      }
+      if (intent.kind === "model") {
+        await this.#selectModel(intent.id);
         return;
       }
       if (intent.kind === "action") {
@@ -174,8 +187,14 @@ export class Session {
       case "mode_cycle":
         await this.#perform(() => this.#desktop.cycleMode(), "Selected the next Codex mode.");
         return;
+      case "model_picker":
+        await this.#perform(() => this.#desktop.openModel(), "Opened the Codex model picker.");
+        return;
       case "access_cycle":
         await this.#perform(() => this.#desktop.cycleAccess(), "Selected the next Codex access level.");
+        return;
+      case "delete_backward":
+        await this.#perform(() => this.#desktop.deleteBackward(), "Deleted one character from the visible Codex input.");
         return;
       case "clear_input":
         await this.#perform(() => this.#desktop.clearInput(), "Cleared the visible Codex input.");
@@ -242,6 +261,11 @@ export class Session {
 
   async #perform(operation, fallbackMessage) {
     const result = await operation();
+    if (result?.settings) {
+      this.#state.setSettings(result.settings);
+      this.#state.record(result.message ?? fallbackMessage);
+      return;
+    }
     // The scheduled capability scan verifies desktop actions. Avoid publishing
     // a transient success message before that scan changes the controller UI.
     this.#state.record(result?.message ?? fallbackMessage, { publish: false });
@@ -275,5 +299,12 @@ export class Session {
     const agent = this.#state.agents[index];
     await this.#perform(() => this.#desktop.focusAgent(agent.id), `Focused ${agent.label}.`);
     this.#state.focus(agent.id);
+  }
+
+  async #selectModel(modelId) {
+    await this.#perform(
+      () => this.#desktop.selectModel(modelId),
+      "Selected the Codex model.",
+    );
   }
 }

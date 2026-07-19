@@ -41,6 +41,7 @@ class FakeVisibleController {
       "new-task": true,
       "clear-input": true,
       "plan-mode": true,
+      "model-picker": true,
       "mode-cycle": true,
       navigate: true,
       reasoning: true,
@@ -56,6 +57,8 @@ class FakeVisibleController {
   async navigate(direction) { this.calls.push(["navigate", direction]); }
   async cycleMode() { this.calls.push(["cycleMode"]); }
   async cycleAccess() { this.calls.push(["cycleAccess"]); }
+  async openModel() { this.calls.push(["openModel"]); }
+  async deleteBackward() { this.calls.push(["deleteBackward"]); }
   async adjustReasoning(delta) { this.calls.push(["adjustReasoning", delta]); }
   async clearInput() { this.calls.push(["clearInput"]); }
   async workflow(prompt) { this.calls.push(["workflow", prompt]); }
@@ -75,6 +78,7 @@ test("advertises controls from the visible Codex state", async () => {
   assert.equal(status.controls.reject, true);
   assert.equal(status.controls.stop, false);
   assert.equal(status.controls["clear-input"], true);
+  assert.equal(status.controls["model-picker"], true);
   assert.equal(status.controls.reasoning, true);
   assert.equal(status.mode.label, "Codex");
   assert.equal(status.access.label, "Full access");

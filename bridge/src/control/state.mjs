@@ -115,6 +115,21 @@ export class State {
     this.#desktop.voice = { ...this.#desktop.voice, active };
   }
 
+  setSettings(value) {
+    if (value?.mode) this.#desktop.mode = normalizeSelector(value.mode);
+    if (value?.model) this.#desktop.model = normalizeModel(value.model);
+    if (value?.reasoning) this.#desktop.reasoning = normalizeReasoning(value.reasoning);
+    this.#status = {
+      ...this.#status,
+      controls: {
+        ...this.#status.controls,
+        "mode-cycle": this.#desktop.mode.available,
+        model: this.#desktop.model.available,
+        reasoning: this.#desktop.reasoning.available,
+      },
+    };
+  }
+
   focus(agentId) {
     this.#desktop.focusedAgentId = agentId;
     this.#desktop.focusedAgentIndex = this.#desktop.agents.findIndex((agent) => agent.id === agentId);
@@ -149,6 +164,8 @@ function emptyControls() {
     "clear-input": false,
     "focus-agent": false,
     "mode-cycle": false,
+    "model-picker": false,
+    model: false,
     "access-cycle": false,
     navigate: false,
     reasoning: false,
@@ -172,6 +189,7 @@ function emptyDesktop() {
     voice: { available: false, active: false },
     mode: { available: false, label: "" },
     access: { available: false, label: "" },
+    model: { available: false, id: null, label: "", options: [] },
     reasoning: {
       available: false,
       label: "",
@@ -207,6 +225,7 @@ function normalizeDesktop(result) {
     voice: normalizeVoice(result.voice),
     mode: normalizeSelector(result.mode),
     access: normalizeSelector(result.access),
+    model: normalizeModel(result.model, result.reasoning?.modelLabel),
     reasoning: normalizeReasoning(result.reasoning),
     userInput: normalizeUserInput(result.userInput),
   };
@@ -253,15 +272,38 @@ function normalizeSelector(value) {
 
 function normalizeReasoning(value) {
   const available = value?.available === true;
-  const level = ["minimal", "low", "medium", "high", "xhigh"].includes(value?.level)
+  const level = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(value?.level)
     ? value.level
     : null;
   return {
     available,
     label: typeof value?.label === "string" ? value.label.slice(0, 80) : "",
-    modelLabel: typeof value?.modelLabel === "string" ? value.modelLabel.slice(0, 80) : "",
     level,
     canIncrease: available && value?.canIncrease !== false,
     canDecrease: available && value?.canDecrease !== false,
+  };
+}
+
+function normalizeModel(value, fallbackLabel = "") {
+  const options = Array.isArray(value?.options)
+    ? value.options
+      .filter((option) => option && typeof option.id === "string" && /^[a-zA-Z0-9._-]{1,128}$/.test(option.id))
+      .slice(0, 20)
+      .map((option) => ({
+        id: option.id,
+        label: typeof option.label === "string" ? option.label.slice(0, 80) : option.id,
+        selected: option.selected === true,
+      }))
+    : [];
+  const id = typeof value?.id === "string" && options.some((option) => option.id === value.id)
+    ? value.id
+    : options.find((option) => option.selected)?.id ?? null;
+  return {
+    available: value?.available === true && options.length > 0,
+    id,
+    label: typeof value?.label === "string" && value.label
+      ? value.label.slice(0, 80)
+      : typeof fallbackLabel === "string" ? fallbackLabel.slice(0, 80) : "",
+    options: options.map((option) => ({ ...option, selected: option.id === id })),
   };
 }

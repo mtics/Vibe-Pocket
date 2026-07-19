@@ -31,6 +31,14 @@ export function resolve(command, { profile, layerId }) {
     return { kind: "agent", id: command.agentId };
   }
 
+  if (command.kind === "select_model") {
+    requireKeys(command, ["kind", "modelId"]);
+    if (typeof command.modelId !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(command.modelId)) {
+      throw new ValidationError("A stable Codex model ID is required.");
+    }
+    return { kind: "model", id: command.modelId };
+  }
+
   if (command.kind === "binding") {
     requireKeys(command, ["kind", "inputId"], ["gesture"]);
     validateInputId(command.inputId);
@@ -161,6 +169,12 @@ function legacy(command) {
     case "reasoning_depth":
       requireKeys(command, ["kind", "delta"]);
       return { type: "reasoning_depth", delta: command.delta };
+    case "model_picker":
+      requireKeys(command, ["kind"]);
+      return { type: "model_picker" };
+    case "delete_backward":
+      requireKeys(command, ["kind"]);
+      return { type: "delete_backward" };
     case "workflow":
       requireKeys(command, ["kind", "workflowId"]);
       return { type: "workflow", workflowId: command.workflowId };

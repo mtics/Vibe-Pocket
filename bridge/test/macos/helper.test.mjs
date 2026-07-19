@@ -27,6 +27,20 @@ test("only the explicit attach action may activate ChatGPT", async () => {
   assert.match(source, /case "attach":[\s\S]*?desktop\(activateDesktop: true\)/);
 });
 
+test("mode switching targets ChatGPT without taking the foreground", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const modeCase = source.slice(
+    source.indexOf('case "plan-mode"'),
+    source.indexOf('case "model-picker"'),
+  );
+
+  assert.match(source, /postToPid\(processIdentifier\)/);
+  assert.match(modeCase, /togglePlanMode\(in: application\)/);
+  assert.match(modeCase, /planModeIsActive[\s\S]*?confirmed/);
+  assert.match(modeCase, /"settings": \["mode": \["available": true, "label": confirmed\]\]/);
+  assert.doesNotMatch(modeCase, /verifyForeground|activate\(/);
+});
+
 test("composer controls and Agent focus identity use the focused Codex window", async () => {
   const source = await readFile(helperUrl, "utf8");
   const statusReply = source.slice(
@@ -65,6 +79,9 @@ guard let medium = ReasoningLevel.parse(from: "5.6 Luna 中") else {
 precondition(medium == .medium)
 precondition(medium.canIncrease && medium.canDecrease)
 precondition(ReasoningLevel.modelLabel(from: "5.6 Luna 中") == "5.6 Luna")
+precondition(ReasoningLevel.parse(from: "5.6 Sol Max") == .max)
+precondition(ReasoningLevel.parse(from: "5.6 Sol Ultra") == .ultra)
+precondition(!ReasoningLevel.ultra.canIncrease)
 precondition(ReasoningLevel.parse(from: "5.7 Preview") == nil)
 precondition(agentStatePriority("waiting") < agentStatePriority("executing"))
 precondition(agentStatePriority("executing") < agentStatePriority("idle"))
@@ -96,6 +113,20 @@ test("reasoning availability comes from structure before directional semantics",
     source,
     /"canDecrease": reasoningAvailable && \(reasoning\?\.level\?\.canDecrease \?\? true\)/,
   );
+});
+
+test("model selection uses a semantic menu target and backward delete has a dedicated key", async () => {
+  const source = await readFile(helperUrl, "utf8");
+
+  assert.match(source, /case "model-picker":[\s\S]*?openComposerMenu\(control\)/);
+  assert.match(source, /case "select-model":[\s\S]*?selectModel\(modelID/);
+  assert.match(source, /private func selectModel[\s\S]*?openSubmenu\(menuItem\)[\s\S]*?modelOption[\s\S]*?chooseMenuItem\(targetElement\)/);
+  assert.match(source, /private func selectModel[\s\S]*?postKey\(53, to: application\.processIdentifier\)/);
+  assert.match(source, /private func selectReasoning[\s\S]*?postKey\(53, to: application\.processIdentifier\)/);
+  assert.match(source, /case "select-reasoning":[\s\S]*?selectReasoning\(level/);
+  assert.match(source, /observedLevel == requested/);
+  assert.doesNotMatch(source, /reasoningMenuItem\(in: root\) == nil \? true : nil/);
+  assert.match(source, /case "delete-backward":[\s\S]*?focusPrompt[\s\S]*?postKey\(51\)/);
 });
 
 test("bridge child inherits normal termination signals", async () => {
