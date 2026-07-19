@@ -8,6 +8,7 @@ import {
   updateLayerColor,
   updateWorkflow,
   validateGesture,
+  validateAction,
   validateInputId,
   validateLayerId,
 } from "../profile/model.mjs";
@@ -40,13 +41,17 @@ export function resolve(command, { profile, layerId }) {
   }
 
   if (command.kind === "binding") {
-    requireKeys(command, ["kind", "inputId"], ["gesture"]);
+    requireKeys(command, ["kind", "inputId", "gesture", "layerId", "action"]);
     validateInputId(command.inputId);
-    const gesture = validateGesture(command.gesture ?? "tap");
+    const gesture = validateGesture(command.gesture);
+    const expectedLayerId = validateLayerId(command.layerId);
+    const expectedAction = validateAction(command.action);
+    if (expectedLayerId !== layerId) throw staleBinding();
     const action = bindingFor(profile, layerId, command.inputId, gesture);
     if (!action) {
       throw new Failure(409, "unmapped_input", "This controller gesture has no action on the active layer.");
     }
+    if (JSON.stringify(action) !== JSON.stringify(expectedAction)) throw staleBinding();
     return { kind: "action", value: action };
   }
 
@@ -120,6 +125,14 @@ export function resolve(command, { profile, layerId }) {
   }
 
   return { kind: "action", value: legacy(command) };
+}
+
+function staleBinding() {
+  return new Failure(
+    409,
+    "stale_controller_context",
+    "The controller layer or binding changed; refresh before retrying this action.",
+  );
 }
 
 function legacy(command) {

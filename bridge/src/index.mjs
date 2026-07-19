@@ -15,11 +15,16 @@ import { Events } from "./server/events.mjs";
 import { Shutdown } from "./server/shutdown.mjs";
 import { Invitations } from "./pairing/invitations.mjs";
 import { Credentials } from "./pairing/credentials.mjs";
+import { PROTOCOL_VERSION } from "./protocol.mjs";
+import { resolveRuntimeIdentity } from "./runtime/identity.mjs";
+import { Readiness } from "./server/readiness.mjs";
 
 const PAIRING_PROBE_TIMEOUT_MS = 250;
 
 export async function main() {
   const config = load();
+  const runtimeRoot = fileURLToPath(new URL("../", import.meta.url));
+  const readiness = await createRuntimeReadiness(runtimeRoot);
   const events = new Events();
   const profileStore = new Store({ profilePath: config.profilePath });
   const appServer = new Rpc({ command: config.codexCommand });
@@ -37,7 +42,7 @@ export async function main() {
   });
   const credentials = new Credentials({ path: config.devicesPath, rootToken: config.token });
   const invitations = new Invitations({ issue: (expiresAt) => credentials.issue(expiresAt) });
-  const server = create({ service, events, token: config.token, credentials, invitations });
+  const server = create({ service, events, token: config.token, credentials, invitations, readiness });
   const admin = createAdmin({ invitations });
 
   await listen(server, config.port, config.host);
@@ -72,11 +77,21 @@ export async function main() {
   console.log("Codex control engine: Bluetooth HID, native task links, and scoped macOS Accessibility");
 
   try {
-    await service.start();
+    await startService(service, readiness);
   } catch (error) {
     await shutdown.close();
     throw error;
   }
+}
+
+export async function createRuntimeReadiness(runtimeRoot) {
+  const runtimeIdentity = await resolveRuntimeIdentity(runtimeRoot);
+  return new Readiness({ runtimeIdentity, protocolVersion: PROTOCOL_VERSION });
+}
+
+export async function startService(service, readiness) {
+  await service.start();
+  readiness.markReady();
 }
 
 export function listen(server, ...args) {

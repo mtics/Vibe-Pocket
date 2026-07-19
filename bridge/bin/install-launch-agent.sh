@@ -8,7 +8,6 @@ BRIDGE_DIR=${SCRIPT_DIR:h}
 CONFIG_DIR="$HOME/Library/Application Support/Vibe Pocket"
 CONFIG_FILE="$CONFIG_DIR/bridge.env"
 PROFILE_FILE="$CONFIG_DIR/controller-profile.json"
-OWNED_THREADS_FILE="$CONFIG_DIR/owned-threads.json"
 RUNTIME_DIR="$CONFIG_DIR/runtime"
 HOST_APP="$CONFIG_DIR/Vibe Pocket Bridge Host.app"
 HOST_CONTENTS="$HOST_APP/Contents"
@@ -73,6 +72,11 @@ chmod +x "$RUNTIME_DIR/bin/install-codex-keybindings.mjs"
 chmod +x "$RUNTIME_DIR/bin/public-url.mjs"
 chmod +x "$RUNTIME_DIR/bin/pair-phone.sh"
 
+IDENTITY_TOOL="$RUNTIME_DIR/src/runtime/identity.mjs"
+EXPECTED_READY=$(
+  "$NODE_PATH" "$IDENTITY_TOOL" expected "$RUNTIME_DIR"
+)
+
 HOST_SOURCE="$RUNTIME_DIR/src/macos/host.swift"
 CONTROL_SOURCE="$RUNTIME_DIR/src/macos/helper.swift"
 PAIRING_SOURCE="$RUNTIME_DIR/src/macos/pairing.swift"
@@ -133,7 +137,6 @@ TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
   printf 'VIBE_POCKET_PORT=%q\n' "$PORT"
   printf 'VIBE_POCKET_WORKSPACE=%q\n' "$WORKSPACE"
   printf 'VIBE_POCKET_PROFILE_PATH=%q\n' "$PROFILE_FILE"
-  printf 'VIBE_POCKET_OWNED_THREADS_PATH=%q\n' "$OWNED_THREADS_FILE"
   printf 'VIBE_POCKET_CODEX_COMMAND=%q\n' "$CODEX_PATH"
   printf 'VIBE_POCKET_NODE=%q\n' "$NODE_PATH"
   printf 'VIBE_POCKET_SWIFTC=%q\n' "$SWIFTC_PATH"
@@ -236,14 +239,19 @@ mv "$PAIR_TEMP" "$PAIR_APP"
 
 READY=0
 for _ in {1..80}; do
-  if /usr/bin/curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
-    READY=1
-    break
+  if READY_RESPONSE=$(
+    /usr/bin/curl --max-time 1 --max-filesize 4096 -fsS "http://127.0.0.1:$PORT/readyz" 2>/dev/null
+  ); then
+    if print -rn -- "$READY_RESPONSE" | \
+      "$NODE_PATH" "$IDENTITY_TOOL" matches "$EXPECTED_READY" >/dev/null 2>&1; then
+      READY=1
+      break
+    fi
   fi
   sleep 0.25
 done
 if (( ! READY )); then
-  print -u2 "Vibe Pocket LaunchAgent did not become healthy on 127.0.0.1:$PORT."
+  print -u2 "Vibe Pocket LaunchAgent did not report the expected runtime identity and protocol on 127.0.0.1:$PORT."
   print -u2 "Check $LOG_DIR/bridge-error.log for details."
   exit 1
 fi

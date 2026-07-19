@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createDefault } from "../../src/profile/model.mjs";
+import { bindingFor, createDefault } from "../../src/profile/model.mjs";
 import { Operations, persistOperations } from "../../src/control/operations.mjs";
 import { Session } from "../../src/control/session.mjs";
 
@@ -113,6 +113,15 @@ function makeService(desktop = new FakeDesktop(), events = new FakeEvents(), opt
     pollIntervalMs: 0,
     ...options,
   });
+}
+
+function bindingCommand(inputId, {
+  gesture = "tap",
+  layerId = "layer-1",
+  profile = createDefault(),
+  action = bindingFor(profile, layerId, inputId, gesture) ?? { type: "voice" },
+} = {}) {
+  return { kind: "binding", inputId, gesture, layerId, action };
 }
 
 async function temporaryOperationPath(t) {
@@ -226,7 +235,7 @@ test("clears a stale agent focus when the desktop no longer reports a selected t
   await service.start();
   desktop.agents = desktop.agents.map((agent) => ({ ...agent, focused: false }));
 
-  await service.command({ kind: "binding", inputId: "key_accept" }, "clear-stale-focus");
+  await service.command(bindingCommand("key_accept"), "clear-stale-focus");
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const snapshot = await service.snapshot();
@@ -274,9 +283,9 @@ test("routes default-layer keys, gestures, joystick, touch, and dial inputs", as
     "dial_cw",
   ];
   for (const [index, inputId] of inputs.entries()) {
-    await service.command({ kind: "binding", inputId }, `binding-${index}`);
+    await service.command(bindingCommand(inputId), `binding-${index}`);
   }
-  await service.command({ kind: "binding", inputId: "key_clear", gesture: "hold" }, "clear-hold");
+  await service.command(bindingCommand("key_clear", { gesture: "hold" }), "clear-hold");
   await service.command({ kind: "model_picker" }, "model-picker");
   await service.command({ kind: "select_model", modelId: "gpt-test" }, "select-model");
 
@@ -309,7 +318,7 @@ test("keeps workflow controls available while the visible task is running", asyn
   const snapshot = await service.snapshot();
   assert.equal(snapshot.controller.taskState, "executing");
   assert.equal(snapshot.controls.workflow, true);
-  await service.command({ kind: "binding", inputId: "joystick_down" }, "workflow-while-running");
+  await service.command(bindingCommand("joystick_down"), "workflow-while-running");
 
   assert.equal(desktop.calls.at(-1)[0], "workflow");
 });
@@ -335,7 +344,7 @@ test("acknowledges a desktop action before a slow state scan completes", async (
   await service.start();
 
   const result = await Promise.race([
-    service.command({ kind: "binding", inputId: "key_accept" }, "fast-ack"),
+    service.command(bindingCommand("key_accept"), "fast-ack"),
     new Promise((_, reject) => setTimeout(() => reject(new Error("command waited for state scan")), 50)),
   ]);
 
@@ -360,7 +369,7 @@ test("waits for initial desktop discovery before accepting a control command", a
   const service = makeService(desktop);
   const starting = service.start();
   let completed = false;
-  const command = service.command({ kind: "binding", inputId: "key_accept" }, "startup-command")
+  const command = service.command(bindingCommand("key_accept"), "startup-command")
     .then((result) => {
       completed = true;
       return result;
@@ -464,7 +473,7 @@ test("publishes native model and reasoning confirmations without a desktop resca
 
   await service.command({ kind: "select_model", modelId: "gpt-new" }, "native-model");
   assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
-  await service.command({ kind: "binding", inputId: "dial_cw" }, "native-reasoning");
+  await service.command(bindingCommand("dial_cw"), "native-reasoning");
   assert.equal((await service.snapshot()).controller.reasoning.level, "low");
 
   assert.equal(desktop.statusCalls, 1);
@@ -499,7 +508,7 @@ test("publishes a confirmed mode change without waiting for a desktop rescan", a
   await service.start();
   const initialEvents = events.published.length;
 
-  await service.command({ kind: "binding", inputId: "key_mode" }, "native-mode");
+  await service.command(bindingCommand("key_mode"), "native-mode");
 
   assert.deepEqual((await service.snapshot()).controller.mode, { available: true, label: "Plan" });
   assert.equal(desktop.statusCalls, 1);
@@ -513,7 +522,7 @@ test("defers ordinary action snapshots until the controller surface changes", as
   await service.start();
   const publishedBeforeAction = events.published.length;
 
-  await service.command({ kind: "binding", inputId: "key_accept" }, "deferred-action");
+  await service.command(bindingCommand("key_accept"), "deferred-action");
   await new Promise((resolve) => setTimeout(resolve, 240));
 
   assert.equal(events.published.length, publishedBeforeAction);
@@ -542,7 +551,7 @@ test("reports a desktop action failure before a slow state scan completes", asyn
 
   await assert.rejects(
     Promise.race([
-      service.command({ kind: "binding", inputId: "key_accept" }, "fast-error"),
+      service.command(bindingCommand("key_accept"), "fast-error"),
       new Promise((_, reject) => setTimeout(() => reject(new Error("command waited for state scan")), 50)),
     ]),
     (error) => error.code === "command_outcome_indeterminate",
@@ -621,9 +630,61 @@ test("switches layers and rejects inputs that are not mapped on that layer", asy
   await service.command({ kind: "select_layer", layerId: "layer-2" }, "layer-2");
   assert.equal((await service.snapshot()).controller.activeLayerId, "layer-2");
   await assert.rejects(
-    () => service.command({ kind: "binding", inputId: "key_voice" }, "layer-2-voice"),
+    () => service.command(bindingCommand("key_voice", { layerId: "layer-2" }), "layer-2-voice"),
     (error) => error.code === "unmapped_input",
   );
+});
+
+test("rejects a legacy binding without an observed layer and action", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    () => service.command({ kind: "binding", inputId: "key_accept" }, "legacy-binding"),
+    (error) => error.code === "invalid_controller_configuration",
+  );
+
+  assert.deepEqual(desktop.calls, []);
+  await service.dispose();
+});
+
+test("rejects a binding captured from a stale layer before desktop dispatch", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  const stale = bindingCommand("key_accept");
+
+  await service.command({ kind: "select_layer", layerId: "layer-2" }, "move-to-layer-2");
+  await assert.rejects(
+    () => service.command(stale, "stale-layer-binding"),
+    (error) => error.code === "stale_controller_context",
+  );
+
+  assert.deepEqual(desktop.calls, []);
+  await service.dispose();
+});
+
+test("rejects a binding whose action changed on the same layer", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  const stale = bindingCommand("key_accept");
+
+  await service.command({
+    kind: "update_binding",
+    layerId: "layer-1",
+    inputId: "key_accept",
+    gesture: "tap",
+    action: { type: "reject" },
+  }, "remap-accept");
+  await assert.rejects(
+    () => service.command(stale, "stale-action-binding"),
+    (error) => error.code === "stale_controller_context",
+  );
+
+  assert.deepEqual(desktop.calls, []);
+  await service.dispose();
 });
 
 test("binds idempotency keys to one request body", async () => {
@@ -646,8 +707,15 @@ test("fingerprints validated command bodies independent of property order", asyn
   const service = makeService(desktop);
   await service.start();
 
-  const first = await service.command({ kind: "binding", inputId: "key_accept" }, "reordered-key");
-  const replay = await service.command({ inputId: "key_accept", kind: "binding" }, "reordered-key");
+  const command = bindingCommand("key_accept");
+  const first = await service.command(command, "reordered-key");
+  const replay = await service.command({
+    action: command.action,
+    layerId: command.layerId,
+    gesture: command.gesture,
+    inputId: command.inputId,
+    kind: command.kind,
+  }, "reordered-key");
 
   assert.deepEqual(replay, first);
   assert.deepEqual(desktop.calls, [["press", "approve"]]);
@@ -669,10 +737,17 @@ test("coalesces concurrent duplicate commands and waits for one terminal result"
   const desktop = new BlockingDesktop();
   const service = makeService(desktop);
   await service.start();
-  const first = service.command({ kind: "binding", inputId: "key_accept" }, "concurrent-duplicate");
+  const command = bindingCommand("key_accept");
+  const first = service.command(command, "concurrent-duplicate");
   await desktop.started.promise;
   let replaySettled = false;
-  const replay = service.command({ inputId: "key_accept", kind: "binding" }, "concurrent-duplicate")
+  const replay = service.command({
+    action: command.action,
+    layerId: command.layerId,
+    gesture: command.gesture,
+    inputId: command.inputId,
+    kind: command.kind,
+  }, "concurrent-duplicate")
     .then((operation) => {
       replaySettled = true;
       return operation;
@@ -893,7 +968,7 @@ test("does not start a background scan while a controller command is queued", as
   const service = makeService(desktop, new FakeEvents(), { pollIntervalMs: 5 });
   await service.start();
   const statusCallsAfterStart = desktop.statusCalls;
-  const command = service.command({ kind: "binding", inputId: "key_accept" }, "queued-command");
+  const command = service.command(bindingCommand("key_accept"), "queued-command");
 
   await new Promise((resolve) => setTimeout(resolve, 32));
   assert.equal(desktop.statusCalls, statusCallsAfterStart);
@@ -1038,11 +1113,19 @@ test("updates and dispatches a selected layer gesture while preserving legacy ta
     action: { type: "navigate", direction: "left" },
   }, "map-double-tap");
   await service.command({ kind: "select_layer", layerId: "layer-2" }, "select-custom-layer");
-  await service.command({ kind: "binding", inputId: "key_voice", gesture: "double_tap" }, "dispatch-double-tap");
+  let snapshot = await service.snapshot();
+  await service.command(bindingCommand("key_voice", {
+    gesture: "double_tap",
+    layerId: "layer-2",
+    profile: snapshot.controller.profile,
+  }), "dispatch-double-tap");
   assert.deepEqual(desktop.calls, [["navigate", "left"]]);
 
   await assert.rejects(
-    () => service.command({ kind: "binding", inputId: "key_voice" }, "unmapped-legacy-tap"),
+    () => service.command(bindingCommand("key_voice", {
+      layerId: "layer-2",
+      profile: snapshot.controller.profile,
+    }), "unmapped-legacy-tap"),
     (error) => error.code === "unmapped_input",
   );
 });
@@ -1105,11 +1188,16 @@ test("persists workflow prompts and colors and dispatches semantic layer switchi
   assert.equal(snapshot.controller.profile.layers[1].color, "#28B4A0");
   assert.match(snapshot.controller.profile.workflows.find(({ id }) => id === "debug").prompt, /smallest fix/);
 
-  await restarted.command({ kind: "binding", inputId: "key_focus" }, "switch-with-binding");
+  await restarted.command(bindingCommand("key_focus", {
+    profile: snapshot.controller.profile,
+  }), "switch-with-binding");
   snapshot = await restarted.snapshot();
   assert.equal(snapshot.controller.activeLayerId, "layer-2");
   await restarted.command({ kind: "select_layer", layerId: "layer-1" }, "return-layer-1");
-  await restarted.command({ kind: "binding", inputId: "joystick_down" }, "run-custom-debug");
+  snapshot = await restarted.snapshot();
+  await restarted.command(bindingCommand("joystick_down", {
+    profile: snapshot.controller.profile,
+  }), "run-custom-debug");
   assert.deepEqual(desktop.calls.at(-1), [
     "workflow",
     "Reproduce the issue, apply the smallest fix, and run targeted tests.",

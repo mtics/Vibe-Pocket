@@ -12,6 +12,15 @@ TARGET=${2:A}
 PARENT=${TARGET:h}
 STAGING="$PARENT/.${TARGET:t}.stage.$$"
 BACKUP="$PARENT/.${TARGET:t}.previous.$$"
+NODE_PATH=${VIBE_POCKET_NODE:-}
+
+if [[ -z "$NODE_PATH" ]]; then
+  NODE_PATH=$(command -v node || true)
+fi
+if [[ -z "$NODE_PATH" || ! -x "$NODE_PATH" ]]; then
+  print -u2 "A Node.js executable is required to identify the runtime."
+  exit 69
+fi
 
 if [[ ! -d "$SOURCE" || "$SOURCE" == "$TARGET" ]]; then
   print -u2 "Runtime source and target must be distinct directories."
@@ -40,6 +49,9 @@ rm -rf "$STAGING/node_modules"
 REQUIRED=(
   package.json
   src/index.mjs
+  src/protocol.mjs
+  src/runtime/identity.mjs
+  src/server/readiness.mjs
   bin/run-launchd.sh
   src/macos/host.swift
   src/macos/helper.swift
@@ -55,6 +67,8 @@ if [[ -n "$(find "$STAGING" -type l -print -quit)" ]]; then
   print -u2 "Runtime source must not contain symbolic links."
   exit 65
 fi
+
+"$NODE_PATH" "$STAGING/src/runtime/identity.mjs" write "$STAGING" >/dev/null
 
 # The service is stopped before this helper runs. Publish only a complete
 # source snapshot so removed modules cannot survive an upgrade.

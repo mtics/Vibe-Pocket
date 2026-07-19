@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { PROTOCOL_VERSION } from "../src/server/http.mjs";
+import { PROTOCOL_VERSION } from "../src/protocol.mjs";
+import { readyPayload, writeRuntimeIdentity } from "../src/runtime/identity.mjs";
 
 const BRIDGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const LAUNCHER = join(BRIDGE_ROOT, "bin", "pair-phone.sh");
 const CLAIM_CODE = "abcdefghijklmnopqrstuvwxyzABCDEF";
 const PAIRING_URL = `vibepocket://pair?origin=https%3A%2F%2Fbridge.test&code=${CLAIM_CODE}`;
 const VALID_RESPONSE = JSON.stringify({
@@ -23,6 +23,8 @@ async function fixture(t, {
   openExit = 0,
   localProtocol = PROTOCOL_VERSION,
   remoteProtocol = PROTOCOL_VERSION,
+  localIdentity = null,
+  remoteIdentity = null,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "vibe-pocket-pair-launcher-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -32,9 +34,19 @@ async function fixture(t, {
   await mkdir(bin, { recursive: true });
   await mkdir(configDirectory, { recursive: true });
   await writeFile(join(configDirectory, "bridge.env"), "VIBE_POCKET_PORT=4320\n");
+  const runtime = join(configDirectory, "runtime");
+  await cp(BRIDGE_ROOT, runtime, {
+    recursive: true,
+    filter: (source) => source !== join(BRIDGE_ROOT, "node_modules")
+      && !source.startsWith(`${join(BRIDGE_ROOT, "node_modules")}/`),
+  });
+  const installedIdentity = await writeRuntimeIdentity(runtime);
+  const localReady = readyPayload(localIdentity ?? installedIdentity, localProtocol);
+  const remoteReady = readyPayload(remoteIdentity ?? installedIdentity, remoteProtocol);
 
   const paths = {
     nodeLog: join(root, "node-argv.log"),
+    curlLog: join(root, "curl-argv.log"),
     adbLog: join(root, "adb-argv.log"),
     adbStdin: join(root, "adb-stdin.log"),
     openLog: join(root, "open.log"),
@@ -48,13 +60,14 @@ async function fixture(t, {
 exec "$REAL_NODE" "$@"
 `);
   await executable(join(bin, "curl"), `#!/bin/zsh
+print -r -- "$*" >> "$CURL_ARGV_LOG"
 for argument in "$@"; do
-  if [[ "$argument" == http://127.0.0.1:*/healthz ]]; then
-    print -r -- '{"protocolVersion":${localProtocol}}'
+  if [[ "$argument" == http://127.0.0.1:*/readyz ]]; then
+    print -r -- "$LOCAL_READY"
     exit 0
   fi
-  if [[ "$argument" == */healthz ]]; then
-    print -r -- '{"protocolVersion":${remoteProtocol}}'
+  if [[ "$argument" == */readyz ]]; then
+    print -r -- "$REMOTE_READY"
     exit 0
   fi
   if [[ "$argument" == */v1/pairing/invitations ]]; then
@@ -83,6 +96,7 @@ exit ${openExit}
 
   return {
     root,
+    launcher: join(runtime, "bin", "pair-phone.sh"),
     configDirectory,
     paths,
     environment: {
@@ -90,9 +104,12 @@ exit ${openExit}
       HOME: home,
       REAL_NODE: process.execPath,
       NODE_ARGV_LOG: paths.nodeLog,
+      CURL_ARGV_LOG: paths.curlLog,
       ADB_ARGV_LOG: paths.adbLog,
       ADB_STDIN_LOG: paths.adbStdin,
       OPEN_LOG: paths.openLog,
+      LOCAL_READY: JSON.stringify(localReady),
+      REMOTE_READY: JSON.stringify(remoteReady),
       PAIRING_RESPONSE: response,
       VIBE_POCKET_NODE: join(bin, "node"),
       VIBE_POCKET_CURL: join(bin, "curl"),
@@ -105,7 +122,7 @@ exit ${openExit}
 
 test("keeps the pairing URL and claim code out of Node and adb argv", async (t) => {
   const setup = await fixture(t);
-  const result = await runLauncher(setup.environment);
+  const result = await runLauncher(setup.launcher, setup.environment);
 
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /Pairing invitation sent to phone-123/);
@@ -124,7 +141,7 @@ test("shell-quotes the deep link passed through adb stdin", async (t) => {
   const setup = await fixture(t, {
     response: JSON.stringify({ pairingUrl: quotedUrl, expiresAt: "2099-01-01T00:05:00.000Z" }),
   });
-  const result = await runLauncher(setup.environment);
+  const result = await runLauncher(setup.launcher, setup.environment);
 
   assert.equal(result.code, 0, result.stderr);
   const command = await readFile(setup.paths.adbStdin, "utf8");
@@ -132,17 +149,20 @@ test("shell-quotes the deep link passed through adb stdin", async (t) => {
   assert.equal(command.includes("note=it's"), false);
 });
 
-test("derives the required pairing protocol from the installed runtime", async (t) => {
+test("requires exact local and remote readiness before creating an invitation", async (t) => {
   for (const mismatch of [
     { localProtocol: PROTOCOL_VERSION - 1, remoteProtocol: PROTOCOL_VERSION },
     { localProtocol: PROTOCOL_VERSION, remoteProtocol: PROTOCOL_VERSION - 1 },
+    { localIdentity: `sha256:${"1".repeat(64)}` },
+    { remoteIdentity: `sha256:${"2".repeat(64)}` },
   ]) {
     await t.test(JSON.stringify(mismatch), async (t) => {
       const setup = await fixture(t, mismatch);
-      const result = await runLauncher(setup.environment);
+      const result = await runLauncher(setup.launcher, setup.environment);
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, new RegExp(`pairing protocol ${PROTOCOL_VERSION}`));
+      assert.match(result.stderr, new RegExp(`runtime identity and pairing protocol ${PROTOCOL_VERSION}`));
+      assert.doesNotMatch(await readFile(setup.paths.curlLog, "utf8"), /\/v1\/pairing\/invitations/);
       assert.equal(await readOptional(setup.paths.adbLog), "");
     });
   }
@@ -152,7 +172,7 @@ test("rejects malformed admin responses before invoking adb", async (t) => {
   for (const response of ["not json", "{}", '{"pairingUrl":42}']) {
     await t.test(response, async (t) => {
       const setup = await fixture(t, { response });
-      const result = await runLauncher(setup.environment);
+      const result = await runLauncher(setup.launcher, setup.environment);
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /invalid pairing invitation/);
       assert.equal(await readOptional(setup.paths.adbLog), "");
@@ -163,7 +183,7 @@ test("rejects malformed admin responses before invoking adb", async (t) => {
 test("creates the fallback invitation with mode 0600 and removes it when open fails", async (t) => {
   const setup = await fixture(t, { device: false, openExit: 1 });
   await mkdir(join(setup.configDirectory, "Vibe Pocket Bridge Host.app"));
-  const result = await runLauncher(setup.environment);
+  const result = await runLauncher(setup.launcher, setup.environment);
 
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /pairing window could not be opened/);
@@ -176,9 +196,9 @@ async function executable(path, contents) {
   await chmod(path, 0o700);
 }
 
-async function runLauncher(environment) {
+async function runLauncher(launcher, environment) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("/bin/zsh", [LAUNCHER], { env: environment });
+    const child = spawn("/bin/zsh", [launcher], { env: environment });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import { PAIRING_CAPABILITIES, PROTOCOL_VERSION } from "../protocol.mjs";
 import { Failure } from "../server/failure.mjs";
 
 const DEFAULT_TTL_MILLIS = 5 * 60 * 1_000;
@@ -61,8 +62,8 @@ export class Invitations {
       token: invitation.credential,
       credentialState: "pending",
       credentialExpiresAt: new Date(invitation.expiresAt).toISOString(),
-      protocolVersion: 8,
-      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results"],
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: [...PAIRING_CAPABILITIES],
     };
   }
 

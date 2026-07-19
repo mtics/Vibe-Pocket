@@ -8,11 +8,18 @@ import { create, PROTOCOL_VERSION } from "../../src/server/http.mjs";
 import { Events } from "../../src/server/events.mjs";
 import { Failure } from "../../src/server/failure.mjs";
 import { Invitations } from "../../src/pairing/invitations.mjs";
+import { Readiness } from "../../src/server/readiness.mjs";
 
 const TOKEN = "test-token-with-at-least-24-characters";
 const DEVICE_TOKEN = "vp1.testdevice.abcdefghijklmnopqrstuvwxyzABCDEFG";
+const RUNTIME_IDENTITY = `sha256:${"a".repeat(64)}`;
 
-async function withServer(run, { eventHub = null, deadlines = {}, activationFailure = null } = {}) {
+async function withServer(run, {
+  eventHub = null,
+  deadlines = {},
+  activationFailure = null,
+  readiness = readyReadiness(),
+} = {}) {
   const calls = [];
   const commandPrincipals = [];
   const operationResults = new Map();
@@ -91,7 +98,7 @@ async function withServer(run, { eventHub = null, deadlines = {}, activationFail
       return true;
     },
   };
-  const server = create({ service, events, token: TOKEN, credentials, invitations, deadlines });
+  const server = create({ service, events, token: TOKEN, credentials, invitations, deadlines, readiness });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
@@ -105,6 +112,7 @@ async function withServer(run, { eventHub = null, deadlines = {}, activationFail
       attachedThreads,
       hooks,
       invitations,
+      readiness,
       server,
     });
   } finally {
@@ -112,8 +120,25 @@ async function withServer(run, { eventHub = null, deadlines = {}, activationFail
   }
 }
 
-test("health check distinguishes reachability without exposing controller state", async () => {
-  assert.equal(PROTOCOL_VERSION, 8);
+function readyReadiness({ ready = true } = {}) {
+  const readiness = new Readiness({
+    runtimeIdentity: RUNTIME_IDENTITY,
+    protocolVersion: PROTOCOL_VERSION,
+  });
+  if (ready) readiness.markReady();
+  return readiness;
+}
+
+test("requires every HTTP server call site to supply readiness", () => {
+  assert.throws(
+    () => create({ service: {}, events: {}, token: TOKEN, credentials: {} }),
+    /requires readiness state/,
+  );
+});
+
+test("health remains live while readiness waits for service startup", async () => {
+  assert.equal(PROTOCOL_VERSION, 9);
+  const readiness = readyReadiness({ ready: false });
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/healthz`);
     assert.equal(response.status, 200);
@@ -123,7 +148,24 @@ test("health check distinguishes reachability without exposing controller state"
       service: "vibe-pocket-bridge",
       protocolVersion: PROTOCOL_VERSION,
     });
-  });
+
+    const pending = await fetch(`${baseUrl}/readyz`);
+    assert.equal(pending.status, 503);
+    assert.deepEqual(await pending.json(), {
+      ok: false,
+      service: "vibe-pocket-bridge",
+    });
+
+    readiness.markReady();
+    const ready = await fetch(`${baseUrl}/readyz`);
+    assert.equal(ready.status, 200);
+    assert.deepEqual(await ready.json(), {
+      ok: true,
+      service: "vibe-pocket-bridge",
+      runtimeIdentity: RUNTIME_IDENTITY,
+      protocolVersion: PROTOCOL_VERSION,
+    });
+  }, { readiness });
 });
 
 test("snapshot and commands remain authenticated", async () => {
@@ -222,8 +264,8 @@ test("pairing claims stay gated until a bodyless, repeatable commit", async () =
       token: DEVICE_TOKEN,
       credentialState: "pending",
       credentialExpiresAt: invitation.expiresAt,
-      protocolVersion: 8,
-      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results"],
+      protocolVersion: 9,
+      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results", "binding_context"],
     });
 
     const replay = await fetch(`${baseUrl}/v1/pairing/claim`, {

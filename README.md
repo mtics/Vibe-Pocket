@@ -3,7 +3,7 @@
 [![Android 10+](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](#requirements)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#requirements)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](#requirements)
-[![Protocol v6](https://img.shields.io/badge/protocol-v6-0969DA)](CONTROL_TRANSPORT.md)
+[![Protocol v9](https://img.shields.io/badge/protocol-v9-0969DA)](CONTROL_TRANSPORT.md)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-F59E0B)](#project-status)
 
 Vibe Pocket turns an Android phone into a programmable control surface for
@@ -242,7 +242,6 @@ Runtime state is stored outside the repository:
 | --- | --- |
 | `~/Library/Application Support/Vibe Pocket/bridge.env` | Mode-`0600` Bridge configuration and administration secret |
 | `~/Library/Application Support/Vibe Pocket/controller-profile.json` | Layers, mappings, colors, and workflow prompts |
-| `~/Library/Application Support/Vibe Pocket/owned-threads.json` | Bounded set of task IDs owned by Vibe Pocket |
 | `~/Library/Application Support/Vibe Pocket/paired-devices.json` | Mode-`0600` hashes of issued device credentials |
 | `~/Library/Application Support/Vibe Pocket/pairing.sock` | Mode-`0600` local invitation-creation socket |
 | `~/Library/Application Support/Vibe Pocket/runtime` | Installed Bridge runtime |
@@ -287,13 +286,13 @@ Vibe-Pocket/
 |       |-- session/          Connection and command orchestration
 |       `-- ui/               Compose feature surfaces
 |-- bridge/
-|   |-- src/codex/            Codex RPC, tasks, settings, turns, and intent
+|   |-- src/codex/            Codex RPC and managed shortcut configuration
 |   |-- src/control/          Command, queue, refresh, state, and session flow
 |   |-- src/macos/            Signed host, pairing window, and desktop adapter
 |   |-- src/pairing/          Invitations and device credentials
 |   |-- src/profile/          Profile validation and persistence
 |   |-- src/server/           Authenticated HTTP and event server
-|   `-- src/task/             Task discovery, activity, ownership, and links
+|   `-- src/task/             Task discovery, activity, settings, and links
 `-- CONTROL_TRANSPORT.md      Transport decision and compatibility boundary
 ```
 
@@ -318,8 +317,8 @@ cd android
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The current verified baseline contains 107 passing Bridge tests and 67 passing
-Android JVM tests. The Swift host also passes standalone type checking.
+These commands are the release gate for the Bridge, Android JVM behavior,
+Android lint, APK assembly, and standalone Swift host parsing.
 
 ## Troubleshooting
 
@@ -327,6 +326,7 @@ Android JVM tests. The Swift host also passes standalone type checking.
 
 ```sh
 curl http://127.0.0.1:4320/healthz
+curl http://127.0.0.1:4320/readyz
 launchctl print gui/$UID/au.edu.uts.vibepocket.bridge
 tail -n 100 "$HOME/Library/Logs/Vibe Pocket/bridge-error.log"
 ```

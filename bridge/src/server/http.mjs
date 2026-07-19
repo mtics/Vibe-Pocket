@@ -2,16 +2,18 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { Failure } from "./failure.mjs";
 import { Invitations } from "../pairing/invitations.mjs";
+import { PROTOCOL_VERSION } from "../protocol.mjs";
 import { readJson } from "./json.mjs";
 import { manage, normalizeDeadlines, RequestTracker } from "./request-tracker.mjs";
 
-export const PROTOCOL_VERSION = 8;
+export { PROTOCOL_VERSION };
 
 export function create({
   service,
   events,
   token,
   credentials,
+  readiness,
   invitations = new Invitations({
     issue: (expiresAt) => {
       if (typeof credentials?.issue !== "function") {
@@ -22,6 +24,9 @@ export function create({
   }),
   deadlines: deadlineOverrides = {},
 }) {
+  if (typeof readiness?.response !== "function") {
+    throw new TypeError("Bridge HTTP server requires readiness state.");
+  }
   const deadlines = normalizeDeadlines(deadlineOverrides);
   const requests = new RequestTracker();
   const server = createServer((request, response) => {
@@ -38,6 +43,12 @@ export function create({
           service: "vibe-pocket-bridge",
           protocolVersion: PROTOCOL_VERSION,
         });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/readyz") {
+        requireBodyless(request);
+        const readinessResponse = readiness.response();
+        sendJson(request, response, readinessResponse.status, readinessResponse.body);
         return;
       }
       if (request.method === "POST" && url.pathname === "/v1/pairing/claim") {

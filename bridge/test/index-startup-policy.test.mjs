@@ -3,10 +3,17 @@ import { mkdtemp, lstat, rm } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { listen, listenOnOwnedUnixSocket } from "../src/index.mjs";
+import {
+  createRuntimeReadiness,
+  listen,
+  listenOnOwnedUnixSocket,
+  startService,
+} from "../src/index.mjs";
+import { Readiness } from "../src/server/readiness.mjs";
 
 test("awaits public and pairing binds before starting Accessibility discovery", async () => {
   const source = await readFile(new URL("../src/index.mjs", import.meta.url), "utf8");
@@ -17,6 +24,36 @@ test("awaits public and pairing binds before starting Accessibility discovery", 
   assert.ok(publicBind >= 0);
   assert.ok(pairingBind > publicBind);
   assert.ok(startup > pairingBind);
+});
+
+test("does not become ready until service startup completes", async () => {
+  let completeStartup;
+  const startup = new Promise((resolve) => { completeStartup = resolve; });
+  const service = { start: () => startup };
+  const readiness = new Readiness({
+    runtimeIdentity: `sha256:${"b".repeat(64)}`,
+    protocolVersion: 9,
+  });
+
+  const starting = startService(service, readiness);
+  assert.equal(readiness.response().status, 503);
+
+  completeStartup();
+  await starting;
+  assert.equal(readiness.response().status, 200);
+});
+
+test("creates deterministic readiness for an unmanifested source checkout", async () => {
+  const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
+
+  const first = await createRuntimeReadiness(sourceRoot);
+  const second = await createRuntimeReadiness(sourceRoot);
+  first.markReady();
+  second.markReady();
+
+  assert.match(first.response().body.runtimeIdentity, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(second.response().body.runtimeIdentity, first.response().body.runtimeIdentity);
+  assert.equal(first.response().body.protocolVersion, 9);
 });
 
 test("delegates signals to the ordered shutdown coordinator", async () => {

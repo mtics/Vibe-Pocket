@@ -30,18 +30,35 @@ if [[ -z "$PUBLIC_URL" ]]; then
   exit 1
 fi
 
-PAYLOAD=$("$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ origin: process.argv[1] }))' "$PUBLIC_URL")
 EXPECTED_PROTOCOL=$("$NODE_BIN" -e \
   'import(process.argv[1]).then(({ PROTOCOL_VERSION }) => process.stdout.write(String(PROTOCOL_VERSION)))' \
-  "$BRIDGE_DIR/src/server/http.mjs")
-LOCAL_PROTOCOL=$("$CURL_BIN" -fsS "http://127.0.0.1:$VIBE_POCKET_PORT/healthz" | \
-  "$NODE_BIN" -e 'let body=""; process.stdin.on("data", c => body += c); process.stdin.on("end", () => process.stdout.write(String(JSON.parse(body).protocolVersion)))')
-REMOTE_PROTOCOL=$("$CURL_BIN" -fsS "$PUBLIC_URL/healthz" | \
-  "$NODE_BIN" -e 'let body=""; process.stdin.on("data", c => body += c); process.stdin.on("end", () => process.stdout.write(String(JSON.parse(body).protocolVersion)))')
-if [[ "$LOCAL_PROTOCOL" != "$EXPECTED_PROTOCOL" || "$REMOTE_PROTOCOL" != "$EXPECTED_PROTOCOL" ]]; then
-  print -u2 "The local Bridge and Tailscale Serve endpoint must both expose pairing protocol $EXPECTED_PROTOCOL."
+  "$BRIDGE_DIR/src/protocol.mjs")
+IDENTITY_TOOL="$BRIDGE_DIR/src/runtime/identity.mjs"
+EXPECTED_READY=$("$NODE_BIN" "$IDENTITY_TOOL" expected "$BRIDGE_DIR")
+if ! LOCAL_READY=$(
+  "$CURL_BIN" --max-time 2 --max-filesize 4096 -fsS "http://127.0.0.1:$VIBE_POCKET_PORT/readyz"
+); then
+  print -u2 "The local Bridge is not ready with the installed runtime identity and pairing protocol $EXPECTED_PROTOCOL."
   exit 1
 fi
+if ! REMOTE_READY=$(
+  "$CURL_BIN" --max-time 2 --max-filesize 4096 -fsS "$PUBLIC_URL/readyz"
+); then
+  print -u2 "The Tailscale Serve endpoint is not ready with the installed runtime identity and pairing protocol $EXPECTED_PROTOCOL."
+  exit 1
+fi
+if ! print -rn -- "$LOCAL_READY" | \
+  "$NODE_BIN" "$IDENTITY_TOOL" matches "$EXPECTED_READY" >/dev/null 2>&1; then
+  print -u2 "The local Bridge does not match the installed runtime identity and pairing protocol $EXPECTED_PROTOCOL."
+  exit 1
+fi
+if ! print -rn -- "$REMOTE_READY" | \
+  "$NODE_BIN" "$IDENTITY_TOOL" matches "$EXPECTED_READY" >/dev/null 2>&1; then
+  print -u2 "The Tailscale Serve endpoint does not match the installed runtime identity and pairing protocol $EXPECTED_PROTOCOL."
+  exit 1
+fi
+
+PAYLOAD=$("$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ origin: process.argv[1] }))' "$PUBLIC_URL")
 
 PAIRING_SOCKET="$CONFIG_DIR/pairing.sock"
 RESPONSE=$("$CURL_BIN" -fsS \
