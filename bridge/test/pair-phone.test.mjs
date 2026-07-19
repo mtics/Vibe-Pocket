@@ -6,6 +6,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { PROTOCOL_VERSION } from "../src/server/http.mjs";
+
 const BRIDGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LAUNCHER = join(BRIDGE_ROOT, "bin", "pair-phone.sh");
 const CLAIM_CODE = "abcdefghijklmnopqrstuvwxyzABCDEF";
@@ -15,7 +17,13 @@ const VALID_RESPONSE = JSON.stringify({
   expiresAt: "2099-01-01T00:05:00.000Z",
 });
 
-async function fixture(t, { response = VALID_RESPONSE, device = true, openExit = 0 } = {}) {
+async function fixture(t, {
+  response = VALID_RESPONSE,
+  device = true,
+  openExit = 0,
+  localProtocol = PROTOCOL_VERSION,
+  remoteProtocol = PROTOCOL_VERSION,
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "vibe-pocket-pair-launcher-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, "home");
@@ -41,8 +49,12 @@ exec "$REAL_NODE" "$@"
 `);
   await executable(join(bin, "curl"), `#!/bin/zsh
 for argument in "$@"; do
+  if [[ "$argument" == http://127.0.0.1:*/healthz ]]; then
+    print -r -- '{"protocolVersion":${localProtocol}}'
+    exit 0
+  fi
   if [[ "$argument" == */healthz ]]; then
-    print -r -- '{"protocolVersion":6}'
+    print -r -- '{"protocolVersion":${remoteProtocol}}'
     exit 0
   fi
   if [[ "$argument" == */v1/pairing/invitations ]]; then
@@ -118,6 +130,22 @@ test("shell-quotes the deep link passed through adb stdin", async (t) => {
   const command = await readFile(setup.paths.adbStdin, "utf8");
   assert.equal(command.includes("note=it'\\''s"), true);
   assert.equal(command.includes("note=it's"), false);
+});
+
+test("derives the required pairing protocol from the installed runtime", async (t) => {
+  for (const mismatch of [
+    { localProtocol: PROTOCOL_VERSION - 1, remoteProtocol: PROTOCOL_VERSION },
+    { localProtocol: PROTOCOL_VERSION, remoteProtocol: PROTOCOL_VERSION - 1 },
+  ]) {
+    await t.test(JSON.stringify(mismatch), async (t) => {
+      const setup = await fixture(t, mismatch);
+      const result = await runLauncher(setup.environment);
+
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, new RegExp(`pairing protocol ${PROTOCOL_VERSION}`));
+      assert.equal(await readOptional(setup.paths.adbLog), "");
+    });
+  }
 });
 
 test("rejects malformed admin responses before invoking adb", async (t) => {

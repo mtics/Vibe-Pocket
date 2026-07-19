@@ -31,7 +31,19 @@ export function load(environment = process.env, cwd = process.cwd()) {
   );
   const pairingSocketPath = join(dirname(profilePath), "pairing.sock");
   const devicesPath = join(dirname(profilePath), "paired-devices.json");
-  return { host, port, token, workspaces, codexCommand, profilePath, ownedThreadsPath, pairingSocketPath, devicesPath };
+  const operationPath = join(dirname(profilePath), "operations.json");
+  return {
+    host,
+    port,
+    token,
+    workspaces,
+    codexCommand,
+    profilePath,
+    ownedThreadsPath,
+    pairingSocketPath,
+    devicesPath,
+    operationPath,
+  };
 }
 
 function parseProfilePath(value, environment) {

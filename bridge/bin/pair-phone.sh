@@ -16,6 +16,7 @@ source "$CONFIG_FILE"
 set +a
 
 SCRIPT_DIR=${0:A:h}
+BRIDGE_DIR=${SCRIPT_DIR:h}
 NODE_BIN=${VIBE_POCKET_NODE:-$(command -v node)}
 CURL_BIN=${VIBE_POCKET_CURL:-/usr/bin/curl}
 OPEN_BIN=${VIBE_POCKET_OPEN:-/usr/bin/open}
@@ -30,12 +31,15 @@ if [[ -z "$PUBLIC_URL" ]]; then
 fi
 
 PAYLOAD=$("$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ origin: process.argv[1] }))' "$PUBLIC_URL")
+EXPECTED_PROTOCOL=$("$NODE_BIN" -e \
+  'import(process.argv[1]).then(({ PROTOCOL_VERSION }) => process.stdout.write(String(PROTOCOL_VERSION)))' \
+  "$BRIDGE_DIR/src/server/http.mjs")
 LOCAL_PROTOCOL=$("$CURL_BIN" -fsS "http://127.0.0.1:$VIBE_POCKET_PORT/healthz" | \
   "$NODE_BIN" -e 'let body=""; process.stdin.on("data", c => body += c); process.stdin.on("end", () => process.stdout.write(String(JSON.parse(body).protocolVersion)))')
 REMOTE_PROTOCOL=$("$CURL_BIN" -fsS "$PUBLIC_URL/healthz" | \
   "$NODE_BIN" -e 'let body=""; process.stdin.on("data", c => body += c); process.stdin.on("end", () => process.stdout.write(String(JSON.parse(body).protocolVersion)))')
-if [[ "$LOCAL_PROTOCOL" != "6" || "$REMOTE_PROTOCOL" != "6" ]]; then
-  print -u2 "The local Bridge and Tailscale Serve endpoint must both expose pairing protocol 6."
+if [[ "$LOCAL_PROTOCOL" != "$EXPECTED_PROTOCOL" || "$REMOTE_PROTOCOL" != "$EXPECTED_PROTOCOL" ]]; then
+  print -u2 "The local Bridge and Tailscale Serve endpoint must both expose pairing protocol $EXPECTED_PROTOCOL."
   exit 1
 fi
 

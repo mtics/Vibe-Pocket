@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { createDefault } from "../../src/profile/model.mjs";
+import { Operations, persistOperations } from "../../src/control/operations.mjs";
 import { Session } from "../../src/control/session.mjs";
 
 class FakeEvents {
@@ -109,6 +113,12 @@ function makeService(desktop = new FakeDesktop(), events = new FakeEvents(), opt
     pollIntervalMs: 0,
     ...options,
   });
+}
+
+async function temporaryOperationPath(t) {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-session-operations-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return join(root, "operations.json");
 }
 
 test("publishes a capability-driven Codex Micro controller snapshot", async () => {
@@ -329,7 +339,8 @@ test("acknowledges a desktop action before a slow state scan completes", async (
     new Promise((_, reject) => setTimeout(() => reject(new Error("command waited for state scan")), 50)),
   ]);
 
-  assert.equal(result.accepted, true);
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.result.accepted, true);
   assert.deepEqual(desktop.calls, [["press", "approve"]]);
   desktop.releaseStatus.resolve();
   await service.dispose();
@@ -361,7 +372,7 @@ test("waits for initial desktop discovery before accepting a control command", a
 
   desktop.discovery.resolve();
   await starting;
-  assert.equal((await command).accepted, true);
+  assert.equal((await command).result.accepted, true);
   assert.deepEqual(desktop.calls, [["press", "approve"]]);
   await service.dispose();
 });
@@ -537,6 +548,10 @@ test("reports a desktop action failure before a slow state scan completes", asyn
     (error) => error.code === "command_outcome_indeterminate",
   );
 
+  const operation = await service.commandResult("fast-error");
+  assert.equal(operation.status, "unknown");
+  assert.equal(operation.error.code, "command_outcome_indeterminate");
+
   desktop.releaseStatus.resolve();
   await service.dispose();
 });
@@ -639,7 +654,97 @@ test("fingerprints validated command bodies independent of property order", asyn
   await service.dispose();
 });
 
-test("retains an explicit tombstone when a side effect is followed by failure", async () => {
+test("coalesces concurrent duplicate commands and waits for one terminal result", async () => {
+  class BlockingDesktop extends FakeDesktop {
+    started = Promise.withResolvers();
+    release = Promise.withResolvers();
+
+    async press(control) {
+      this.calls.push(["press", control]);
+      this.started.resolve();
+      await this.release.promise;
+    }
+  }
+
+  const desktop = new BlockingDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  const first = service.command({ kind: "binding", inputId: "key_accept" }, "concurrent-duplicate");
+  await desktop.started.promise;
+  let replaySettled = false;
+  const replay = service.command({ inputId: "key_accept", kind: "binding" }, "concurrent-duplicate")
+    .then((operation) => {
+      replaySettled = true;
+      return operation;
+    });
+  await new Promise(setImmediate);
+  assert.equal(replaySettled, false);
+
+  desktop.release.resolve();
+  const [firstResult, replayResult] = await Promise.all([first, replay]);
+  assert.deepEqual(replayResult, firstResult);
+  assert.equal(firstResult.status, "succeeded");
+  assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  await service.dispose();
+});
+
+test("does not dispatch when persisting running fails", async (t) => {
+  const path = await temporaryOperationPath(t);
+  let commits = 0;
+  const operations = new Operations({
+    path,
+    commit: (destination, entries) => {
+      commits += 1;
+      if (commits === 2) throw new Error("running write failed");
+      persistOperations(destination, entries);
+    },
+  });
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop, new FakeEvents(), { operations });
+  await service.start();
+
+  await assert.rejects(
+    () => service.command({ kind: "approve" }, "running-persistence-failure"),
+    (error) => error.code === "operation_persistence_failed",
+  );
+  assert.deepEqual(desktop.calls, []);
+  const operation = await service.commandResult("running-persistence-failure");
+  assert.equal(operation.status, "failed");
+  assert.equal(operation.error.code, "operation_persistence_failed");
+  await service.dispose();
+});
+
+test("reports and retains unknown when terminal persistence fails after dispatch", async (t) => {
+  const path = await temporaryOperationPath(t);
+  let commits = 0;
+  const operations = new Operations({
+    path,
+    commit: (destination, entries) => {
+      commits += 1;
+      if (commits === 3) throw new Error("terminal write failed");
+      persistOperations(destination, entries);
+    },
+  });
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop, new FakeEvents(), { operations });
+  await service.start();
+
+  await assert.rejects(
+    () => service.command({ kind: "approve" }, "terminal-persistence-failure"),
+    (error) => error.code === "command_outcome_indeterminate",
+  );
+  const operation = await service.commandResult("terminal-persistence-failure");
+  assert.equal(operation.status, "unknown");
+  assert.equal(operation.error.code, "command_outcome_indeterminate");
+
+  const replay = await service.command({ kind: "approve" }, "terminal-persistence-failure");
+  assert.equal(replay.status, "unknown");
+  assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  assert.equal(new Operations({ path }).get("terminal-persistence-failure", "principal:local-root").status, "unknown");
+  await service.dispose();
+});
+
+test("retains an unknown terminal operation when dispatch reports an error", async () => {
   class AmbiguousDesktop extends FakeDesktop {
     async press(control) {
       this.calls.push(["press", control]);
@@ -651,18 +756,13 @@ test("retains an explicit tombstone when a side effect is followed by failure", 
   const service = makeService(desktop);
   await service.start();
 
-  let firstFailure;
   await assert.rejects(
     () => service.command({ kind: "stop" }, "ambiguous-action"),
-    (error) => {
-      firstFailure = error;
-      return error.code === "command_outcome_indeterminate";
-    },
+    (error) => error.code === "command_outcome_indeterminate",
   );
-  await assert.rejects(
-    () => service.command({ kind: "stop" }, "ambiguous-action"),
-    (error) => error === firstFailure,
-  );
+  const replay = await service.command({ kind: "stop" }, "ambiguous-action");
+  assert.equal(replay.status, "unknown");
+  assert.equal(replay.error.code, "command_outcome_indeterminate");
   assert.deepEqual(desktop.calls, [["press", "stop"]]);
   await service.dispose();
 });
@@ -884,7 +984,44 @@ test("revalidates a queued command principal after revocation", async () => {
   desktop.releaseFirst.resolve();
   await first;
   await assert.rejects(queued, (error) => error.code === "credential_revoked");
+  const rejectedOperation = await service.commandResult("principal-queued", principal);
+  assert.equal(rejectedOperation.status, "failed");
+  assert.equal(rejectedOperation.error.code, "credential_revoked");
   assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  await service.dispose();
+});
+
+test("defers revoked-principal cleanup until an in-flight command has a terminal record", async () => {
+  class BlockingDesktop extends FakeDesktop {
+    started = Promise.withResolvers();
+    release = Promise.withResolvers();
+
+    async press(control) {
+      this.calls.push(["press", control]);
+      this.started.resolve();
+      await this.release.promise;
+    }
+  }
+
+  const desktop = new BlockingDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  let active = true;
+  const principal = { id: "device:cleanup", revocable: true, valid: () => active };
+  const command = service.command({ kind: "approve" }, "cleanup-in-flight", principal);
+  await desktop.started.promise;
+
+  active = false;
+  assert.equal(service.revokePrincipal(principal.id), false);
+  assert.equal((await service.commandResult("cleanup-in-flight", principal)).status, "running");
+
+  desktop.release.resolve();
+  assert.equal((await command).status, "succeeded");
+  await new Promise(setImmediate);
+  await assert.rejects(
+    () => service.commandResult("cleanup-in-flight", principal),
+    (error) => error.status === 404 && error.code === "operation_not_found",
+  );
   await service.dispose();
 });
 

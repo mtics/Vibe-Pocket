@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { create, PROTOCOL_VERSION } from "../../src/server/http.mjs";
 import { Events } from "../../src/server/events.mjs";
+import { Failure } from "../../src/server/failure.mjs";
 import { Invitations } from "../../src/pairing/invitations.mjs";
 
 const TOKEN = "test-token-with-at-least-24-characters";
@@ -14,6 +15,8 @@ const DEVICE_TOKEN = "vp1.testdevice.abcdefghijklmnopqrstuvwxyzABCDEFG";
 async function withServer(run, { eventHub = null, deadlines = {}, activationFailure = null } = {}) {
   const calls = [];
   const commandPrincipals = [];
+  const operationResults = new Map();
+  const revokedPrincipals = [];
   const attachedThreads = [];
   const hooks = [];
   const service = {
@@ -29,7 +32,26 @@ async function withServer(run, { eventHub = null, deadlines = {}, activationFail
     async command(command, idempotencyKey, principal) {
       calls.push({ command, idempotencyKey });
       commandPrincipals.push(principal);
-      return { accepted: true, commandId: "cmd_test", revision: "r_8" };
+      const operation = {
+        operationId: idempotencyKey,
+        status: "succeeded",
+        result: { accepted: true, revision: "r_8" },
+      };
+      operationResults.set(idempotencyKey, { operation, principalId: principal.id });
+      return operation;
+    },
+    async commandResult(operationId, principal) {
+      const stored = operationResults.get(operationId);
+      if (!stored || stored.principalId !== principal.id) {
+        throw new Failure(404, "operation_not_found", "Command operation not found.");
+      }
+      return stored.operation;
+    },
+    revokePrincipal(principalId) {
+      revokedPrincipals.push(principalId);
+      for (const [operationId, stored] of operationResults) {
+        if (stored.principalId === principalId) operationResults.delete(operationId);
+      }
     },
   };
   const events = eventHub ?? { connect() { throw new Error("SSE is not used in this test."); } };
@@ -78,6 +100,8 @@ async function withServer(run, { eventHub = null, deadlines = {}, activationFail
       port,
       calls,
       commandPrincipals,
+      operationResults,
+      revokedPrincipals,
       attachedThreads,
       hooks,
       invitations,
@@ -89,7 +113,7 @@ async function withServer(run, { eventHub = null, deadlines = {}, activationFail
 }
 
 test("health check distinguishes reachability without exposing controller state", async () => {
-  assert.equal(PROTOCOL_VERSION, 7);
+  assert.equal(PROTOCOL_VERSION, 8);
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/healthz`);
     assert.equal(response.status, 200);
@@ -122,7 +146,12 @@ test("snapshot and commands remain authenticated", async () => {
       },
       body: JSON.stringify({ kind: "binding", inputId: "key_voice" }),
     });
-    assert.equal(command.status, 202);
+    assert.equal(command.status, 200);
+    assert.deepEqual(await command.json(), {
+      operationId: "gesture-123",
+      status: "succeeded",
+      result: { accepted: true, revision: "r_8" },
+    });
     assert.deepEqual(calls, [{
       command: { kind: "binding", inputId: "key_voice" },
       idempotencyKey: "gesture-123",
@@ -131,8 +160,51 @@ test("snapshot and commands remain authenticated", async () => {
   });
 });
 
+test("command-result GET is bodyless and visible only to the active owning principal", async () => {
+  await withServer(async ({ baseUrl }) => {
+    const created = await fetch(`${baseUrl}/v1/pocket/commands`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "owned-operation",
+      },
+      body: JSON.stringify({ kind: "stop" }),
+    });
+    assert.equal(created.status, 200);
+
+    const unauthorized = await fetch(`${baseUrl}/v1/pocket/commands/owned-operation`);
+    assert.equal(unauthorized.status, 401);
+
+    const owned = await fetch(`${baseUrl}/v1/pocket/commands/owned-operation`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    assert.equal(owned.status, 200);
+    assert.equal((await owned.json()).status, "succeeded");
+
+    const foreign = await fetch(`${baseUrl}/v1/pocket/commands/owned-operation`, {
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(foreign.status, 404);
+    assert.equal((await foreign.json()).error.code, "operation_not_found");
+
+    const body = Buffer.from("{}");
+    const bodyRejected = await rawRequest(`${baseUrl}/v1/pocket/commands/owned-operation`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Length": body.length,
+        "Content-Type": "application/json",
+      },
+      chunks: [body],
+    });
+    assert.equal(bodyRejected.status, 400);
+    assert.equal(JSON.parse(bodyRejected.body).error.code, "unexpected_body");
+  });
+});
+
 test("pairing claims stay gated until a bodyless, repeatable commit", async () => {
-  await withServer(async ({ baseUrl, invitations, calls, attachedThreads }) => {
+  await withServer(async ({ baseUrl, invitations, calls, attachedThreads, revokedPrincipals }) => {
     const invitation = invitations.create("https://m5.example.ts.net");
     const pairingUrl = new URL(invitation.pairingUrl);
     const code = pairingUrl.searchParams.get("code");
@@ -150,8 +222,8 @@ test("pairing claims stay gated until a bodyless, repeatable commit", async () =
       token: DEVICE_TOKEN,
       credentialState: "pending",
       credentialExpiresAt: invitation.expiresAt,
-      protocolVersion: 7,
-      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit"],
+      protocolVersion: 8,
+      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results"],
     });
 
     const replay = await fetch(`${baseUrl}/v1/pairing/claim`, {
@@ -226,6 +298,7 @@ test("pairing claims stay gated until a bodyless, repeatable commit", async () =
       headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
     });
     assert.equal(revoked.status, 200);
+    assert.deepEqual(revokedPrincipals, ["device:test"]);
     const rejectedAfterRevoke = await fetch(`${baseUrl}/v1/pocket/snapshot`, {
       headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
     });
@@ -489,7 +562,7 @@ test("accepts a valid JSON body delivered in slow raw-byte chunks", async () => 
       delayMs: 15,
     });
 
-    assert.equal(response.status, 202);
+    assert.equal(response.status, 200);
     assert.deepEqual(calls, [{ command: { kind: "stop" }, idempotencyKey: "slow-body" }]);
   });
 });

@@ -61,8 +61,8 @@ export class Invitations {
       token: invitation.credential,
       credentialState: "pending",
       credentialExpiresAt: new Date(invitation.expiresAt).toISOString(),
-      protocolVersion: 7,
-      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit"],
+      protocolVersion: 8,
+      capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results"],
     };
   }
 

@@ -32,6 +32,7 @@ export async function main() {
     workspaces: config.workspaces,
     events,
     profileStore,
+    operationPath: config.operationPath,
     desktop,
   });
   const credentials = new Credentials({ path: config.devicesPath, rootToken: config.token });

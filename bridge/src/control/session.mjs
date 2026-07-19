@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import {
   ACTIONS,
   GESTURES,
@@ -11,7 +9,7 @@ import {
 } from "../profile/model.mjs";
 import { Failure } from "../server/failure.mjs";
 import { resolve } from "./command.mjs";
-import { Idempotency } from "./idempotency.mjs";
+import { Operations } from "./operations.mjs";
 import { Queue } from "./queue.mjs";
 import { Refresh } from "./refresh.mjs";
 import { State } from "./state.mjs";
@@ -27,7 +25,9 @@ export class Session {
   #activeLayerId;
   #state;
   #queue;
-  #idempotency;
+  #operations;
+  #executions = new Map();
+  #revokedPrincipals = new Set();
   #refresh;
   #ready = null;
   #stopping = null;
@@ -39,6 +39,8 @@ export class Session {
     desktop,
     profile,
     profileStore = null,
+    operationPath = null,
+    operations = null,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     maxPendingCommands,
     maxPendingCommandsPerPrincipal,
@@ -55,7 +57,7 @@ export class Session {
         maxPendingPerPrincipal: maxPendingCommandsPerPrincipal,
       }),
     });
-    this.#idempotency = new Idempotency();
+    this.#operations = operations ?? new Operations({ path: operationPath });
     this.#activeLayerId = this.#profile.layers[0].id;
     this.#state = new State({ events, workspaces, taskId: TASK_ID });
     this.#refresh = new Refresh({
@@ -144,16 +146,108 @@ export class Session {
   async command(command, idempotencyKey, principal = null) {
     await this.#ready;
     principal = normalizePrincipal(principal);
-    return this.#idempotency.once(idempotencyKey, command, ({ dispatch, admission }) => (
-      this.#queue.run(async () => {
-        const authority = (operation) => dispatch(() => this.#dispatch(operation));
+    const existing = this.#operations.match(idempotencyKey, command, principal.id);
+    if (existing) return this.#replay(existing, principal.id);
+
+    const admission = this.#queue.reserve({ principal });
+    let claim;
+    try {
+      claim = this.#operations.create(idempotencyKey, command, principal.id);
+    } catch (error) {
+      admission.release();
+      throw error;
+    }
+    if (!claim.created) {
+      admission.release();
+      return this.#replay(claim.operation, principal.id);
+    }
+
+    const execution = this.#runCommand(command, claim.operation.operationId, principal, admission);
+    const tracked = { principalId: principal.id, execution };
+    this.#executions.set(claim.operation.operationId, tracked);
+    const clear = () => {
+      if (this.#executions.get(claim.operation.operationId) === tracked) {
+        this.#executions.delete(claim.operation.operationId);
+      }
+      this.#cleanupRevokedPrincipal(principal.id);
+    };
+    execution.then(clear, clear);
+    return execution;
+  }
+
+  async commandResult(operationId, principal = null) {
+    await this.#ready;
+    principal = normalizePrincipal(principal);
+    return this.#operations.get(operationId, principal.id);
+  }
+
+  revokePrincipal(principalId) {
+    this.#revokedPrincipals.add(principalId);
+    return this.#cleanupRevokedPrincipal(principalId);
+  }
+
+  #replay(operation, principalId) {
+    const tracked = this.#executions.get(operation.operationId);
+    if (tracked?.principalId === principalId) return tracked.execution;
+    return operation;
+  }
+
+  #cleanupRevokedPrincipal(principalId) {
+    if (!this.#revokedPrincipals.has(principalId)) return false;
+    if ([...this.#executions.values()].some((execution) => execution.principalId === principalId)) return false;
+    try {
+      const removed = this.#operations.removePrincipal(principalId);
+      this.#revokedPrincipals.delete(principalId);
+      return removed;
+    } catch {
+      return false;
+    }
+  }
+
+  async #runCommand(command, operationId, principal, admission) {
+    const execution = this.#queue.run(async () => {
+      this.#operations.markRunning(operationId, principal.id);
+      let dispatched = false;
+      const authority = (operation) => {
+        dispatched = true;
+        return this.#dispatch(operation);
+      };
+      try {
         await this.#execute(command, authority);
-        return { commandId: `cmd_${randomUUID()}`, accepted: true, revision: this.#state.revision };
-      }, { principal, admission })
-    ), {
-      principal,
-      admit: () => this.#queue.reserve({ principal }),
-    });
+      } catch (error) {
+        if (dispatched) {
+          this.#operations.markUnknown(operationId, principal.id);
+          throw indeterminateFailure();
+        }
+        try {
+          this.#operations.markFailed(operationId, principal.id, error);
+        } catch {
+          this.#operations.markUnknown(operationId, principal.id);
+          throw indeterminateFailure();
+        }
+        throw error;
+      }
+
+      try {
+        return this.#operations.markSucceeded(operationId, principal.id, {
+          accepted: true,
+          revision: this.#state.revision,
+        });
+      } catch {
+        this.#operations.markUnknown(operationId, principal.id);
+        throw indeterminateFailure();
+      }
+    }, { principal, admission });
+
+    try {
+      return await execution;
+    } catch (error) {
+      const current = this.#operations.get(operationId, principal.id);
+      if (current.status === "accepted") {
+        this.#operations.markFailed(operationId, principal.id, error);
+      }
+      throw error;
+    }
   }
 
   async #execute(command, authority) {
@@ -370,4 +464,12 @@ function normalizePrincipal(principal) {
     ...principal,
     role: principal.role ?? (principal.revocable ? "device" : "root"),
   };
+}
+
+function indeterminateFailure() {
+  return new Failure(
+    409,
+    "command_outcome_indeterminate",
+    "The controller action may have completed; check this operation's status before taking any further action.",
+  );
 }

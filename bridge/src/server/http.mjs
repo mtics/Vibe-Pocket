@@ -5,7 +5,7 @@ import { Invitations } from "../pairing/invitations.mjs";
 import { readJson } from "./json.mjs";
 import { manage, normalizeDeadlines, RequestTracker } from "./request-tracker.mjs";
 
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 export function create({
   service,
@@ -63,6 +63,7 @@ export function create({
         if (!principal.revocable || !credentials?.revoke(bearer(request))) {
           throw new Failure(400, "device_credential_required", "Only a paired device can revoke its credential.");
         }
+        await Promise.resolve(service.revokePrincipal?.(principal.id)).catch(() => {});
         events.closeIdentity?.(principal.id);
         sendJson(request, response, 200, { revoked: true });
         return;
@@ -77,6 +78,14 @@ export function create({
         requireBodyless(request);
         ensureValid(principal);
         events.connect(request, response, principal);
+        return;
+      }
+      const operationMatch = url.pathname.match(/^\/v1\/pocket\/commands\/([^/]+)$/);
+      if (request.method === "GET" && operationMatch) {
+        requireBodyless(request);
+        ensureValid(principal);
+        const operationId = decodeOperationId(operationMatch[1]);
+        sendJson(request, response, 200, await service.commandResult(operationId, principal));
         return;
       }
       if (request.method === "POST" && url.pathname === "/v1/pocket/desktop/attach") {
@@ -99,7 +108,7 @@ export function create({
       if (request.method === "POST" && url.pathname === "/v1/pocket/commands") {
         const command = await readJson(request, { timeoutMs: deadlines.bodyMs });
         const responseBody = await service.command(command, request.headers["idempotency-key"], principal);
-        sendJson(request, response, 202, responseBody);
+        sendJson(request, response, 200, responseBody);
         return;
       }
       sendJson(request, response, 404, { error: { code: "not_found", message: "Vibe Pocket endpoint not found." } });
@@ -173,6 +182,14 @@ function requireBodyless(request) {
   const contentLength = Number.parseInt(request.headers["content-length"] ?? "0", 10);
   if (request.headers["transfer-encoding"] != null || contentLength > 0) {
     throw new Failure(400, "unexpected_body", "This endpoint does not accept a request body.");
+  }
+}
+
+function decodeOperationId(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new Failure(400, "invalid_operation_id", "The command operation ID is invalid.");
   }
 }
 
