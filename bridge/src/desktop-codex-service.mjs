@@ -25,6 +25,7 @@ const DESKTOP_SESSION_ID = "vibe-pocket-codex";
 const MAX_IDEMPOTENCY_ENTRIES = 256;
 const ACTION_REFRESH_DEBOUNCE_MS = 160;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+const STATUS_FAILURE_THRESHOLD = 3;
 const MAX_AGENT_COUNT = 24;
 const TASK_STATES = new Set(["idle", "unread", "thinking", "executing", "waiting", "complete", "error"]);
 const CODEX_HOOK_EVENTS = new Set(["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"]);
@@ -48,6 +49,8 @@ export class DesktopCodexService extends EventEmitter {
   #pollRefresh = null;
   #actionRefresh = null;
   #actionRefreshTimer = null;
+  #hasSuccessfulStatus = false;
+  #consecutiveStatusFailures = 0;
 
   constructor({
     workspaces,
@@ -414,10 +417,16 @@ export class DesktopCodexService extends EventEmitter {
         controls: normalizeControls(result.controls),
       };
       this.#controllerState = normalizeControllerState(result);
+      this.#hasSuccessfulStatus = true;
+      this.#consecutiveStatusFailures = 0;
       this.#session.state = this.#controllerState.taskState === "error" ? "error" : "active";
       this.#session.canInterrupt = this.#status.controls.stop;
       this.#session.terminalTail = result.message ?? "Ready to control Vibe Pocket Codex tasks.";
     } catch (error) {
+      this.#consecutiveStatusFailures += 1;
+      if (this.#hasSuccessfulStatus && this.#consecutiveStatusFailures < STATUS_FAILURE_THRESHOLD) {
+        return;
+      }
       this.#status = {
         state: "degraded",
         message: error.message || "Desktop Codex is unavailable.",

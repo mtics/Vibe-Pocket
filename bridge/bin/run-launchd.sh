@@ -15,6 +15,8 @@ set -a
 source "$CONFIG_FILE"
 set +a
 
+/bin/zsh "$SCRIPT_DIR/cleanup-stale-listener.sh" "$VIBE_POCKET_PORT" "$BRIDGE_DIR"
+
 cd "$BRIDGE_DIR"
 NODE_BIN=${VIBE_POCKET_NODE:-$(command -v node)}
 exec /usr/bin/env -i \

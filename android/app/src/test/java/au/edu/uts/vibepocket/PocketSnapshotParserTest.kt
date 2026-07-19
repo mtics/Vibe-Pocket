@@ -85,7 +85,8 @@ class PocketSnapshotParserTest {
         val snapshot = parsePocketSnapshot(root)
 
         assertEquals(MAX_AGENT_COUNT, snapshot.controller?.agents?.size)
-        assertEquals(TaskState.WAITING, snapshot.agentSlots().first().agent?.state)
+        assertEquals("Task 0", snapshot.agentSlots().first().agent?.label)
+        assertEquals(TaskState.WAITING, snapshot.agentSlots()[12].agent?.state)
         assertTrue(snapshot.agentSlots().any { it.focused })
     }
 

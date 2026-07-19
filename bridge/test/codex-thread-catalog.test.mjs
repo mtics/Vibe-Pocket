@@ -107,7 +107,7 @@ test("accepts a unique ellipsized title and rejects ambiguous or stale targets",
     { label: "An ambiguous task…", state: "idle", focused: false },
   ]);
 
-  assert.equal(agents.length, 1);
+  assert.equal(agents.length, 3);
   assert.equal(agents[0].label, "A uniquely identifiable…");
   await assert.rejects(() => catalog.focusAgent("agent-ffffffffffffffffffffffff"), /no longer available/i);
   await assert.rejects(() => catalog.focusAgent("unsafe"), /valid Codex task ID/i);
@@ -167,11 +167,11 @@ test("adds running tasks that are not mounted in the visible project sidebar", a
   ]);
 
   assert.deepEqual(agents.map(({ label, state, focused }) => ({ label, state, focused })), [
+    { label: "Current task", state: "idle", focused: true },
     { label: "Waiting in another project", state: "waiting", focused: false },
     { label: "Running in another project", state: "thinking", focused: false },
-    { label: "Current task", state: "idle", focused: true },
   ]);
-  await catalog.focusAgent(agents[1].id);
+  await catalog.focusAgent(agents[2].id);
   assert.deepEqual(opened, ["thread-thinking"]);
   assert.deepEqual(activityReader.calls, [["thread-current", "thread-waiting", "thread-thinking"]]);
 });
@@ -197,6 +197,34 @@ test("bounds status-ranked Agents while retaining the focused desktop task", asy
 
   assert.equal(agents.length, 24);
   assert.equal(agents.filter(({ state }) => state === "thinking").length, 23);
-  assert.equal(agents.at(-1).label, "Current task");
-  assert.equal(agents.at(-1).focused, true);
+  assert.equal(agents[0].label, "Current task");
+  assert.equal(agents[0].focused, true);
+});
+
+test("sorts task groups by status and recent activity after the focused task", async () => {
+  const threads = [
+    { id: "thread-old-idle", name: "Old idle", recencyAt: 10, parentThreadId: null },
+    { id: "thread-current", name: "Current task", recencyAt: 5, parentThreadId: null },
+    { id: "thread-recent-idle", name: "Recent idle", recencyAt: 40, parentThreadId: null },
+    { id: "thread-waiting", name: "Waiting task", recencyAt: 20, parentThreadId: null },
+  ];
+  const activityReader = new FakeActivityReader(new Map([
+    ["thread-waiting", "waiting"],
+  ]));
+  const catalog = new CodexThreadCatalog({
+    appServer: new FakeAppServer(threads),
+    activityReader,
+    openThread: async () => {},
+  });
+
+  const agents = await catalog.resolveVisibleAgents([
+    { label: "Current task", state: "idle", focused: true },
+  ]);
+
+  assert.deepEqual(agents.map(({ label }) => label), [
+    "Current task",
+    "Waiting task",
+    "Recent idle",
+    "Old idle",
+  ]);
 });

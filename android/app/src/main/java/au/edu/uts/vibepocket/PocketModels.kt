@@ -267,7 +267,6 @@ internal val AgentIdPattern = Regex("^agent-[a-f0-9]{24}$")
 
 internal fun PocketSnapshot.agentSlots(): List<AgentSlot> {
     val agents = controller?.agents.orEmpty()
-        .sortedWith(compareBy<AgentStatus> { it.state.agentPriority }.thenByDescending(AgentStatus::focused))
         .take(MAX_AGENT_COUNT)
     return agents.map { agent ->
         AgentSlot(
@@ -364,17 +363,6 @@ enum class TaskState(val wireValue: String) {
         fun fromWire(value: String): TaskState = entries.firstOrNull { it.wireValue == value } ?: IDLE
     }
 }
-
-private val TaskState.agentPriority: Int
-    get() = when (this) {
-        TaskState.WAITING -> 0
-        TaskState.ERROR -> 1
-        TaskState.EXECUTING -> 2
-        TaskState.THINKING -> 3
-        TaskState.UNREAD -> 4
-        TaskState.COMPLETE -> 6
-        TaskState.IDLE -> 7
-    }
 
 sealed interface PocketCommand {
     data class Binding(

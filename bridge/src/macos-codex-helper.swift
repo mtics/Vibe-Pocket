@@ -570,6 +570,19 @@ private func taskIsFocused(_ element: AXUIElement) -> Bool {
     || attributeBool(element, kAXFocusedAttribute as CFString)
 }
 
+private func focusedTaskRow(in root: AXUIElement) -> TaskRow? {
+  let focusedContent = descendant(of: root, maxDepth: 22) { element in
+    let classes = Set(attributeStrings(element, "AXDOMClassList" as CFString))
+    return classes.contains("cursor-interaction")
+      && taskIsFocused(element)
+      && taskLabel(in: element) != nil
+  }
+  if let focusedContent {
+    return TaskRow(content: focusedContent, target: focusedContent)
+  }
+  return taskListSnapshot(in: root)?.currentRow
+}
+
 private func elementText(_ element: AXUIElement) -> String {
   let value = attributeString(element, kAXValueAttribute as CFString)
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -629,7 +642,19 @@ private func taskIndicatorState(in button: AXUIElement) -> String {
 }
 
 private func focusedTaskTitle(in root: AXUIElement) -> String? {
-  taskListSnapshot(in: root)?.currentRow.flatMap { taskLabel(in: $0.content) }
+  focusedTaskRow(in: root).flatMap { taskLabel(in: $0.content) }
+}
+
+private func focusedAgentTarget(in root: AXUIElement, currentTaskState: String) -> AgentTarget? {
+  guard let row = focusedTaskRow(in: root),
+        let label = taskLabel(in: row.content) else { return nil }
+  return AgentTarget(
+    id: stableAgentID(for: row.content, fallbackPath: "focused-sidebar-task\u{0}\(label)"),
+    element: row.target,
+    label: label,
+    state: currentTaskState,
+    focused: true
+  )
 }
 
 private func agentTargets(
@@ -792,13 +817,8 @@ private func taskState(in index: AreaIndex) -> String {
 private func statusReply(application: NSRunningApplication, area: AXUIElement) -> [String: Any] {
   let index = AreaIndex(area)
   let currentState = taskState(in: index)
-  let selectedTaskTitle = focusedTaskTitle(in: codexScope(for: application))
-  let root = AXUIElementCreateApplication(application.processIdentifier)
-  let agents = agentTargets(
-    in: root,
-    currentTaskState: currentState,
-    focusedTaskTitle: selectedTaskTitle
-  )
+  let scope = codexScope(for: application)
+  let agents = focusedAgentTarget(in: scope, currentTaskState: currentState).map { [$0] } ?? []
   let reasoning = reasoningControl(in: index)
   let controls = controlAvailability(in: index, hasAgents: !agents.isEmpty)
   let reasoningAvailable = controls["reasoning"] == true
@@ -1163,10 +1183,10 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       throw HelperFailure.message("A valid Codex agent ID is required.")
     }
     let (application, area) = try desktop(activateDesktop: false)
-    let selectedTaskTitle = focusedTaskTitle(in: codexScope(for: application))
-    let root = AXUIElementCreateApplication(application.processIdentifier)
+    let scope = codexScope(for: application)
+    let selectedTaskTitle = focusedTaskTitle(in: scope)
     let agents = agentTargets(
-      in: root,
+      in: scope,
       currentTaskState: taskState(in: AreaIndex(area)),
       focusedTaskTitle: selectedTaskTitle
     )
@@ -1178,10 +1198,10 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
         for _ in 0..<attempts {
           usleep(150_000)
           let updatedArea = try codexArea(for: application)
-          let updatedSelectedTaskTitle = focusedTaskTitle(in: codexScope(for: application))
-          let updatedRoot = AXUIElementCreateApplication(application.processIdentifier)
+          let updatedScope = codexScope(for: application)
+          let updatedSelectedTaskTitle = focusedTaskTitle(in: updatedScope)
           let updatedAgents = agentTargets(
-            in: updatedRoot,
+            in: updatedScope,
             currentTaskState: taskState(in: AreaIndex(updatedArea)),
             focusedTaskTitle: updatedSelectedTaskTitle
           )

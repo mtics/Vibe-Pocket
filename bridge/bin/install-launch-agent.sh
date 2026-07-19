@@ -58,33 +58,14 @@ if [[ -n "$LEGACY_PIDS" ]]; then
   [[ -z "$REMAINING_PIDS" ]] || kill -KILL $=REMAINING_PIDS 2>/dev/null || true
 fi
 
-# A host from releases before 0.8.0 could leave its Node child behind after
-# bootout. Stop only a listener whose command and working directory both match
-# this exact Vibe Pocket runtime.
-STALE_NODE_PIDS=()
-for PID in $(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true); do
-  PROCESS_COMMAND=$(ps -p "$PID" -o command= 2>/dev/null || true)
-  PROCESS_CWD=$(lsof -a -p "$PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
-  if [[ "$PROCESS_CWD" == "$RUNTIME_DIR" && "$PROCESS_COMMAND" == *"node src/index.mjs" ]]; then
-    STALE_NODE_PIDS+=("$PID")
-  fi
-done
-if (( ${#STALE_NODE_PIDS[@]} > 0 )); then
-  kill $STALE_NODE_PIDS 2>/dev/null || true
-  for _ in {1..20}; do
-    REMAINING_NODE_PIDS=()
-    for PID in $STALE_NODE_PIDS; do
-      kill -0 "$PID" 2>/dev/null && REMAINING_NODE_PIDS+=("$PID")
-    done
-    (( ${#REMAINING_NODE_PIDS[@]} == 0 )) && break
-    sleep 0.1
-  done
-  (( ${#REMAINING_NODE_PIDS[@]} == 0 )) || kill -KILL $REMAINING_NODE_PIDS 2>/dev/null || true
-fi
+# A killed Host can leave its Node child behind. The shared cleanup helper
+# stops only a listener whose command and working directory match this runtime.
+/bin/zsh "$BRIDGE_DIR/bin/cleanup-stale-listener.sh" "$PORT" "$RUNTIME_DIR" --all-exact
 
 rm -rf "$RUNTIME_DIR/node_modules"
 ditto "$BRIDGE_DIR" "$RUNTIME_DIR"
 chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
+chmod +x "$RUNTIME_DIR/bin/cleanup-stale-listener.sh"
 chmod +x "$RUNTIME_DIR/bin/attach-current-task.sh"
 chmod +x "$RUNTIME_DIR/bin/report-codex-hook.sh"
 chmod +x "$RUNTIME_DIR/bin/install-codex-hooks.mjs"
@@ -125,9 +106,9 @@ if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; the
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.8.0</string>
+  <string>0.8.1</string>
   <key>CFBundleVersion</key>
-  <string>13</string>
+  <string>14</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>

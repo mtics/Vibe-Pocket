@@ -10,6 +10,7 @@ export class MacCodexDesktopController {
   #wait;
   #voiceActive = false;
   #foreground = false;
+  #lastAgents = [];
   #operationQueue = Promise.resolve();
 
   constructor({
@@ -32,6 +33,7 @@ export class MacCodexDesktopController {
     if (!this.#threadCatalog) return result;
     try {
       const agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
+      this.#lastAgents = agents;
       return {
         ...result,
         agents,
@@ -41,10 +43,14 @@ export class MacCodexDesktopController {
         },
       };
     } catch {
+      const agents = this.#lastAgents;
       return {
         ...result,
-        agents: [],
-        controls: { ...result.controls, "focus-agent": false },
+        agents,
+        controls: {
+          ...result.controls,
+          "focus-agent": this.#foreground && agents.some((agent) => !agent.focused),
+        },
       };
     }
   }
@@ -118,6 +124,7 @@ export class MacCodexDesktopController {
   }
 
   async dispose() {
+    this.#lastAgents = [];
     await this.#threadCatalog?.dispose?.();
   }
 

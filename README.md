@@ -7,13 +7,14 @@ scoped semantic operations.
 
 ## Controller
 
-The Android 0.7.6 controller uses protocol v5 and a versioned profile from the
+The Android 0.7.7 controller uses protocol v5 and a versioned profile from the
 M5:
 
-- The status-ranked Agent list shows six tasks initially and expands to at most
-  24. It distinguishes idle, unread, thinking, running, needs-input, complete,
-  and error states. A populated key focuses that exact Agent by an opaque stable
-  ID rather than by its current list position.
+- The Agent list keeps the focused desktop task first, then ranks tasks by
+  action state and recent activity. It shows six tasks initially and expands to
+  at most 24, including recent top-level tasks and running tasks outside the
+  mounted project sidebar. A populated key focuses that exact Agent by an
+  opaque stable ID rather than by its current list position.
 - Thirteen command keys cover accept/submit, reject/dismiss, Codex voice input,
   new task, stop, collaboration mode, clear, Agent focus, navigation, and task
   resume. Mode cycles Codex Default and Plan; access permissions are a separate
@@ -253,7 +254,8 @@ only a bounded task label and state; task execution remains inside Codex.
   the same Android control are suppressed while Bridge desktop actions remain
   ordered.
 - The LaunchAgent starts Node with a minimal environment so unrelated user
-  session credentials are not inherited by the bridge process.
+  session credentials are not inherited by the bridge process. Every launch
+  also removes an exact orphaned Vibe Pocket listener before binding the port.
 
 ## Verification
 

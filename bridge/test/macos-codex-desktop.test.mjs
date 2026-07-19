@@ -145,6 +145,36 @@ test("disables native Agent navigation while Codex is not frontmost", async () =
   assert.equal(focused, false);
 });
 
+test("retains the last task catalog across a transient catalog refresh failure", async () => {
+  let failCatalog = false;
+  const agents = [
+    { id: "agent-111111111111111111111111", label: "Current", state: "idle", focused: true },
+    { id: "agent-222222222222222222222222", label: "Recent", state: "idle", focused: false },
+  ];
+  const controller = new MacCodexDesktopController({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() {
+        if (failCatalog) throw new Error("temporary app-server failure");
+        return agents;
+      },
+    },
+    run: async () => ({
+      ok: true,
+      foreground: true,
+      controls: { "focus-agent": true },
+      agents: [],
+    }),
+  });
+
+  assert.deepEqual((await controller.status()).agents, agents);
+  failCatalog = true;
+  const recovered = await controller.status();
+
+  assert.deepEqual(recovered.agents, agents);
+  assert.equal(recovered.controls["focus-agent"], true);
+});
+
 test("does not queue native Agent navigation behind a slow Accessibility scan", async () => {
   let statusCalls = 0;
   let releaseScan;

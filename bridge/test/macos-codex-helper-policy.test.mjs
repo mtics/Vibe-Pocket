@@ -9,6 +9,8 @@ import test from "node:test";
 const helperUrl = new URL("../src/macos-codex-helper.swift", import.meta.url);
 const hostUrl = new URL("../src/macos-bridge-host.swift", import.meta.url);
 const installerUrl = new URL("../bin/install-launch-agent.sh", import.meta.url);
+const launchScriptUrl = new URL("../bin/run-launchd.sh", import.meta.url);
+const cleanupScriptUrl = new URL("../bin/cleanup-stale-listener.sh", import.meta.url);
 const execFileAsync = promisify(execFile);
 
 test("never synthesizes pointer movement for Codex controls", async () => {
@@ -27,11 +29,17 @@ test("only the explicit attach action may activate ChatGPT", async () => {
 
 test("composer controls and Agent focus identity use the focused Codex window", async () => {
   const source = await readFile(helperUrl, "utf8");
+  const statusReply = source.slice(
+    source.indexOf("private func statusReply"),
+    source.indexOf("private func press", source.indexOf("private func statusReply")),
+  );
 
   assert.match(source, /kAXFocusedWindowAttribute/);
   assert.match(source, /codexArea\(in: codexScope\(for: application\)\)/);
-  assert.match(source, /let selectedTaskTitle = focusedTaskTitle\(in: codexScope\(for: application\)\)/);
-  assert.match(source, /let root = AXUIElementCreateApplication\(application\.processIdentifier\)[\s\S]*?focusedTaskTitle: selectedTaskTitle/);
+  assert.match(statusReply, /let scope = codexScope\(for: application\)/);
+  assert.match(statusReply, /focusedAgentTarget\(in: scope/);
+  assert.doesNotMatch(statusReply, /agentTargets\(/);
+  assert.doesNotMatch(statusReply, /AXUIElementCreateApplication/);
 });
 
 test("production Swift semantics keep minimum reasoning adjustable upward", async (context) => {
@@ -101,9 +109,14 @@ test("bridge child inherits normal termination signals", async () => {
   assert.match(source, /asyncAfter[\s\S]*?Darwin\.kill\(childPID, SIGKILL\)/);
 });
 
-test("installer cleans only an exact stale bridge listener", async () => {
-  const source = await readFile(installerUrl, "utf8");
+test("every launch cleans only an exact orphaned bridge listener", async () => {
+  const installer = await readFile(installerUrl, "utf8");
+  const launcher = await readFile(launchScriptUrl, "utf8");
+  const cleanup = await readFile(cleanupScriptUrl, "utf8");
 
-  assert.match(source, /PROCESS_CWD[\s\S]*?RUNTIME_DIR/);
-  assert.match(source, /PROCESS_COMMAND[\s\S]*?node src\/index\.mjs/);
+  assert.match(installer, /cleanup-stale-listener\.sh[\s\S]*?--all-exact/);
+  assert.match(launcher, /cleanup-stale-listener\.sh/);
+  assert.match(cleanup, /processCwd[\s\S]*?RUNTIME_DIR/);
+  assert.match(cleanup, /processCommand[\s\S]*?node\\ src\/index\.mjs/);
+  assert.match(cleanup, /PROCESS_PARENT[\s\S]*?"1"/);
 });

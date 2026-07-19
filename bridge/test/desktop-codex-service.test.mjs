@@ -476,6 +476,38 @@ test("polling publishes an event only when desktop state changes", async () => {
   await service.dispose();
 });
 
+test("keeps the last good desktop snapshot across one transient polling failure", async () => {
+  class FlakyDesktop extends FakeDesktop {
+    failuresRemaining = 0;
+    failed = Promise.withResolvers();
+
+    async status() {
+      if (this.failuresRemaining > 0) {
+        this.failuresRemaining -= 1;
+        this.failed.resolve();
+        throw new Error("temporary desktop timeout");
+      }
+      return super.status();
+    }
+  }
+
+  const desktop = new FlakyDesktop();
+  const events = new FakeEvents();
+  const service = makeService(desktop, events, { pollIntervalMs: 50 });
+  await service.start();
+  const publishedAfterStart = events.published.length;
+  desktop.failuresRemaining = 1;
+
+  await desktop.failed.promise;
+  await new Promise(setImmediate);
+  const snapshot = await service.snapshot();
+
+  assert.equal(snapshot.status.state, "ready");
+  assert.equal(snapshot.controller.agents.length, 2);
+  assert.equal(events.published.length, publishedAfterStart);
+  await service.dispose();
+});
+
 test("slow polling remains single-flight instead of accumulating status calls", async () => {
   class SlowDesktop extends FakeDesktop {
     inFlight = 0;

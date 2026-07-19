@@ -74,30 +74,43 @@ export class CodexThreadCatalog {
       const thread = matches[0];
       const id = agentIdForThread(thread.id);
       assignedThreadIds.add(thread.id);
-      resolved.push({ ...agent, id });
+      resolved.push({
+        ...agent,
+        id,
+        state: agent.focused === true
+          ? agent.state
+          : (activityStates.get(thread.id) ?? agent.state),
+        _threadId: thread.id,
+        _recencyAt: threadRecency(thread),
+        _sourceIndex: resolved.length,
+      });
     }
     for (const thread of threads) {
-      const state = activityStates.get(thread.id);
       const label = threadLabel(thread);
-      if (!state || !label || assignedThreadIds.has(thread.id)) continue;
+      if (!label || assignedThreadIds.has(thread.id)) continue;
       assignedThreadIds.add(thread.id);
-      resolved.push({ id: agentIdForThread(thread.id), label, state, focused: false });
+      resolved.push({
+        id: agentIdForThread(thread.id),
+        label,
+        state: activityStates.get(thread.id) ?? "idle",
+        focused: false,
+        _threadId: thread.id,
+        _recencyAt: threadRecency(thread),
+        _sourceIndex: resolved.length,
+      });
     }
     const ordered = resolved.toSorted((left, right) => {
+      if (left.focused !== right.focused) return left.focused ? -1 : 1;
       const priority = (AGENT_STATE_PRIORITY.get(left.state) ?? 8)
         - (AGENT_STATE_PRIORITY.get(right.state) ?? 8);
       if (priority !== 0) return priority;
-      if (left.focused !== right.focused) return left.focused ? -1 : 1;
-      return 0;
+      const recency = right._recencyAt - left._recencyAt;
+      if (recency !== 0) return recency;
+      return left._sourceIndex - right._sourceIndex;
     });
     const selected = ordered.slice(0, MAX_AGENT_COUNT);
-    const focused = ordered.find((agent) => agent.focused);
-    if (focused && !selected.some((agent) => agent.id === focused.id)) {
-      selected[MAX_AGENT_COUNT - 1] = focused;
-    }
-    const threadsByAgentID = new Map(threads.map((thread) => [agentIdForThread(thread.id), thread.id]));
-    this.#agentThreads = new Map(selected.map((agent) => [agent.id, threadsByAgentID.get(agent.id)]));
-    return selected;
+    this.#agentThreads = new Map(selected.map((agent) => [agent.id, agent._threadId]));
+    return selected.map(({ _threadId, _recencyAt, _sourceIndex, ...agent }) => agent);
   }
 
   async focusAgent(agentId) {
@@ -199,6 +212,17 @@ function threadLabel(thread) {
     .map(normalizeLabel)
     .find(Boolean)
     ?.slice(0, 200) ?? "";
+}
+
+function threadRecency(thread) {
+  for (const value of [thread.recencyAt, thread.updatedAt, thread.createdAt]) {
+    if (Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const timestamp = Date.parse(value);
+      if (Number.isFinite(timestamp)) return timestamp;
+    }
+  }
+  return 0;
 }
 
 function agentIdForThread(threadId) {
