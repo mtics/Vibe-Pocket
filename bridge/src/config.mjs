@@ -25,10 +25,6 @@ export function load(environment = process.env, cwd = process.cwd()) {
   const workspaces = parseWorkspaces(environment.VIBE_POCKET_WORKSPACES, environment.VIBE_POCKET_WORKSPACE, cwd);
   const codexCommand = environment.VIBE_POCKET_CODEX_COMMAND ?? "codex";
   const profilePath = parseProfilePath(environment.VIBE_POCKET_PROFILE_PATH, environment);
-  const ownedThreadsPath = parseProfilePath(
-    environment.VIBE_POCKET_OWNED_THREADS_PATH ?? join(dirname(profilePath), "owned-threads.json"),
-    environment,
-  );
   const pairingSocketPath = join(dirname(profilePath), "pairing.sock");
   const devicesPath = join(dirname(profilePath), "paired-devices.json");
   const operationPath = join(dirname(profilePath), "operations.json");
@@ -39,7 +35,6 @@ export function load(environment = process.env, cwd = process.cwd()) {
     workspaces,
     codexCommand,
     profilePath,
-    ownedThreadsPath,
     pairingSocketPath,
     devicesPath,
     operationPath,

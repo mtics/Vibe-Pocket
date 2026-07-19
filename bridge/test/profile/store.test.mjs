@@ -181,7 +181,6 @@ test("retains canonical profile and workspace paths after configured symlinks re
   await symlink(alternate, workspaceLink, "dir");
 
   assert.equal(config.profilePath, join(realpathSync(safeProfileRoot), "nested", "controller-profile.json"));
-  assert.equal(config.ownedThreadsPath, join(realpathSync(safeProfileRoot), "nested", "owned-threads.json"));
   assert.equal(config.pairingSocketPath, join(realpathSync(safeProfileRoot), "nested", "pairing.sock"));
   assert.equal(config.operationPath, join(realpathSync(safeProfileRoot), "nested", "operations.json"));
   assert.equal(config.workspaces.research, realpathSync(safeWorkspace));
