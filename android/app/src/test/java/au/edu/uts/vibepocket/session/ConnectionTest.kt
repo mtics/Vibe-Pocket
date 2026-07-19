@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.session
 import au.edu.uts.vibepocket.bridge.Client
 import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Config
+import au.edu.uts.vibepocket.connection.PendingCommand
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.connection.VoiceStop
 import au.edu.uts.vibepocket.control.Capabilities
@@ -88,6 +89,7 @@ class ConnectionTest {
         @Volatile private var claim: Claim? = null
         @Volatile private var revocation: Config? = null
         @Volatile private var voiceStop: VoiceStop? = null
+        @Volatile private var pendingCommand: PendingCommand? = null
 
         override fun save(config: Config) {
             this.config = config
@@ -125,6 +127,19 @@ class ConnectionTest {
             val current = voiceStop ?: return true
             if (current.idempotencyKey != idempotencyKey) return false
             voiceStop = null
+            return true
+        }
+
+        override fun savePendingCommand(command: PendingCommand) {
+            pendingCommand = command
+        }
+
+        override fun loadPendingCommand(): PendingCommand? = pendingCommand
+
+        override fun clearPendingCommand(operationId: String): Boolean {
+            val current = pendingCommand ?: return true
+            if (current.operationId != operationId) return false
+            pendingCommand = null
             return true
         }
     }

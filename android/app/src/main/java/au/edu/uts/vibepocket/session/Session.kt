@@ -40,12 +40,20 @@ class Session internal constructor(
 ) : ViewModel() {
     private val restored = store.loadLifecycle()
     private var lifecycleErrors = restored.errors
-    private val _state = MutableStateFlow(State(error = lifecycleErrorMessage()))
+    private val pending = Pending().apply {
+        restored.pendingCommand.valueOrNull()?.uiId?.let(::add)
+    }
+    private val _state = MutableStateFlow(
+        State(
+            inFlightIds = pending.snapshot(),
+            error = lifecycleErrorMessage()
+                ?: restored.pendingCommand.valueOrNull()?.let { CommandResultUnconfirmed },
+        ),
+    )
     val state: StateFlow<State> = _state.asStateFlow()
     private val _feedback = MutableSharedFlow<Feedback>(extraBufferCapacity = 4)
     val feedback: SharedFlow<Feedback> = _feedback.asSharedFlow()
 
-    private val pending = Pending()
     @Volatile private var foreground = false
     @Volatile private var lastEventId: String? = null
     @Volatile private var eventError: String? = null
@@ -76,10 +84,13 @@ class Session internal constructor(
         scope = viewModelScope,
         dispatcher = dispatcher,
         client = client,
+        store = store,
+        restored = restored.pendingCommand,
         pending = pending,
         publishPending = ::publishPending,
         accepted = ::commandAccepted,
         rejected = ::commandRejected,
+        unconfirmed = ::commandUnconfirmed,
     )
     private val commands = Commands(
         snapshot = { _state.value.snapshot },
@@ -108,15 +119,18 @@ class Session internal constructor(
                 it.copy(
                     config = config,
                     invitation = connection.pendingInvitation,
-                    error = lifecycleErrorMessage(),
+                    error = lifecycleErrorMessage() ?: it.error,
                 )
             }
             delivery.bind(config)
             refresh.activate(config, eventGeneration)
             refresh.request()
         } else {
+            restored.pendingCommand.valueOrNull()?.config?.let(delivery::bind)
             connection.pendingInvitation?.let { invitation ->
-                _state.update { it.copy(invitation = invitation, error = lifecycleErrorMessage()) }
+                _state.update {
+                    it.copy(invitation = invitation, error = lifecycleErrorMessage() ?: it.error)
+                }
             }
         }
         voice.restore()
@@ -237,13 +251,14 @@ class Session internal constructor(
         prediction.clear()
         lastEventId = null
         eventError = null
-        pending.clear()
         reloadLifecycleErrors()
         _state.value = State(
             config = config,
             snapshot = snapshot,
             invitation = null,
-            error = lifecycleErrorMessage(),
+            inFlightIds = pending.snapshot(),
+            error = lifecycleErrorMessage()
+                ?: CommandResultUnconfirmed.takeIf { delivery.hasPendingResult() },
         )
         delivery.bind(config)
         if (foreground) {
@@ -263,11 +278,12 @@ class Session internal constructor(
         prediction.clear()
         lastEventId = null
         eventError = null
-        pending.clear()
         reloadLifecycleErrors()
         _state.value = State(
             invitation = connection.pendingInvitation,
-            error = lifecycleErrorMessage(),
+            inFlightIds = pending.snapshot(),
+            error = lifecycleErrorMessage()
+                ?: CommandResultUnconfirmed.takeIf { delivery.hasPendingResult() },
         )
     }
 
@@ -278,6 +294,9 @@ class Session internal constructor(
 
     private fun commandAccepted(config: Config) {
         if (_state.value.config != config) return
+        _state.update { current ->
+            if (current.error == CommandResultUnconfirmed) current.copy(error = null) else current
+        }
         _feedback.tryEmit(Feedback.Success)
         if (!foreground) refresh.request()
     }
@@ -288,8 +307,23 @@ class Session internal constructor(
         _feedback.tryEmit(Feedback.Error)
     }
 
+    private fun commandUnconfirmed(config: Config, error: Throwable?) {
+        if (_state.value.config != config) return
+        _state.update { it.copy(error = error?.message ?: CommandResultUnconfirmed) }
+        _feedback.tryEmit(Feedback.Error)
+    }
+
     private fun publishPending() {
-        _state.update { it.copy(inFlightIds = pending.snapshot(), error = lifecycleErrorMessage()) }
+        reloadLifecycleErrors()
+        _state.update { current ->
+            current.copy(
+                inFlightIds = pending.snapshot(),
+                error = lifecycleErrorMessage() ?: when {
+                    current.error == CommandResultUnconfirmed && !delivery.hasPendingResult() -> null
+                    else -> current.error
+                },
+            )
+        }
     }
 
     private fun startEvents(config: Config) {
@@ -304,6 +338,7 @@ class Session internal constructor(
             EventCallbacks(
                 connected = {
                     if (isCurrentEvent(config, generation)) {
+                        delivery.recover()
                         val recovered = eventError
                         eventError = null
                         if (recovered != null) {
@@ -404,6 +439,8 @@ class Session internal constructor(
     }
 
     companion object {
+        private const val CommandResultUnconfirmed = "The command result is not yet confirmed."
+
         fun create(store: Store): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T = Session(store) as T

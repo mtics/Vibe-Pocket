@@ -2,6 +2,8 @@ package au.edu.uts.vibepocket.session
 
 import androidx.lifecycle.ViewModelStore
 import au.edu.uts.vibepocket.bridge.Client
+import au.edu.uts.vibepocket.bridge.CommandResult
+import au.edu.uts.vibepocket.bridge.CommandStatus
 import au.edu.uts.vibepocket.bridge.EventCallbacks
 import au.edu.uts.vibepocket.bridge.EventFactory
 import au.edu.uts.vibepocket.bridge.EventStream
@@ -10,6 +12,7 @@ import au.edu.uts.vibepocket.bridge.IssuedCredential
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Invitation
+import au.edu.uts.vibepocket.connection.PendingCommand
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.connection.VoiceStop
 import au.edu.uts.vibepocket.control.Activity
@@ -31,6 +34,7 @@ import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.input.Plan
 import au.edu.uts.vibepocket.input.activation
+import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -89,6 +93,72 @@ class SessionTest {
         client.commandRelease.complete(Unit)
         runCurrent()
         assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+    }
+
+    @Test
+    fun commandErrorIsNotOverwrittenWhenPendingIsPublished() = runTest(dispatcher) {
+        val store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn"))
+        val viewModel = Session(
+            store = store,
+            client = RejectingCommandClient(),
+            dispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.activateInput("key_accept"))
+        runCurrent()
+
+        assertEquals("The command was rejected for policy.", viewModel.state.value.error)
+        assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+        assertEquals(null, store.pendingCommand)
+    }
+
+    @Test
+    fun recreatedSessionRestoresPendingUiAndQueriesWithoutReplayingPost() = runTest(dispatcher) {
+        val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
+        val firstStore = FakeStore(config)
+        val firstClient = RecoverableCommandClient(CommandResult.Found(CommandStatus.RUNNING))
+        val first = Session(store = firstStore, client = firstClient, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(first.activateInput("key_accept"))
+        runCurrent()
+        val persisted = requireNotNull(firstStore.pendingCommand)
+        assertEquals(setOf("input:key_accept:tap"), first.state.value.inFlightIds)
+        assertEquals("The command result is not yet confirmed.", first.state.value.error)
+
+        val recreatedStore = firstStore.recreated()
+        val recoveredClient = RecoverableCommandClient(CommandResult.Found(CommandStatus.SUCCEEDED))
+        val recreated = Session(
+            store = recreatedStore,
+            client = recoveredClient,
+            dispatcher = dispatcher,
+        )
+
+        assertEquals(setOf(persisted.uiId), recreated.state.value.inFlightIds)
+        assertEquals("The command result is not yet confirmed.", recreated.state.value.error)
+        runCurrent()
+
+        assertEquals(0, recoveredClient.commandCalls)
+        assertEquals(listOf(persisted.operationId), recoveredClient.queriedOperationIds)
+        assertEquals(null, recreatedStore.pendingCommand)
+        assertTrue(recreated.state.value.inFlightIds.isEmpty())
+    }
+
+    @Test
+    fun unreadableCommandOutboxIsALifecycleErrorAndFailsClosed() = runTest(dispatcher) {
+        val store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")).apply {
+            pendingLoadFailure = IllegalStateException("cannot decrypt")
+        }
+        val client = StaticClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        assertEquals(
+            "Vibe Pocket could not read the pending command result.",
+            viewModel.state.value.error,
+        )
+        assertFalse(viewModel.activateInput("key_accept"))
     }
 
     @Test
@@ -1046,6 +1116,8 @@ class SessionTest {
         var claim: Claim? = null
         var revocation: Config? = null
         var voiceStop: VoiceStop? = null
+        var pendingCommand: PendingCommand? = null
+        var pendingLoadFailure: Throwable? = null
         val lifecycleEvents = mutableListOf<String>()
 
         override fun save(config: Config) {
@@ -1096,6 +1168,22 @@ class SessionTest {
             return true
         }
 
+        override fun savePendingCommand(command: PendingCommand) {
+            pendingCommand = command
+        }
+
+        override fun loadPendingCommand(): PendingCommand? {
+            pendingLoadFailure?.let { throw it }
+            return pendingCommand
+        }
+
+        override fun clearPendingCommand(operationId: String): Boolean {
+            val current = pendingCommand ?: return true
+            if (current.operationId != operationId) return false
+            pendingCommand = null
+            return true
+        }
+
         override fun commit(config: Config) {
             trace?.add("commit")
             this.config = config
@@ -1107,6 +1195,8 @@ class SessionTest {
             it.claim = claim
             it.revocation = revocation
             it.voiceStop = voiceStop
+            it.pendingCommand = pendingCommand
+            it.pendingLoadFailure = pendingLoadFailure
         }
     }
 
@@ -1119,6 +1209,35 @@ class SessionTest {
         override suspend fun command(config: Config, command: Command) {
             commands += command
             commandRelease.await()
+        }
+    }
+
+    private class RejectingCommandClient : Client {
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+
+        override suspend fun command(config: Config, command: Command) {
+            throw Failure("The command was rejected for policy.", 409, "policy_rejected")
+        }
+    }
+
+    private class RecoverableCommandClient(
+        private val result: CommandResult,
+    ) : Client {
+        var commandCalls = 0
+        val queriedOperationIds = mutableListOf<String>()
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) =
+            error("Explicit operation ID required")
+
+        override suspend fun command(config: Config, command: Command, operationId: String) {
+            commandCalls += 1
+            throw IOException("POST response lost")
+        }
+
+        override suspend fun commandResult(config: Config, operationId: String): CommandResult {
+            queriedOperationIds += operationId
+            return result
         }
     }
 

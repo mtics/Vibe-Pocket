@@ -11,11 +11,14 @@ import org.junit.Test
 
 class ClientLimitTest {
     @Test
-    fun protocolSevenClaimRequiresPendingCommitCredential() {
+    fun protocolEightClaimRequiresCommandResultRecovery() {
         val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
         val response = JSONObject()
-            .put("protocolVersion", 7)
-            .put("capabilities", JSONArray(listOf("device_credentials", "pairing_commit")))
+            .put("protocolVersion", 8)
+            .put(
+                "capabilities",
+                JSONArray(listOf("device_credentials", "pairing_commit", "command_results")),
+            )
             .put("credentialState", "pending")
             .put("credentialExpiresAt", "2099-01-01T00:05:00Z")
             .put("baseUrl", invitation.origin)
@@ -28,10 +31,10 @@ class ClientLimitTest {
     }
 
     @Test
-    fun protocolSevenClaimRejectsActiveOrNonCommittableCredential() {
+    fun protocolEightClaimRejectsActiveOrIncompleteCapabilities() {
         val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
         val response = JSONObject()
-            .put("protocolVersion", 7)
+            .put("protocolVersion", 8)
             .put("capabilities", JSONArray(listOf("device_credentials")))
             .put("credentialState", "active")
             .put("credentialExpiresAt", "2099-01-01T00:05:00Z")
@@ -39,6 +42,13 @@ class ClientLimitTest {
             .put("token", "vp1.phone123.abcdefghijklmnopqrstuvwxyzABCDEF")
 
         assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
+        response.put(
+            "capabilities",
+            JSONArray(listOf("device_credentials", "pairing_commit", "command_results")),
+        )
+        assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
+
+        response.put("credentialState", "pending")
         response.put("capabilities", JSONArray(listOf("device_credentials", "pairing_commit")))
         assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
     }

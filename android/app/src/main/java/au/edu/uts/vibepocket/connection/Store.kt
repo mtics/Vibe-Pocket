@@ -7,6 +7,7 @@ import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.KeyStore
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -40,6 +41,9 @@ interface Store {
     fun saveVoiceStop(stop: VoiceStop)
     fun loadVoiceStop(): VoiceStop?
     fun clearVoiceStop(idempotencyKey: String): Boolean
+    fun savePendingCommand(command: PendingCommand)
+    fun loadPendingCommand(): PendingCommand?
+    fun clearPendingCommand(operationId: String): Boolean
 
     fun loadConfigRecord(): LoadOutcome<Config> = loadOutcome(LifecycleRecord.CONFIG, ::load)
     fun loadClaimRecord(): LoadOutcome<Claim> = loadOutcome(LifecycleRecord.CLAIM, ::loadClaim)
@@ -51,6 +55,8 @@ interface Store {
             )
     fun loadVoiceStopRecord(): LoadOutcome<VoiceStop> =
         loadOutcome(LifecycleRecord.VOICE_STOP, ::loadVoiceStop)
+    fun loadPendingCommandRecord(): LoadOutcome<PendingCommand> =
+        loadOutcome(LifecycleRecord.COMMAND_OUTBOX, ::loadPendingCommand)
 
     fun commit(config: Config) {
         save(config)
@@ -72,6 +78,7 @@ enum class LifecycleRecord(val description: String) {
     CLAIM("pending pairing claim"),
     REVOCATIONS("pending credential revocations"),
     VOICE_STOP("pending voice stop"),
+    COMMAND_OUTBOX("pending command result"),
 }
 
 sealed interface LoadOutcome<out T> {
@@ -93,9 +100,10 @@ data class LifecycleLoads(
     val claim: LoadOutcome<Claim>,
     val revocations: LoadOutcome<List<Config>>,
     val voiceStop: LoadOutcome<VoiceStop>,
+    val pendingCommand: LoadOutcome<PendingCommand>,
 ) {
     val errors: List<LoadOutcome.RecoverableError>
-        get() = listOf(config, claim, revocations, voiceStop)
+        get() = listOf(config, claim, revocations, voiceStop, pendingCommand)
             .filterIsInstance<LoadOutcome.RecoverableError>()
 }
 
@@ -104,6 +112,7 @@ fun Store.loadLifecycle(): LifecycleLoads = LifecycleLoads(
     claim = loadClaimRecord(),
     revocations = loadRevocationsRecord(),
     voiceStop = loadVoiceStopRecord(),
+    pendingCommand = loadPendingCommandRecord(),
 )
 
 fun <T> LoadOutcome<T>.valueOrNull(): T? = (this as? LoadOutcome.Loaded<T>)?.value
@@ -137,6 +146,21 @@ data class VoiceStop(
     init {
         require(idempotencyKey.length in 1..160 && idempotencyKey.none(Char::isISOControl)) {
             "The voice stop idempotency key is invalid."
+        }
+    }
+}
+
+data class PendingCommand(
+    val config: Config,
+    val operationId: String,
+    val uiId: String,
+) {
+    init {
+        require(runCatching { UUID.fromString(operationId) }.isSuccess) {
+            "The pending command operation ID is invalid."
+        }
+        require(uiId.length in 1..512 && uiId.none(Char::isISOControl)) {
+            "The pending command UI ID is invalid."
         }
     }
 }
@@ -312,6 +336,38 @@ class Vault(context: Context) : Store {
         return true
     }
 
+    @Synchronized
+    override fun savePendingCommand(command: PendingCommand) {
+        val payload = JSONObject(command.config.encode())
+            .put("operationId", command.operationId)
+            .put("uiId", command.uiId)
+            .toString()
+        check(preferences.edit().putString(COMMAND_OUTBOX_KEY, encrypt(payload)).commit()) {
+            "Vibe Pocket could not save the pending command."
+        }
+    }
+
+    @Synchronized
+    override fun loadPendingCommand(): PendingCommand? = loadPendingCommandRecord().valueOrNull()
+
+    @Synchronized
+    override fun loadPendingCommandRecord(): LoadOutcome<PendingCommand> = loadRecord(
+        key = COMMAND_OUTBOX_KEY,
+        record = LifecycleRecord.COMMAND_OUTBOX,
+        decode = ::decodePendingCommand,
+    )
+
+    @Synchronized
+    override fun clearPendingCommand(operationId: String): Boolean {
+        val encrypted = preferences.getString(COMMAND_OUTBOX_KEY, null) ?: return true
+        val current = decodePendingCommand(decrypt(encrypted))
+        if (current.operationId != operationId) return false
+        check(preferences.edit().remove(COMMAND_OUTBOX_KEY).commit()) {
+            "Vibe Pocket could not clear the pending command."
+        }
+        return true
+    }
+
     override fun commit(config: Config) {
         check(
             preferences.edit()
@@ -407,6 +463,7 @@ class Vault(context: Context) : Store {
         const val CLAIM_KEY = "encrypted_pairing_claim"
         const val REVOCATION_KEY = "encrypted_revocation"
         const val VOICE_STOP_KEY = "encrypted_voice_stop"
+        const val COMMAND_OUTBOX_KEY = "encrypted_command_outbox"
         const val KEY_ALIAS = "vibe-pocket-connection"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
@@ -448,5 +505,17 @@ private fun decodeVoiceStop(value: String): VoiceStop {
             credential = payload.getString("token"),
         ),
         idempotencyKey = payload.getString("idempotencyKey"),
+    )
+}
+
+private fun decodePendingCommand(value: String): PendingCommand {
+    val payload = JSONObject(value)
+    return PendingCommand(
+        config = Config(
+            baseUrl = payload.getString("baseUrl"),
+            credential = payload.getString("token"),
+        ),
+        operationId = payload.getString("operationId"),
+        uiId = payload.getString("uiId"),
     )
 }

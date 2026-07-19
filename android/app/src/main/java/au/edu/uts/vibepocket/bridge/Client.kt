@@ -21,6 +21,10 @@ import java.util.concurrent.Executors
 interface Client {
     suspend fun snapshot(config: Config): Snapshot
     suspend fun command(config: Config, command: Command)
+    suspend fun command(config: Config, command: Command, operationId: String) =
+        command(config, command)
+    suspend fun commandResult(config: Config, operationId: String): CommandResult =
+        throw IOException("Command result lookup is unavailable.")
     suspend fun claim(invitation: Invitation, nonce: String): Config =
         throw Failure("This build cannot claim pairing invitations.")
     suspend fun claimPending(invitation: Invitation, nonce: String): IssuedCredential =
@@ -37,7 +41,34 @@ data class IssuedCredential(
     val expiresAtMillis: Long,
 )
 
-class Http : Client {
+enum class CommandStatus {
+    ACCEPTED,
+    RUNNING,
+    SUCCEEDED,
+    FAILED,
+    UNKNOWN,
+}
+
+data class RemoteError(
+    val code: String?,
+    val message: String,
+    val statusCode: Int? = null,
+)
+
+sealed interface CommandResult {
+    data class Found(
+        val status: CommandStatus,
+        val error: RemoteError? = null,
+    ) : CommandResult
+
+    data object NotFound : CommandResult
+}
+
+class Http(
+    private val openConnection: (URL) -> HttpURLConnection = {
+        it.openConnection() as HttpURLConnection
+    },
+) : Client {
     override suspend fun revoke(config: Config) = withContext(Dispatchers.IO) {
         call(
             config.normalizedUrl,
@@ -50,7 +81,7 @@ class Http : Client {
     }
 
     override suspend fun stopVoice(config: Config, idempotencyKey: String) = withContext(Dispatchers.IO) {
-        call(
+        val result = call(
             config.normalizedUrl,
             "/v1/pocket/commands",
             "POST",
@@ -58,8 +89,9 @@ class Http : Client {
             config.credential,
             idempotencyKey = idempotencyKey,
             readTimeoutMillis = TransactionTimeoutMillis,
+            expectedStatus = HttpURLConnection.HTTP_OK,
         )
-        Unit
+        requireSucceeded(decodeCommandResult(result))
     }
 
     override suspend fun claim(invitation: Invitation, nonce: String): Config =
@@ -91,10 +123,46 @@ class Http : Client {
         decode(call(config.normalizedUrl, "/v1/pocket/snapshot", "GET", credential = config.credential))
     }
 
-    override suspend fun command(config: Config, command: Command) = withContext(Dispatchers.IO) {
-        call(config.normalizedUrl, "/v1/pocket/commands", "POST", command.encode(), config.credential)
-        Unit
+    override suspend fun command(config: Config, command: Command) =
+        command(config, command, UUID.randomUUID().toString())
+
+    override suspend fun command(
+        config: Config,
+        command: Command,
+        operationId: String,
+    ) = withContext(Dispatchers.IO) {
+        requireUuid(operationId)
+        val result = call(
+            config.normalizedUrl,
+            "/v1/pocket/commands",
+            "POST",
+            command.encode(),
+            config.credential,
+            idempotencyKey = operationId,
+            expectedStatus = HttpURLConnection.HTTP_OK,
+        )
+        requireSucceeded(decodeCommandResult(result))
     }
+
+    override suspend fun commandResult(config: Config, operationId: String): CommandResult =
+        withContext(Dispatchers.IO) {
+            requireUuid(operationId)
+            val response = try {
+                call(
+                    config.normalizedUrl,
+                    "/v1/pocket/commands/$operationId",
+                    "GET",
+                    credential = config.credential,
+                    expectedStatus = HttpURLConnection.HTTP_OK,
+                )
+            } catch (error: Failure) {
+                if (error.statusCode == HttpURLConnection.HTTP_NOT_FOUND) {
+                    return@withContext CommandResult.NotFound
+                }
+                throw error
+            }
+            decodeCommandResult(response)
+        }
 
     private fun call(
         baseUrl: String,
@@ -104,8 +172,9 @@ class Http : Client {
         credential: String? = null,
         idempotencyKey: String? = null,
         readTimeoutMillis: Int = DefaultReadTimeoutMillis,
+        expectedStatus: Int? = null,
     ): JSONObject {
-        val connection = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
+        val connection = openConnection(URL(baseUrl + path)).apply {
             requestMethod = method
             connectTimeout = 20_000
             readTimeout = readTimeoutMillis
@@ -114,7 +183,7 @@ class Http : Client {
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("Idempotency-Key", idempotencyKey ?: UUID.randomUUID().toString())
+                idempotencyKey?.let { setRequestProperty("Idempotency-Key", it) }
                 OutputStreamWriter(outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
             }
         }
@@ -124,11 +193,8 @@ class Http : Client {
                 stream = if (status in 200..299) connection.inputStream else connection.errorStream,
                 contentLength = connection.contentLengthLong,
             ).toString(Charsets.UTF_8)
-            if (status !in 200..299) {
-                val detail = runCatching {
-                    JSONObject(response).getJSONObject("error").getString("message")
-                }.getOrDefault("The Vibe Pocket bridge rejected this action.")
-                throw Failure(detail, status)
+            if (status !in 200..299 || expectedStatus != null && status != expectedStatus) {
+                throw decodeFailure(response, status)
             }
             if (response.isBlank()) return JSONObject()
             return runCatching { JSONObject(response) }.getOrElse {
@@ -149,6 +215,7 @@ internal fun decodePairingClaim(invitation: Invitation, response: JSONObject): I
         .mapTo(mutableSetOf()) { capabilities.optString(it) }
     if ("device_credentials" !in values) throw Failure("The Bridge cannot issue a device credential.")
     if ("pairing_commit" !in values) throw Failure("The Bridge cannot activate a pairing credential.")
+    if ("command_results" !in values) throw Failure("The Bridge cannot recover command results.")
     if (response.optString("credentialState") != "pending") {
         throw Failure("The Bridge returned a pairing credential in an invalid state.")
     }
@@ -162,6 +229,58 @@ internal fun decodePairingClaim(invitation: Invitation, response: JSONObject): I
         throw Failure("The Bridge returned pairing credentials for a different address.")
     }
     return IssuedCredential(Config(invitation.origin, claimed.credential), expiresAtMillis)
+}
+
+internal fun decodeCommandResult(response: JSONObject): CommandResult.Found {
+    val status = when (response.optString("status")) {
+        "accepted" -> CommandStatus.ACCEPTED
+        "running" -> CommandStatus.RUNNING
+        "succeeded" -> CommandStatus.SUCCEEDED
+        "failed" -> CommandStatus.FAILED
+        "unknown" -> CommandStatus.UNKNOWN
+        else -> throw Failure("The Vibe Pocket bridge returned an invalid command result.")
+    }
+    val error = response.optJSONObject("error")?.let(::decodeRemoteError)
+    return CommandResult.Found(status, error)
+}
+
+internal fun decodeFailure(response: String, statusCode: Int): Failure {
+    val error = runCatching { JSONObject(response).optJSONObject("error") }
+        .getOrNull()
+        ?.let(::decodeRemoteError)
+    return Failure(
+        message = error?.message ?: "The Vibe Pocket bridge rejected this action.",
+        statusCode = statusCode,
+        errorCode = error?.code,
+    )
+}
+
+private fun decodeRemoteError(error: JSONObject): RemoteError = RemoteError(
+    code = error.optString("code").takeIf(String::isNotBlank),
+    message = error.optString("message")
+        .takeIf(String::isNotBlank)
+        ?: "The Vibe Pocket bridge rejected this action.",
+    statusCode = error.optInt("status").takeIf { it in 400..599 },
+)
+
+private fun requireSucceeded(result: CommandResult.Found) {
+    when (result.status) {
+        CommandStatus.SUCCEEDED -> Unit
+        CommandStatus.ACCEPTED,
+        CommandStatus.RUNNING,
+        -> throw IOException("The command result is not terminal yet.")
+        CommandStatus.FAILED,
+        CommandStatus.UNKNOWN,
+        -> throw Failure(
+            message = result.error?.message ?: "The Vibe Pocket bridge could not confirm this command.",
+            statusCode = result.error?.statusCode ?: HttpURLConnection.HTTP_CONFLICT,
+            errorCode = result.error?.code,
+        )
+    }
+}
+
+private fun requireUuid(value: String) {
+    require(runCatching { UUID.fromString(value) }.isSuccess) { "The command operation ID is invalid." }
 }
 
 internal fun readResponse(
@@ -355,9 +474,13 @@ private fun readEventLine(input: InputStream): String? {
     }
 }
 
-class Failure(message: String, val statusCode: Int? = null) : IllegalStateException(message)
+class Failure(
+    message: String,
+    val statusCode: Int? = null,
+    val errorCode: String? = null,
+) : IllegalStateException(message)
 
-private const val ProtocolVersion = 7
+private const val ProtocolVersion = 8
 internal const val MaxResponseBytes = 1_048_576
 internal const val MaxEventLineBytes = 8_192
 private const val MaxEventFieldChars = 128
