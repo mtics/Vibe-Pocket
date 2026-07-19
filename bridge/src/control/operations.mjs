@@ -14,10 +14,14 @@ import { dirname, isAbsolute } from "node:path";
 
 import { Failure } from "../server/failure.mjs";
 
-export const DEFAULT_MAX_OPERATIONS = 1_024;
+// Seven days covers delayed controller retries and reconnects; 16K entries
+// supports sustained daily use while keeping the persisted log bounded.
+export const DEFAULT_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+export const DEFAULT_MAX_OPERATIONS = 16_384;
 
 const VERSION = 1;
 const VALID_STATUSES = new Set(["accepted", "running", "succeeded", "failed", "unknown"]);
+const TERMINAL_STATUSES = new Set(["succeeded", "failed", "unknown"]);
 
 export class Operations {
   #entries = new Map();
@@ -27,6 +31,7 @@ export class Operations {
   constructor({
     path = null,
     maxEntries = DEFAULT_MAX_OPERATIONS,
+    terminalRetentionMs = DEFAULT_TERMINAL_RETENTION_MS,
     now = Date.now,
     commit = persistOperations,
   } = {}) {
@@ -36,21 +41,28 @@ export class Operations {
     if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
       throw new TypeError("The operation log capacity must be a positive integer.");
     }
+    if (!Number.isSafeInteger(terminalRetentionMs) || terminalRetentionMs <= 0) {
+      throw new TypeError("The terminal operation retention window must be a positive integer.");
+    }
     if (typeof now !== "function" || typeof commit !== "function") {
       throw new TypeError("The operation log requires clock and commit functions.");
     }
     this.path = path;
     this.maxEntries = maxEntries;
+    this.terminalRetentionMs = terminalRetentionMs;
     this.#now = now;
     this.#commit = commit;
     this.#entries = this.#load();
-    this.#recover();
+    const nowMs = this.#now();
+    this.#recover(nowMs);
+    this.#pruneExpiredTerminals(nowMs);
   }
 
   match(operationId, command, principalId) {
     operationId = validateOperationId(operationId);
     principalId = validatePrincipalId(principalId);
     const fingerprint = commandFingerprint(command);
+    this.#pruneExpiredTerminals(this.#now());
     const existing = this.#entries.get(operationId);
     if (!existing) return null;
     assertOwner(existing, principalId);
@@ -216,9 +228,9 @@ export class Operations {
     return entries;
   }
 
-  #recover() {
+  #recover(nowMs) {
     let changed = false;
-    const timestamp = new Date(this.#now()).toISOString();
+    const timestamp = new Date(nowMs).toISOString();
     const next = new Map();
     for (const [operationId, entry] of this.#entries) {
       if (entry.status === "accepted") {
@@ -243,6 +255,19 @@ export class Operations {
         });
       } else {
         next.set(operationId, entry);
+      }
+    }
+    if (changed) this.#replace(next);
+  }
+
+  #pruneExpiredTerminals(nowMs) {
+    const cutoff = nowMs - this.terminalRetentionMs;
+    const next = new Map(this.#entries);
+    let changed = false;
+    for (const [operationId, entry] of this.#entries) {
+      if (TERMINAL_STATUSES.has(entry.status) && Date.parse(entry.updatedAt) <= cutoff) {
+        next.delete(operationId);
+        changed = true;
       }
     }
     if (changed) this.#replace(next);
