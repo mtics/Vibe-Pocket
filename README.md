@@ -7,7 +7,7 @@ scoped semantic operations.
 
 ## Controller
 
-The Android 0.7.8 controller uses protocol v5 and a versioned profile from the
+The Android 0.8.0 controller uses protocol v5 and a versioned profile from the
 M5:
 
 - The Agent list keeps the focused desktop task first, then ranks tasks by
@@ -70,12 +70,25 @@ and bounded configuration updates. It does not expose a raw-keyboard or shell
 endpoint on the M5. A workflow button sends only a fixed workflow ID; the M5
 expands it from the persisted profile and starts a new visible Codex task.
 
-Input execution is split into three functional units. The planner resolves a
-profile gesture and checks its current capability. The orchestrator chooses a
-preferred HID tap or hold with an explicit Bridge fallback and owns push-to-talk
-release. The HID and Bridge transports contain only their respective side
-effects. Compose renders controls and feedback without deciding transport
-policy.
+Source structure supplies the domain context, so local types use short role
+names instead of repeating product, platform, or controller prefixes. Android
+separates `connection`, `profile`, `control`, `input`, `hid`, `gesture`,
+`session`, and `ui`. The Bridge separates `codex`, `task`, `profile`, `control`,
+`server`, and `macos`. A name such as `Session`, `Store`, or `Client` is read in
+that directory's context rather than carrying the whole architecture itself.
+
+Business flow is an explicit composition of functional units. Android
+`session.Session` coordinates `Connection`, `Refresh`, `Delivery`, `Voice`,
+`Commands`, and `Prediction`. Pure input planning resolves a gesture and its
+capability before `input.Dispatch` selects HID or Bridge delivery. Transport
+modules own side effects, while Compose feature files render state and forward
+intent without choosing transport policy. The Bridge follows the same shape.
+`control.Session` resolves commands, serializes them through `Queue`, records
+their projection in `State`, and delegates polling and delayed confirmation to
+`Refresh`. `codex.Session` composes `Tasks`, `Settings`, `Turns`, `Intent`, and
+`Lifecycle`; those units own their state while the session defines only the
+order in which task navigation, approvals, user input, turns, and settings are
+coordinated.
 
 Bluetooth HID is Vibe Pocket's supported virtual-hardware transport. The stock
 Android app does not claim USB-C HID keyboard mode: Android's public USB model
