@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="vibe_pocket.xml" />
+        <exclude domain="sharedpref" path="vibe-pocket-hid.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="vibe_pocket.xml" />
+        <exclude domain="sharedpref" path="vibe-pocket-hid.xml" />
+    </device-transfer>
+</data-extraction-rules>

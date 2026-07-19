@@ -47,6 +47,8 @@ class PocketViewModel(
 
     private val pendingCommandIds = ConcurrentHashMap.newKeySet<String>()
     private val queuedCommandSequence = AtomicLong(0)
+    private val connectionGeneration = AtomicLong(0)
+    private val connectionTransitionLock = Any()
     private val voiceStateLock = Any()
     private val pendingVoiceCommands = ArrayDeque<VoiceCommand>()
     private val voiceScopeJob = SupervisorJob()
@@ -69,31 +71,89 @@ class PocketViewModel(
         }
     }
 
-    fun connect(baseUrl: String, token: String) {
+    fun connect(baseUrl: String, token: String): Boolean {
         val config = runCatching { ConnectionConfig(baseUrl.trim(), token.trim()) }
             .getOrElse {
                 _state.update { state -> state.copy(error = it.message) }
                 _feedback.tryEmit(PocketFeedback.Error)
-                return
+                return false
+        }
+        val current = _state.value.config
+        if (current?.normalizedUrl == config.normalizedUrl && current.token == config.token) return false
+        val generation = synchronized(connectionTransitionLock) {
+            if (pendingCommandIds.any { it.startsWith(CONNECTION_IN_FLIGHT_PREFIX) }) return false
+            connectionGeneration.incrementAndGet()
+        }
+        val connectionInFlightId = "$CONNECTION_IN_FLIGHT_PREFIX$generation"
+        if (!pendingCommandIds.add(connectionInFlightId)) return false
+        _state.update {
+            it.copy(inFlightIds = pendingCommandIds.toSet(), error = null)
+        }
+        viewModelScope.launch(ioDispatcher) {
+            val verified = runCatching { client.snapshot(config) }
+            if (connectionGeneration.get() != generation) {
+                pendingCommandIds.remove(connectionInFlightId)
+                return@launch
             }
-        store.save(config)
-        stopEvents()
-        pendingReasoning = null
-        lastEventId = null
-        eventConnectionError = null
-        _state.value = PocketUiState(config = config)
-        if (foreground) startEvents(config)
-        refresh()
+            verified.onSuccess { snapshot ->
+                runCatching {
+                    synchronized(connectionTransitionLock) {
+                        check(connectionGeneration.get() == generation) { "Connection change was superseded." }
+                        store.save(config)
+                        stopOwnedVoice()
+                        stopEvents()
+                        pendingReasoning = null
+                        lastEventId = null
+                        eventConnectionError = null
+                        pendingCommandIds.clear()
+                        _state.value = PocketUiState(config = config, snapshot = snapshot)
+                        if (foreground) startEvents(config)
+                    }
+                }
+                    .onSuccess {
+                        _feedback.tryEmit(PocketFeedback.Success)
+                    }
+                    .onFailure { error ->
+                        pendingCommandIds.remove(connectionInFlightId)
+                        if (connectionGeneration.get() == generation) {
+                            _state.update {
+                                it.copy(inFlightIds = pendingCommandIds.toSet(), error = error.message)
+                            }
+                            _feedback.tryEmit(PocketFeedback.Error)
+                        }
+                    }
+            }.onFailure { error ->
+                pendingCommandIds.remove(connectionInFlightId)
+                if (connectionGeneration.get() == generation) {
+                    _state.update {
+                        it.copy(inFlightIds = pendingCommandIds.toSet(), error = error.message)
+                    }
+                    _feedback.tryEmit(PocketFeedback.Error)
+                }
+            }
+        }
+        return true
     }
 
     fun disconnect() {
-        stopOwnedVoice()
-        stopEvents()
-        pendingReasoning = null
-        lastEventId = null
-        eventConnectionError = null
-        store.clear()
-        _state.value = PocketUiState()
+        val currentConfig = _state.value.config
+        runCatching {
+            synchronized(connectionTransitionLock) {
+                connectionGeneration.incrementAndGet()
+                stopOwnedVoice()
+                stopEvents()
+                pendingReasoning = null
+                lastEventId = null
+                eventConnectionError = null
+                pendingCommandIds.clear()
+                store.clear()
+                _state.value = PocketUiState()
+            }
+        }.onFailure { error ->
+            _state.update { it.copy(inFlightIds = emptySet(), error = error.message) }
+            if (foreground) currentConfig?.let(::startEvents)
+            _feedback.tryEmit(PocketFeedback.Error)
+        }
     }
 
     fun setForeground(isForeground: Boolean) {
@@ -416,3 +476,4 @@ class PocketViewModelFactory(private val store: SecureConfigStore) : ViewModelPr
 }
 
 private const val REASONING_CONFIRMATION_WINDOW_MILLIS = 3_000L
+private const val CONNECTION_IN_FLIGHT_PREFIX = "connection:"

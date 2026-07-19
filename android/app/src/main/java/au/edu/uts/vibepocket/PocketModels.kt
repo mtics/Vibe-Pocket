@@ -7,15 +7,54 @@ data class ConnectionConfig(
     val baseUrl: String,
     val token: String,
 ) {
+    private val uri = runCatching { URI(baseUrl.trim()) }
+        .getOrElse { throw IllegalArgumentException("The Vibe Pocket bridge URL is invalid.") }
+
     init {
-        val uri = URI(baseUrl)
-        require(uri.scheme == "https" && !uri.host.isNullOrBlank()) {
+        require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()) {
             "Vibe Pocket requires an HTTPS bridge URL."
         }
-        require(token.length >= 24) { "The Vibe Pocket access token is invalid." }
+        require(
+            uri.rawUserInfo == null &&
+                uri.rawQuery == null &&
+                uri.rawFragment == null &&
+                (uri.rawPath.isNullOrEmpty() || uri.rawPath == "/")
+        ) {
+            "Use only the Bridge HTTPS origin, without a path, query, fragment, or user info."
+        }
+        require(token.length in 24..512 && token.none(Char::isISOControl)) {
+            "The Vibe Pocket access token is invalid."
+        }
     }
 
-    val normalizedUrl: String = baseUrl.trimEnd('/')
+    val normalizedUrl: String = URI(
+        "https",
+        null,
+        requireNotNull(uri.host).lowercase(),
+        uri.port,
+        null,
+        null,
+        null,
+    ).toASCIIString()
+
+    override fun toString(): String = "ConnectionConfig(baseUrl=$normalizedUrl, token=<redacted>)"
+}
+
+internal fun resolveConnectionDraft(
+    saved: ConnectionConfig,
+    baseUrl: String,
+    replacementToken: String,
+): ConnectionConfig {
+    val candidateUrl = ConnectionConfig(baseUrl.trim(), saved.token)
+    val originChanged = candidateUrl.normalizedUrl != saved.normalizedUrl
+    val replacement = replacementToken.trim()
+    require(!originChanged || replacement.isNotEmpty()) {
+        "A new pairing token is required when the Bridge URL changes."
+    }
+    return ConnectionConfig(
+        baseUrl = candidateUrl.normalizedUrl,
+        token = replacement.ifEmpty { saved.token },
+    )
 }
 
 data class PocketSnapshot(

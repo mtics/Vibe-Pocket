@@ -221,6 +221,129 @@ class PocketViewModelTest {
     }
 
     @Test
+    fun invalidConnectionUpdateKeepsTheSavedPairing() = runTest(dispatcher) {
+        val original = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
+        val store = FakeStore(original)
+        val viewModel = PocketViewModel(
+            store = store,
+            client = SnapshotQueueClient(VOICE_SNAPSHOT),
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertFalse(viewModel.connect("http://not-secure.example.test", "0123456789abcdefghijklmn"))
+        assertEquals(original, store.config)
+        assertEquals(0, store.saveCalls)
+        assertEquals(original, viewModel.state.value.config)
+    }
+
+    @Test
+    fun validConnectionUpdatePersistsAndRefreshesTheNewPairing() = runTest(dispatcher) {
+        val original = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
+        val replacement = ConnectionConfig("https://bridge.example.test", "zyxwvutsrqponmlkjihgfedc")
+        val store = FakeStore(original)
+        val viewModel = PocketViewModel(
+            store = store,
+            client = SnapshotQueueClient(VOICE_SNAPSHOT, VOICE_SNAPSHOT),
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.token))
+        runCurrent()
+
+        assertEquals(replacement, store.config)
+        assertEquals(1, store.saveCalls)
+        assertEquals(replacement, viewModel.state.value.config)
+        assertEquals(VOICE_SNAPSHOT, viewModel.state.value.snapshot)
+    }
+
+    @Test
+    fun failedCandidateVerificationKeepsTheOldPairingAndSession() = runTest(dispatcher) {
+        val original = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
+        val replacement = ConnectionConfig("https://bridge.example.test", "zyxwvutsrqponmlkjihgfedc")
+        val store = FakeStore(original)
+        val client = FailingCandidateClient()
+        val viewModel = PocketViewModel(
+            store = store,
+            client = client,
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.token))
+        runCurrent()
+
+        assertEquals(original, store.config)
+        assertEquals(0, store.saveCalls)
+        assertEquals(original, viewModel.state.value.config)
+        assertEquals(VOICE_SNAPSHOT, viewModel.state.value.snapshot)
+        assertEquals("Candidate bridge rejected the token.", viewModel.state.value.error)
+    }
+
+    @Test
+    fun forgottenPairingCannotBeRestoredByALateCandidateVerification() = runTest(dispatcher) {
+        val original = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
+        val replacement = ConnectionConfig("https://bridge.example.test", "zyxwvutsrqponmlkjihgfedc")
+        val store = FakeStore(original)
+        val client = BlockingCandidateClient()
+        val viewModel = PocketViewModel(
+            store = store,
+            client = client,
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.token))
+        runCurrent()
+        viewModel.disconnect()
+        client.candidateRelease.complete(Unit)
+        runCurrent()
+
+        assertEquals(null, store.config)
+        assertEquals(0, store.saveCalls)
+        assertEquals(1, store.clearCalls)
+        assertEquals(null, viewModel.state.value.config)
+        assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+    }
+
+    @Test
+    fun disconnectClearsTheSavedPairing() = runTest(dispatcher) {
+        val config = ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")
+        val store = FakeStore(config)
+        val viewModel = PocketViewModel(
+            store = store,
+            client = SnapshotQueueClient(VOICE_SNAPSHOT),
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        viewModel.disconnect()
+
+        assertEquals(null, store.config)
+        assertEquals(1, store.clearCalls)
+        assertEquals(null, viewModel.state.value.config)
+    }
+
+    @Test
+    fun resetProfileSubmitsTheProfileResetCommand() = runTest(dispatcher) {
+        val client = BlockingClient()
+        val viewModel = PocketViewModel(
+            store = FakeStore(ConnectionConfig("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            ioDispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.resetProfile())
+        runCurrent()
+        assertEquals(listOf(PocketCommand.ResetProfile), client.commands)
+
+        client.commandRelease.complete(Unit)
+        runCurrent()
+    }
+
+    @Test
     fun onClearedDrainsVoiceStopOutsideViewModelScope() = runTest(dispatcher) {
         val (viewModel, client) = voiceViewModel()
         val store = ViewModelStore().apply { put("voice", viewModel) }
@@ -246,15 +369,24 @@ class PocketViewModelTest {
         ) to client
     }
 
-    private class FakeStore(private var config: ConnectionConfig?) : ConfigStore {
+    private class FakeStore(config: ConnectionConfig?) : ConfigStore {
+        var config: ConnectionConfig? = config
+            private set
+        var saveCalls = 0
+            private set
+        var clearCalls = 0
+            private set
+
         override fun save(config: ConnectionConfig) {
             this.config = config
+            saveCalls += 1
         }
 
         override fun load(): ConnectionConfig? = config
 
         override fun clear() {
             config = null
+            clearCalls += 1
         }
     }
 
@@ -301,6 +433,31 @@ class PocketViewModelTest {
         private val queuedSnapshots = ArrayDeque(snapshots.toList())
 
         override suspend fun snapshot(config: ConnectionConfig): PocketSnapshot = queuedSnapshots.removeFirst()
+
+        override suspend fun command(config: ConnectionConfig, command: PocketCommand) = Unit
+    }
+
+    private class FailingCandidateClient : PocketClient {
+        private var snapshotCalls = 0
+
+        override suspend fun snapshot(config: ConnectionConfig): PocketSnapshot {
+            snapshotCalls += 1
+            if (snapshotCalls == 1) return VOICE_SNAPSHOT
+            throw BridgeException("Candidate bridge rejected the token.")
+        }
+
+        override suspend fun command(config: ConnectionConfig, command: PocketCommand) = Unit
+    }
+
+    private class BlockingCandidateClient : PocketClient {
+        private var snapshotCalls = 0
+        val candidateRelease = CompletableDeferred<Unit>()
+
+        override suspend fun snapshot(config: ConnectionConfig): PocketSnapshot {
+            snapshotCalls += 1
+            if (snapshotCalls > 1) candidateRelease.await()
+            return VOICE_SNAPSHOT
+        }
 
         override suspend fun command(config: ConnectionConfig, command: PocketCommand) = Unit
     }

@@ -208,24 +208,28 @@ request microphone, Bluetooth scanning, or location access.
 ## First Controller Test
 
 1. Keep the M5 online with an idle Codex task visible.
-2. Open Vibe Pocket, tap Pair, and allow Nearby devices. In macOS Bluetooth
-   settings, pair the Xiaomi 13. When exactly one paired device is classified
-   as a computer, Vibe Pocket selects it automatically; otherwise tap its Mac
-   entry in Vibe Pocket.
-3. In Virtual hardware, tap the M5 host and wait for the band to say connected.
+2. Open Vibe Pocket, open Settings, then tap Pair under Virtual hardware and
+   allow Nearby devices. In macOS Bluetooth settings, pair the Xiaomi 13. When
+   exactly one paired device is classified as a computer, Vibe Pocket selects
+   it automatically; otherwise tap its Mac entry in Vibe Pocket.
+3. Under Virtual hardware, tap the M5 host and wait for the row to say connected.
+   Return to Control, then use the Keys, Workflows, and Reasoning segments.
    Open an idle Codex task and test arrows, Clear, Mode, Reasoning, New task,
    and push-to-talk Voice. Drag around the center reasoning dial: each clockwise
    or counterclockwise quarter turn changes one available reasoning level. Tap
    its center to open the desktop model picker. Hold a default direction key to
    repeat navigation.
-4. Select a visible Agent key, expand the list when more than six tasks are
-   available, or tap New task. Tasks needing attention and tasks still running
-   are ordered before completed and idle tasks.
+4. Open Agents, select a visible Agent key, expand the list when more than six
+   tasks are available, or return to Control and tap New task. Tasks needing
+   attention and tasks still running are ordered before completed and idle tasks.
 5. Test Agent navigation, collaboration mode, reasoning, and workflows.
    Workflow directions deliberately create and submit a new visible task.
 6. Hold L1 with Accept, Reject, Voice, New task, Up, or Down to switch to
-   layers 1 through 6. Open the Settings icon to edit mappings, layer colors,
-   and workflow prompts.
+   layers 1 through 6. Open Settings to edit the Bridge URL, pairing token,
+   mappings, layer colors, and workflow prompts. The top Save button stores a
+   changed Bridge URL or token; mapping changes apply immediately. Disconnect
+   and forget pairing is at the bottom of Settings. The top-bar Reset action
+   restores the six-layer controller profile after confirmation.
    Map any gesture to `Select layer 1` through `Select layer 6` to make layer
    switching part of the controller surface. `Next access level` independently
    cycles Read only, Workspace, and Full access.

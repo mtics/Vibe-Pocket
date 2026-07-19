@@ -25,7 +25,9 @@ class SecureConfigStore(context: Context) : ConfigStore {
             .put("baseUrl", config.normalizedUrl)
             .put("token", config.token)
             .toString()
-        preferences.edit().putString(CONFIG_KEY, encrypt(payload)).apply()
+        check(preferences.edit().putString(CONFIG_KEY, encrypt(payload)).commit()) {
+            "Vibe Pocket could not save the Bridge configuration."
+        }
     }
 
     override fun load(): ConnectionConfig? {
@@ -40,7 +42,9 @@ class SecureConfigStore(context: Context) : ConfigStore {
     }
 
     override fun clear() {
-        preferences.edit().remove(CONFIG_KEY).apply()
+        check(preferences.edit().remove(CONFIG_KEY).commit()) {
+            "Vibe Pocket could not clear the Bridge configuration."
+        }
     }
 
     private fun encrypt(plainText: String): String {

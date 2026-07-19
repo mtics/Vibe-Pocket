@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Backspace
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -50,6 +51,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MarkChatUnread
 import androidx.compose.material.icons.filled.PlayArrow
@@ -58,6 +60,7 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
@@ -65,6 +68,8 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
@@ -76,7 +81,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -111,6 +116,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
@@ -164,7 +170,8 @@ fun VibePocketTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 fun VibePocketApp(viewModel: PocketViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    var showMappings by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
     val context = LocalContext.current
@@ -265,7 +272,11 @@ fun VibePocketApp(viewModel: PocketViewModel) {
     }
 
     if (state.config == null) {
-        ConnectScreen(onConnect = viewModel::connect, error = state.error)
+        ConnectScreen(
+            onConnect = viewModel::connect,
+            error = state.error,
+            isConnecting = state.inFlightIds.any { it.startsWith("connection:") },
+        )
         return
     }
 
@@ -306,6 +317,48 @@ fun VibePocketApp(viewModel: PocketViewModel) {
             if (selected) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
     }
+    val onPairHid: () -> Unit = {
+        pairRequested = true
+        when {
+            !hidController.hasPermissions() -> nearbyPermissionLauncher.launch(bluetoothPermissions)
+            !hidState.enabled -> bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            else -> launchDiscoverable()
+        }
+    }
+
+    if (showSettings) {
+        SettingsScreen(
+            config = requireNotNull(state.config),
+            snapshot = state.snapshot,
+            hidState = hidState,
+            inFlightIds = state.inFlightIds,
+            connectionError = state.error,
+            onDismiss = { showSettings = false },
+            onSaveConnection = viewModel::connect,
+            onDisconnect = viewModel::disconnect,
+            onPairHid = onPairHid,
+            onConnectHid = hidController::connect,
+            onRefreshHid = {
+                if (hidController.hasPermissions()) hidController.start()
+                hidController.refreshHosts()
+            },
+            onLayer = onLayer,
+            onUpdate = { layerId, inputId, gesture, actionId ->
+                if (viewModel.updateBinding(layerId, inputId, gesture, actionId)) {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                }
+            },
+            onClear = { layerId, inputId, gesture ->
+                if (viewModel.clearBinding(layerId, inputId, gesture)) {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                }
+            },
+            onRename = viewModel::renameLayer,
+            onColor = viewModel::updateLayerColor,
+            onWorkflow = viewModel::updateWorkflowPrompt,
+        )
+        return
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -313,10 +366,8 @@ fun VibePocketApp(viewModel: PocketViewModel) {
             TopAppBar(
                 title = { Text("Vibe Pocket", fontWeight = FontWeight.SemiBold) },
                 actions = {
-                    if (state.snapshot?.controller?.actionCatalog?.isNotEmpty() == true) {
-                        IconButton(onClick = { showMappings = true }, enabled = state.inFlightIds.isEmpty()) {
-                            Icon(Icons.Filled.Settings, contentDescription = "Configure controller mappings")
-                        }
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Open settings")
                     }
                     IconButton(onClick = viewModel::refresh, enabled = !state.isRefreshing) {
                         if (state.isRefreshing) {
@@ -325,10 +376,11 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh controller state")
                         }
                     }
-                    IconButton(onClick = {
-                        viewModel.disconnect()
-                    }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Disconnect bridge")
+                    IconButton(
+                        onClick = { confirmReset = true },
+                        enabled = state.snapshot?.controller?.profile != null && state.inFlightIds.isEmpty(),
+                    ) {
+                        Icon(Icons.Filled.Restore, contentDescription = "Reset controller profile")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -347,21 +399,8 @@ fun VibePocketApp(viewModel: PocketViewModel) {
                 ControllerScreen(
                     snapshot = snapshot,
                     statusMessage = state.error ?: snapshot.status.message,
-                    hidState = hidState,
+                    hidNavigationAvailable = hidState.connected,
                     inFlightIds = state.inFlightIds,
-                    onPairHid = {
-                        pairRequested = true
-                        when {
-                            !hidController.hasPermissions() -> nearbyPermissionLauncher.launch(bluetoothPermissions)
-                            !hidState.enabled -> bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                            else -> launchDiscoverable()
-                        }
-                    },
-                    onConnectHid = hidController::connect,
-                    onRefreshHid = {
-                        if (hidController.hasPermissions()) hidController.start()
-                        hidController.refreshHosts()
-                    },
                     onInput = onInput,
                     onNavigationRepeat = onNavigationRepeat,
                     onVoiceStart = onVoiceStart,
@@ -374,32 +413,30 @@ fun VibePocketApp(viewModel: PocketViewModel) {
         }
     }
 
-    val controller = state.snapshot?.controller
-    if (showMappings && controller?.profile != null && controller.actionCatalog.isNotEmpty()) {
-        MappingSheet(
-            snapshot = requireNotNull(state.snapshot),
-            inFlightIds = state.inFlightIds,
-            onDismiss = { showMappings = false },
-            onUpdate = { layerId, inputId, gesture, actionId ->
-                if (viewModel.updateBinding(layerId, inputId, gesture, actionId)) {
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                }
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset controller profile?") },
+            text = { Text("All six layers, mappings, colors, and workflow prompts will return to their defaults.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (viewModel.resetProfile()) confirmReset = false
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Reset") }
             },
-            onClear = { layerId, inputId, gesture ->
-                if (viewModel.clearBinding(layerId, inputId, gesture)) {
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                }
-            },
-            onRename = viewModel::renameLayer,
-            onColor = viewModel::updateLayerColor,
-            onWorkflow = viewModel::updateWorkflowPrompt,
-            onReset = viewModel::resetProfile,
+            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
         )
     }
 }
 
 @Composable
-private fun ConnectScreen(onConnect: (String, String) -> Unit, error: String?) {
+private fun ConnectScreen(
+    onConnect: (String, String) -> Boolean,
+    error: String?,
+    isConnecting: Boolean,
+) {
     var url by rememberSaveable { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     Column(
@@ -434,8 +471,17 @@ private fun ConnectScreen(onConnect: (String, String) -> Unit, error: String?) {
         Button(
             onClick = { onConnect(url, token) },
             modifier = Modifier.fillMaxWidth(),
+            enabled = !isConnecting && url.isNotBlank() && token.isNotBlank(),
             shape = RoundedCornerShape(8.dp),
-        ) { Text("Connect") }
+        ) {
+            if (isConnecting) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Connecting")
+            } else {
+                Text("Connect")
+            }
+        }
     }
 }
 
@@ -443,11 +489,8 @@ private fun ConnectScreen(onConnect: (String, String) -> Unit, error: String?) {
 private fun ControllerScreen(
     snapshot: PocketSnapshot,
     statusMessage: String?,
-    hidState: HidKeyboardState,
+    hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
-    onPairHid: () -> Unit,
-    onConnectHid: (String) -> Boolean,
-    onRefreshHid: () -> Unit,
     onInput: (String, ControllerGesture) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
@@ -468,6 +511,17 @@ private fun ControllerScreen(
     val layerScope = rememberCoroutineScope()
     var layerModifierPressed by remember { mutableStateOf(false) }
     var layerGuardActive by remember { mutableStateOf(false) }
+    var selectedView by rememberSaveable { mutableStateOf("control") }
+    var selectedDeck by rememberSaveable { mutableStateOf("keys") }
+
+    LaunchedEffect(selectedDeck, joystickInputs.isNotEmpty(), dialInputs.isNotEmpty()) {
+        if (
+            (selectedDeck == "workflows" && joystickInputs.isEmpty()) ||
+            (selectedDeck == "reasoning" && dialInputs.isEmpty())
+        ) {
+            selectedDeck = "keys"
+        }
+    }
 
     fun armLayerGuard() {
         layerGuardActive = true
@@ -503,88 +557,180 @@ private fun ControllerScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         TaskStatusStrip(snapshot, statusMessage)
         snapshot.controller?.userInput?.let { CodexQuestionPanel(it) }
-        SectionLabel("Agents")
-        AgentGrid(
-            snapshot = snapshot,
-            inFlightIds = inFlightIds,
-            onAgentClick = onAgent,
+        ControllerViewSwitch(
+            selected = selectedView,
+            agentCount = snapshot.agentSlots().count { it.agent != null },
+            onSelected = { selectedView = it },
         )
-        controller?.profile?.layers?.take(6)?.let { layers ->
-            SectionLabel("Layers")
-            LayerSelector(
-                layers = layers,
-                activeLayerId = controller.activeLayerId,
-                inFlightIds = inFlightIds,
-                enabled = snapshot.status.state == "ready",
-                onLayer = onLayer,
-                modifierPressed = layerModifierPressed,
-                onModifierPressed = { layerModifierPressed = it },
-            )
-        }
-        ModeAndFocus(
-            mode = controller?.mode ?: SelectorStatus(false, "Unavailable"),
-            access = controller?.access ?: SelectorStatus(false, "Unavailable"),
-            touchInput = touchInput,
-            snapshot = snapshot,
-            inFlightIds = inFlightIds,
-            onInput = routedInput,
-            onVoiceStart = routedVoiceStart,
-            onVoiceStop = onVoiceStop,
-            layerModifierPressed = layerModifierPressed,
-            inputBlocked = layerGuardActive,
-        )
-        SectionLabel("Command keys")
-        CommandKeyGrid(
-            inputs = keyInputs,
-            snapshot = snapshot,
-            hidNavigationAvailable = hidState.connected,
-            inFlightIds = inFlightIds,
-            onInput = routedInput,
-            onNavigationRepeat = routedNavigationRepeat,
-            onVoiceStart = routedVoiceStart,
-            onVoiceStop = onVoiceStop,
-            layerModifierPressed = layerModifierPressed,
-            inputBlocked = layerGuardActive,
-            onLayerChord = { inputId -> routeLayerInput(inputId, ControllerGesture.TAP) },
-        )
-        if (joystickInputs.isNotEmpty()) {
-            SectionLabel("Workflows")
-            WorkflowJoystick(
-                inputs = joystickInputs,
+        if (selectedView == "agents") {
+            SectionLabel("Active agents")
+            AgentGrid(
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
-                onGesture = routedInput,
-                onVoiceStart = routedVoiceStart,
-                onVoiceStop = onVoiceStop,
-                inputBlocked = layerGuardActive,
+                onAgentClick = onAgent,
             )
-        }
-        if (dialInputs.isNotEmpty()) {
-            SectionLabel("Reasoning")
-            ReasoningDial(
-                inputs = dialInputs,
-                reasoning = controller?.reasoning ?: ReasoningStatus.Unavailable,
+        } else {
+            controller?.profile?.layers?.take(6)?.let { layers ->
+                SectionLabel("Layers")
+                LayerSelector(
+                    layers = layers,
+                    activeLayerId = controller.activeLayerId,
+                    inFlightIds = inFlightIds,
+                    enabled = snapshot.status.state == "ready",
+                    onLayer = onLayer,
+                    modifierPressed = layerModifierPressed,
+                    onModifierPressed = { layerModifierPressed = it },
+                )
+            }
+            ModeAndFocus(
+                mode = controller?.mode ?: SelectorStatus(false, "Unavailable"),
+                access = controller?.access ?: SelectorStatus(false, "Unavailable"),
+                touchInput = touchInput,
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
                 onInput = routedInput,
                 onVoiceStart = routedVoiceStart,
                 onVoiceStop = onVoiceStop,
-                onOpenModelPicker = onModelPicker,
+                layerModifierPressed = layerModifierPressed,
                 inputBlocked = layerGuardActive,
             )
+            ControllerDeckSwitch(
+                selected = selectedDeck,
+                workflowsAvailable = joystickInputs.isNotEmpty(),
+                reasoningAvailable = dialInputs.isNotEmpty(),
+                onSelected = { selectedDeck = it },
+            )
+            when (selectedDeck) {
+                "workflows" -> WorkflowJoystick(
+                    inputs = joystickInputs,
+                    snapshot = snapshot,
+                    inFlightIds = inFlightIds,
+                    onGesture = routedInput,
+                    onVoiceStart = routedVoiceStart,
+                    onVoiceStop = onVoiceStop,
+                    inputBlocked = layerGuardActive,
+                )
+                "reasoning" -> ReasoningDial(
+                    inputs = dialInputs,
+                    reasoning = controller?.reasoning ?: ReasoningStatus.Unavailable,
+                    snapshot = snapshot,
+                    inFlightIds = inFlightIds,
+                    onInput = routedInput,
+                    onVoiceStart = routedVoiceStart,
+                    onVoiceStop = onVoiceStop,
+                    onOpenModelPicker = onModelPicker,
+                    inputBlocked = layerGuardActive,
+                )
+                else -> CommandKeyGrid(
+                    inputs = keyInputs,
+                    snapshot = snapshot,
+                    hidNavigationAvailable = hidNavigationAvailable,
+                    inFlightIds = inFlightIds,
+                    onInput = routedInput,
+                    onNavigationRepeat = routedNavigationRepeat,
+                    onVoiceStart = routedVoiceStart,
+                    onVoiceStop = onVoiceStop,
+                    layerModifierPressed = layerModifierPressed,
+                    inputBlocked = layerGuardActive,
+                    onLayerChord = { inputId -> routeLayerInput(inputId, ControllerGesture.TAP) },
+                )
+            }
         }
-        VirtualHardwarePanel(
-            state = hidState,
-            onPair = onPairHid,
-            onConnect = onConnectHid,
-            onRefresh = onRefreshHid,
-        )
         Spacer(Modifier.height(18.dp))
+    }
+}
+
+@Composable
+private fun ControllerDeckSwitch(
+    selected: String,
+    workflowsAvailable: Boolean,
+    reasoningAvailable: Boolean,
+    onSelected: (String) -> Unit,
+) {
+    val options = listOf(
+        Triple("keys", "Keys", true),
+        Triple("workflows", "Workflows", workflowsAvailable),
+        Triple("reasoning", "Reasoning", reasoningAvailable),
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        options.forEach { (id, label, available) ->
+            val active = selected == id
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(if (active) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                    .clickable(enabled = available && !active, onClick = { onSelected(id) })
+                    .alpha(if (available) 1f else 0.38f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControllerViewSwitch(
+    selected: String,
+    agentCount: Int,
+    onSelected: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        listOf(
+            Triple("control", "Control", Icons.Default.Tune),
+            Triple("agents", "Agents $agentCount", Icons.Default.AccountCircle),
+        ).forEach { (id, label, icon) ->
+            val active = selected == id
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                    .clickable(enabled = !active, onClick = { onSelected(id) }),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    label,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -596,10 +742,7 @@ private fun VirtualHardwarePanel(
     onRefresh: () -> Unit,
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-            .padding(11.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -624,6 +767,7 @@ private fun VirtualHardwarePanel(
             FilledTonalButton(
                 onClick = onPair,
                 enabled = state.supported,
+                modifier = Modifier.height(48.dp),
                 shape = RoundedCornerShape(6.dp),
                 contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
             ) {
@@ -638,7 +782,7 @@ private fun VirtualHardwarePanel(
             FilledTonalButton(
                 onClick = { onConnect(host.address) },
                 enabled = state.registered && !connecting,
-                modifier = Modifier.fillMaxWidth().height(42.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(6.dp),
                 colors = ButtonDefaults.filledTonalButtonColors(
                     containerColor = if (connected) CompleteColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
@@ -730,22 +874,36 @@ private fun CodexQuestionPanel(question: CodexQuestion) {
 private fun TaskStatusStrip(snapshot: PocketSnapshot, message: String?) {
     val state = snapshot.controller?.taskState ?: if (snapshot.status.state == "ready") TaskState.IDLE else TaskState.ERROR
     val color = stateColor(state)
+    val focusedAgent = snapshot.agentSlots().firstOrNull { it.focused }?.agent
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
+            .border(1.dp, color.copy(alpha = 0.32f), RoundedCornerShape(6.dp))
+            .heightIn(min = 68.dp)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(stateIcon(state), contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(9.dp))
-        Text(stateLabel(state), fontWeight = FontWeight.SemiBold)
-        message?.let { text ->
-            Spacer(Modifier.width(10.dp))
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(color.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(stateIcon(state), contentDescription = null, tint = color, modifier = Modifier.size(21.dp))
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                text,
-                modifier = Modifier.weight(1f),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                focusedAgent?.label ?: "Codex controller",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                listOfNotNull(stateLabel(state), message?.takeIf { it.isNotBlank() }).joinToString(" · "),
+                color = color,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
@@ -775,7 +933,7 @@ private fun AgentGrid(
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
-        visibleSlots.chunked(3).forEach { row ->
+        visibleSlots.chunked(2).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row.forEach { slot ->
                     val agent = slot.agent
@@ -788,8 +946,8 @@ private fun AgentGrid(
                         modifier = Modifier.weight(1f),
                     )
                 }
-                repeat(3 - row.size) {
-                    Spacer(Modifier.weight(1f).height(58.dp))
+                repeat(2 - row.size) {
+                    Spacer(Modifier.weight(1f).height(68.dp))
                 }
             }
         }
@@ -822,12 +980,12 @@ private fun AgentTile(
     val color = agent?.state?.let(::stateColor) ?: MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         modifier = modifier
-            .height(58.dp)
+            .height(68.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(if (focused && agent != null) color.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surface)
             .border(if (focused) 2.dp else 1.dp, color.copy(alpha = if (agent == null) 0.2f else 0.7f), RoundedCornerShape(6.dp))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 7.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = if (agent == null) Arrangement.Center else Arrangement.SpaceBetween,
     ) {
         if (agent == null) {
@@ -849,7 +1007,7 @@ private fun AgentTile(
                     agent.label,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelLarge,
                 )
             }
             Text(
@@ -871,7 +1029,7 @@ private fun LayerSelector(
     modifierPressed: Boolean,
     onModifierPressed: (Boolean) -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         LayerModifierKey(
             pressed = modifierPressed,
             enabled = enabled,
@@ -885,7 +1043,7 @@ private fun LayerSelector(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(42.dp)
+                    .height(48.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(if (selected) layerColor.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface)
                     .border(if (selected) 2.dp else 1.dp, layerColor.copy(alpha = if (selected) 1f else 0.45f), RoundedCornerShape(6.dp))
@@ -911,7 +1069,7 @@ private fun LayerModifierKey(
 ) {
     Box(
         modifier = modifier
-            .height(42.dp)
+            .height(48.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(if (pressed) MaterialTheme.colorScheme.secondary.copy(alpha = 0.28f) else MaterialTheme.colorScheme.surfaceVariant)
             .border(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = if (pressed) 1f else 0.52f), RoundedCornerShape(6.dp))
@@ -1056,7 +1214,7 @@ private fun CommandKey(
         layerModifierPressed = layerModifierPressed,
         inputBlocked = inputBlocked,
         onLayerChord = onLayerChord,
-        modifier = modifier.height(66.dp),
+        modifier = modifier.height(72.dp),
     )
 }
 
@@ -1091,16 +1249,25 @@ private fun GestureControl(
     val currentLayerChord by rememberUpdatedState(onLayerChord)
     val repeatNavigation = navigationRepeatEnabled && !inputPending && !inputBlocked && !layerModifierPressed
     val layerChordEnabled = layerModifierPressed && !inputBlocked && isLayerShiftTarget(input.id)
+    val accent = when (input.id) {
+        "key_accept" -> MaterialTheme.colorScheme.primary
+        "key_reject", "key_stop" -> ErrorColor
+        "key_voice" -> MaterialTheme.colorScheme.tertiary
+        "key_new_task" -> MaterialTheme.colorScheme.secondary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
     val container = when (input.id) {
         "key_accept" -> MaterialTheme.colorScheme.primaryContainer
         "key_reject", "key_stop" -> ErrorColor.copy(alpha = 0.18f)
-        "key_voice" -> Color(0xFF285169)
-        else -> MaterialTheme.colorScheme.surfaceVariant
+        "key_voice" -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.16f)
+        "key_new_task" -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+        else -> MaterialTheme.colorScheme.surface
     }
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
             .background(container)
+            .border(1.dp, accent.copy(alpha = 0.28f), RoundedCornerShape(6.dp))
             .pointerInput(input.id, layerChordEnabled) {
                 if (!layerChordEnabled) return@pointerInput
                 awaitEachGesture {
@@ -1169,7 +1336,11 @@ private fun GestureControl(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
-        Icon(inputIcon(input.icon), contentDescription = null, modifier = Modifier.size(20.dp))
+        if (inputPending) {
+            CircularProgressIndicator(Modifier.size(21.dp), color = accent, strokeWidth = 2.dp)
+        } else {
+            Icon(inputIcon(input.icon), contentDescription = null, tint = accent, modifier = Modifier.size(21.dp))
+        }
         Text(input.label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
         GestureIndicators(snapshot, input.id)
     }
@@ -1177,14 +1348,20 @@ private fun GestureControl(
 
 @Composable
 private fun GestureIndicators(snapshot: PocketSnapshot, inputId: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        modifier = Modifier.semantics { contentDescription = "Mapped gestures" },
+    ) {
         ControllerGesture.entries.forEach { gesture ->
             val mapped = snapshot.actionFor(inputId, gesture) != null
-            Text(
-                gesture.shortLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (mapped) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-                fontWeight = if (mapped) FontWeight.Bold else FontWeight.Normal,
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (mapped) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.22f),
+                    ),
             )
         }
     }
@@ -1597,7 +1774,11 @@ private fun DialStepButton(
             )
             .alpha(if (baseEnabled) 1f else 0.38f),
     ) {
-        Icon(icon, contentDescription = input?.label, modifier = Modifier.size(28.dp))
+        if (inputPending) {
+            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+        } else {
+            Icon(icon, contentDescription = input?.label, modifier = Modifier.size(28.dp))
+        }
     }
 }
 
@@ -1608,23 +1789,35 @@ private data class MappingTarget(
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun MappingSheet(
-    snapshot: PocketSnapshot,
+private fun SettingsScreen(
+    config: ConnectionConfig,
+    snapshot: PocketSnapshot?,
+    hidState: HidKeyboardState,
     inFlightIds: Set<String>,
+    connectionError: String?,
     onDismiss: () -> Unit,
+    onSaveConnection: (String, String) -> Boolean,
+    onDisconnect: () -> Unit,
+    onPairHid: () -> Unit,
+    onConnectHid: (String) -> Boolean,
+    onRefreshHid: () -> Unit,
+    onLayer: (String) -> Boolean,
     onUpdate: (String, String, ControllerGesture, String) -> Unit,
     onClear: (String, String, ControllerGesture) -> Unit,
     onRename: (String, String) -> Boolean,
     onColor: (String, String) -> Boolean,
     onWorkflow: (String, String) -> Boolean,
-    onReset: () -> Boolean,
 ) {
-    val controller = snapshot.controller ?: return
-    val profile = controller.profile ?: return
-    val layer = profile.layers.firstOrNull { it.id == controller.activeLayerId } ?: profile.layers.firstOrNull() ?: return
+    val controller = snapshot?.controller
+    val profile = controller?.profile
+    val layer = profile?.layers?.firstOrNull { it.id == controller.activeLayerId } ?: profile?.layers?.firstOrNull()
+    var url by remember(config.normalizedUrl) { mutableStateOf(config.normalizedUrl) }
+    var token by remember { mutableStateOf("") }
+    var tokenVisible by remember { mutableStateOf(false) }
+    var saveTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
     var target by remember { mutableStateOf<MappingTarget?>(null) }
-    var layerName by rememberSaveable(layer.id, layer.name) { mutableStateOf(layer.name) }
-    var confirmReset by remember { mutableStateOf(false) }
+    var layerName by rememberSaveable(layer?.id, layer?.name) { mutableStateOf(layer?.name.orEmpty()) }
+    var confirmDisconnect by remember { mutableStateOf(false) }
     val busy = inFlightIds.any { pending ->
         pending.startsWith("mapping:")
             || pending.startsWith("rename:")
@@ -1632,125 +1825,294 @@ private fun MappingSheet(
             || pending.startsWith("workflow:")
             || pending == "reset-profile"
     }
+    val candidate = remember(config, url, token) {
+        runCatching { resolveConnectionDraft(config, url, token) }
+    }
+    val validConfig = candidate.getOrNull()
+    val connectionDirty = validConfig != null && (
+        validConfig.normalizedUrl != config.normalizedUrl || validConfig.token != config.token
+    )
+    val savingConnection = inFlightIds.any { it.startsWith("connection:") }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surface) {
+    LaunchedEffect(config.normalizedUrl, config.token, saveTarget) {
+        val target = saveTarget ?: return@LaunchedEffect
+        if (config.normalizedUrl == target.normalizedUrl && config.token == target.token) {
+            saveTarget = null
+            onDismiss()
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to controller")
+                    }
+                },
+                title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
+                actions = {
+                    FilledTonalButton(
+                        onClick = {
+                            validConfig?.let { candidateConfig ->
+                                if (onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.token)) {
+                                    saveTarget = candidateConfig
+                                }
+                            }
+                        },
+                        enabled = connectionDirty && inFlightIds.isEmpty(),
+                        modifier = Modifier.width(104.dp).height(48.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                    ) {
+                        if (savingConnection) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Save")
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+            )
+        },
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 680.dp)
                 .verticalScroll(rememberScrollState())
+                .padding(padding)
                 .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Mappings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                    Text(layer.name, color = parseProfileColor(layer.color), style = MaterialTheme.typography.labelMedium)
-                }
-                if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-            }
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = layerName,
-                    onValueChange = { if (it.length <= 40) layerName = it },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    label = { Text("Layer name") },
+            SettingsSectionLabel(Icons.Default.Link, "Bridge & pairing")
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Bridge URL") },
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Replacement token") },
+                visualTransformation = if (tokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { tokenVisible = !tokenVisible }) {
+                        Icon(
+                            if (tokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (tokenVisible) "Hide pairing token" else "Show pairing token",
+                        )
+                    }
+                },
+            )
+            candidate.exceptionOrNull()?.message?.let { message ->
+                Text(
+                    message,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
                 )
-                TextButton(
-                    onClick = { onRename(layer.id, layerName) },
-                    enabled = !busy && layerName.trim().isNotEmpty() && layerName.trim() != layer.name,
-                ) { Text("Rename") }
             }
-            Spacer(Modifier.height(10.dp))
-            Text("Layer color", style = MaterialTheme.typography.labelLarge)
-            Spacer(Modifier.height(7.dp))
-            LayerColorChoices.chunked(4).forEach { colors ->
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    colors.forEach { color ->
-                        val parsed = parseProfileColor(color)
-                        val selected = layer.color.equals(color, ignoreCase = true)
-                        Box(
-                            modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(parsed)
-                                .border(
-                                    if (selected) 3.dp else 1.dp,
-                                    if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                                    CircleShape,
-                                )
-                                .semantics { contentDescription = "Layer color $color" }
-                                .clickable(enabled = !busy && !selected, onClick = { onColor(layer.id, color) }),
+            if (saveTarget != null && !savingConnection) {
+                connectionError?.let { message ->
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+
+            SettingsSectionLabel(Icons.Default.Bluetooth, "Virtual hardware")
+            VirtualHardwarePanel(
+                state = hidState,
+                onPair = onPairHid,
+                onConnect = onConnectHid,
+                onRefresh = onRefreshHid,
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+            SettingsSectionLabel(Icons.Default.Tune, "Controller profile")
+            if (profile == null || layer == null || controller.actionCatalog.isEmpty()) {
+                Text(
+                    "Controller profile unavailable",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
+            } else {
+                SettingsLayerSelector(
+                    layers = profile.layers.take(6),
+                    activeLayerId = layer.id,
+                    inFlightIds = inFlightIds,
+                    enabled = snapshot.status.state == "ready" && !busy,
+                    onLayer = onLayer,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = layerName,
+                        onValueChange = { if (it.length <= 40) layerName = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Layer name") },
+                    )
+                    FilledTonalButton(
+                        onClick = { onRename(layer.id, layerName) },
+                        enabled = !busy && layerName.trim().isNotEmpty() && layerName.trim() != layer.name,
+                        modifier = Modifier.height(48.dp),
+                        shape = RoundedCornerShape(6.dp),
+                    ) { Text("Rename") }
+                }
+                Text("Layer color", style = MaterialTheme.typography.labelLarge)
+                LayerColorChoices.chunked(4).forEach { colors ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        colors.forEach { color ->
+                            val parsed = parseProfileColor(color)
+                            val selected = layer.color.equals(color, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(parsed)
+                                    .border(
+                                        if (selected) 3.dp else 1.dp,
+                                        if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                        CircleShape,
+                                    )
+                                    .semantics { contentDescription = "Layer color $color" }
+                                    .clickable(enabled = !busy && !selected, onClick = { onColor(layer.id, color) }),
+                            )
+                        }
+                    }
+                }
+                profile.inputs.forEach { input ->
+                    MappingInputRow(
+                        input = input,
+                        binding = layer.bindings[input.id],
+                        catalog = controller.actionCatalog,
+                        enabled = !busy,
+                        onSelect = { gesture -> target = MappingTarget(input, gesture) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f))
+                }
+                if (profile.workflows.isNotEmpty()) {
+                    Text("Workflow prompts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    profile.workflows.forEach { workflow ->
+                        WorkflowPromptEditor(
+                            workflow = workflow,
+                            busy = busy,
+                            onSave = { prompt -> onWorkflow(workflow.id, prompt) },
                         )
                     }
                 }
-                Spacer(Modifier.height(8.dp))
             }
-            Spacer(Modifier.height(14.dp))
-            profile.inputs.forEach { input ->
-                MappingInputRow(
-                    input = input,
-                    binding = layer.bindings[input.id],
-                    catalog = controller.actionCatalog,
-                    enabled = !busy,
-                    onSelect = { gesture -> target = MappingTarget(input, gesture) },
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f))
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+            SettingsSectionLabel(Icons.AutoMirrored.Filled.Logout, "Connection")
+            OutlinedButton(
+                onClick = { confirmDisconnect = true },
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(6.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Disconnect and forget pairing")
             }
-            Spacer(Modifier.height(14.dp))
-            Text("Workflow prompts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-            profile.workflows.forEach { workflow ->
-                WorkflowPromptEditor(
-                    workflow = workflow,
-                    busy = busy,
-                    onSave = { prompt -> onWorkflow(workflow.id, prompt) },
-                )
-                Spacer(Modifier.height(10.dp))
-            }
-            TextButton(
-                onClick = { confirmReset = true },
-                enabled = !busy,
-                modifier = Modifier.align(Alignment.End),
-                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-            ) { Text("Reset all layers") }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(24.dp))
         }
     }
 
     target?.let { selected ->
+        val selectedLayer = layer ?: return@let
+        val selectedController = controller ?: return@let
         ActionPickerDialog(
             target = selected,
-            currentAction = layer.bindings[selected.input.id]?.actions?.get(selected.gesture),
-            catalog = controller.actionCatalog,
+            currentAction = selectedLayer.bindings[selected.input.id]?.actions?.get(selected.gesture),
+            catalog = selectedController.actionCatalog,
             onDismiss = { target = null },
             onSelect = { actionId ->
-                onUpdate(layer.id, selected.input.id, selected.gesture, actionId)
+                onUpdate(selectedLayer.id, selected.input.id, selected.gesture, actionId)
                 target = null
             },
             onClear = {
-                onClear(layer.id, selected.input.id, selected.gesture)
+                onClear(selectedLayer.id, selected.input.id, selected.gesture)
                 target = null
             },
         )
     }
 
-    if (confirmReset) {
+    if (confirmDisconnect) {
         AlertDialog(
-            onDismissRequest = { confirmReset = false },
-            title = { Text("Reset all mappings?") },
-            text = { Text("All six layers will return to the default profile.") },
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("Forget this Bridge?") },
+            text = { Text("The saved Bridge URL and pairing token will be removed from this phone.") },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (onReset()) confirmReset = false
+                        confirmDisconnect = false
+                        onDisconnect()
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) { Text("Reset") }
+                ) { Text("Disconnect") }
             },
-            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmDisconnect = false }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun SettingsSectionLabel(icon: ImageVector, label: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun SettingsLayerSelector(
+    layers: List<ControllerLayer>,
+    activeLayerId: String,
+    inFlightIds: Set<String>,
+    enabled: Boolean,
+    onLayer: (String) -> Boolean,
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        layers.forEachIndexed { index, layer ->
+            val selected = layer.id == activeLayerId
+            val color = parseProfileColor(layer.color)
+            val loading = "layer:${layer.id}" in inFlightIds
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (selected) color.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface)
+                    .border(if (selected) 2.dp else 1.dp, color.copy(alpha = if (selected) 1f else 0.42f), RoundedCornerShape(6.dp))
+                    .clickable(enabled = enabled && !selected && !loading, onClick = { onLayer(layer.id) }),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(17.dp), color = color, strokeWidth = 2.dp)
+                } else {
+                    Text("${index + 1}", color = color, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     }
 }
 
@@ -1875,7 +2237,19 @@ private fun ActionPickerDialog(
 
 @Composable
 private fun SectionLabel(label: String) {
-    Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+    Row(
+        modifier = Modifier.fillMaxWidth().height(26.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .width(3.dp)
+                .height(16.dp)
+                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+    }
 }
 
 @Composable
