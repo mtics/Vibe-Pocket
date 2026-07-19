@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { create, PROTOCOL_VERSION } from "../../src/server/http.mjs";
+import { Invitations } from "../../src/pairing/invitations.mjs";
 
 const TOKEN = "test-token-with-at-least-24-characters";
+const DEVICE_TOKEN = "vp1.testdevice.abcdefghijklmnopqrstuvwxyzABCDEFG";
 
 async function withServer(run) {
   const calls = [];
@@ -25,11 +27,21 @@ async function withServer(run) {
     },
   };
   const events = { connect() { throw new Error("SSE is not used in this test."); } };
-  const server = create({ service, events, token: TOKEN });
+  const invitations = new Invitations({ issue: () => DEVICE_TOKEN });
+  let deviceActive = true;
+  const credentials = {
+    accepts: (candidate) => candidate === DEVICE_TOKEN && deviceActive,
+    revoke: (candidate) => {
+      if (candidate !== DEVICE_TOKEN || !deviceActive) return false;
+      deviceActive = false;
+      return true;
+    },
+  };
+  const server = create({ service, events, token: TOKEN, credentials, invitations });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await run({ baseUrl: `http://127.0.0.1:${port}`, calls, attachedThreads, hooks });
+    await run({ baseUrl: `http://127.0.0.1:${port}`, calls, attachedThreads, hooks, invitations });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -73,6 +85,59 @@ test("snapshot and commands remain authenticated", async () => {
       command: { kind: "binding", inputId: "key_voice" },
       idempotencyKey: "gesture-123",
     }]);
+  });
+});
+
+test("pairing claims are public, phone-bound, and invitation creation is not exposed", async () => {
+  await withServer(async ({ baseUrl, invitations }) => {
+    const invitation = invitations.create("https://m5.example.ts.net");
+    const code = new URL(invitation.pairingUrl).searchParams.get("code");
+    const nonce = "n".repeat(43);
+
+    const claim = await fetch(`${baseUrl}/v1/pairing/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, nonce }),
+    });
+    assert.equal(claim.status, 200);
+    assert.deepEqual(await claim.json(), {
+      baseUrl: "https://m5.example.ts.net",
+      token: DEVICE_TOKEN,
+      protocolVersion: 6,
+      capabilities: ["device_credentials", "events", "virtual_hardware"],
+    });
+
+    const replay = await fetch(`${baseUrl}/v1/pairing/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, nonce: "o".repeat(43) }),
+    });
+    assert.equal(replay.status, 410);
+
+    const deviceSnapshot = await fetch(`${baseUrl}/v1/pocket/snapshot`, {
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(deviceSnapshot.status, 200);
+
+    const revoked = await fetch(`${baseUrl}/v1/pocket/devices/current`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(revoked.status, 200);
+    const rejectedAfterRevoke = await fetch(`${baseUrl}/v1/pocket/snapshot`, {
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(rejectedAfterRevoke.status, 401);
+
+    const remoteCreation = await fetch(`${baseUrl}/v1/pairing/invitations`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ origin: "https://m5.example.ts.net" }),
+    });
+    assert.equal(remoteCreation.status, 404);
   });
 });
 

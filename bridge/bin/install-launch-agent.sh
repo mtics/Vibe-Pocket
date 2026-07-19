@@ -14,6 +14,7 @@ HOST_APP="$CONFIG_DIR/Vibe Pocket Bridge Host.app"
 HOST_CONTENTS="$HOST_APP/Contents"
 HOST_PATH="$HOST_CONTENTS/MacOS/Vibe Pocket Bridge Host"
 HOST_HASH_FILE="$CONFIG_DIR/bridge-host.sha256"
+PAIR_APP="$HOME/Applications/Pair Vibe Pocket.app"
 LOG_DIR="$HOME/Library/Logs/Vibe Pocket"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NODE_PATH=${VIBE_POCKET_NODE:-$(command -v node)}
@@ -22,13 +23,14 @@ SWIFTC_PATH=${VIBE_POCKET_SWIFTC:-/usr/bin/swiftc}
 TOKEN=${VIBE_POCKET_TOKEN:-}
 PORT=${VIBE_POCKET_PORT:-4320}
 WORKSPACE=${VIBE_POCKET_WORKSPACE:-${BRIDGE_DIR:h}}
+PUBLIC_URL=${VIBE_POCKET_PUBLIC_URL:-}
 
 if [[ -z "$TOKEN" && -r "$CONFIG_FILE" ]]; then
   TOKEN=$(zsh -c 'source "$1"; print -rn -- "$VIBE_POCKET_TOKEN"' zsh "$CONFIG_FILE")
 fi
 if [[ -z "$TOKEN" ]]; then
   TOKEN=$(openssl rand -hex 32)
-  print "Generated a new pairing token. Run with VIBE_POCKET_TOKEN set to preserve an existing phone pairing."
+  print "Generated a new Bridge administration secret."
 fi
 if (( ${#TOKEN} < 24 )); then
   print -u2 "VIBE_POCKET_TOKEN must contain at least 24 characters."
@@ -70,6 +72,8 @@ chmod +x "$RUNTIME_DIR/bin/attach-current-task.sh"
 chmod +x "$RUNTIME_DIR/bin/report-codex-hook.sh"
 chmod +x "$RUNTIME_DIR/bin/install-codex-hooks.mjs"
 chmod +x "$RUNTIME_DIR/bin/install-codex-keybindings.mjs"
+chmod +x "$RUNTIME_DIR/bin/public-url.mjs"
+chmod +x "$RUNTIME_DIR/bin/pair-phone.sh"
 # Remove obsolete direct-control artifacts from earlier releases.
 rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app"
 rm -f \
@@ -80,10 +84,12 @@ rm -f \
 
 HOST_SOURCE="$RUNTIME_DIR/src/macos/host.swift"
 CONTROL_SOURCE="$RUNTIME_DIR/src/macos/helper.swift"
+PAIRING_SOURCE="$RUNTIME_DIR/src/macos/pairing.swift"
 HOST_SOURCE_HASH=$(
   {
-    shasum -a 256 "$HOST_SOURCE" "$CONTROL_SOURCE"
+    shasum -a 256 "$HOST_SOURCE" "$CONTROL_SOURCE" "$PAIRING_SOURCE"
     printf '%s\n' 'signing-profile:stable-designated-requirement-v1'
+    printf '%s\n' 'bundle-version:0.10.0-16'
   } | shasum -a 256 | awk '{print $1}'
 )
 INSTALLED_HOST_HASH=$(cat "$HOST_HASH_FILE" 2>/dev/null || true)
@@ -91,7 +97,7 @@ if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; the
   HOST_TEMP="$CONFIG_DIR/Vibe Pocket Bridge Host.app.$$.tmp"
   rm -rf "$HOST_TEMP"
   mkdir -p "$HOST_TEMP/Contents/MacOS"
-  "$SWIFTC_PATH" "$HOST_SOURCE" "$CONTROL_SOURCE" -O -o "$HOST_TEMP/Contents/MacOS/Vibe Pocket Bridge Host"
+  "$SWIFTC_PATH" "$HOST_SOURCE" "$CONTROL_SOURCE" "$PAIRING_SOURCE" -O -o "$HOST_TEMP/Contents/MacOS/Vibe Pocket Bridge Host"
   cat > "$HOST_TEMP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -106,9 +112,9 @@ if [[ ! -x "$HOST_PATH" || "$HOST_SOURCE_HASH" != "$INSTALLED_HOST_HASH" ]]; the
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.8.1</string>
+  <string>0.10.0</string>
   <key>CFBundleVersion</key>
-  <string>14</string>
+  <string>16</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
@@ -140,6 +146,7 @@ TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
   printf 'VIBE_POCKET_CODEX_COMMAND=%q\n' "$CODEX_PATH"
   printf 'VIBE_POCKET_NODE=%q\n' "$NODE_PATH"
   printf 'VIBE_POCKET_SWIFTC=%q\n' "$SWIFTC_PATH"
+  [[ -z "$PUBLIC_URL" ]] || printf 'VIBE_POCKET_PUBLIC_URL=%q\n' "$PUBLIC_URL"
 } > "$TEMP_CONFIG"
 chmod 600 "$TEMP_CONFIG"
 mv "$TEMP_CONFIG" "$CONFIG_FILE"
@@ -189,6 +196,52 @@ launchctl kickstart -k "gui/$UID/$LABEL"
 
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$RUNTIME_DIR/bin/attach-current-task.sh" "$HOME/.local/bin/vibe-pocket-attach"
+ln -sfn "$RUNTIME_DIR/bin/pair-phone.sh" "$HOME/.local/bin/vibe-pocket-pair"
+
+PAIR_TEMP="$CONFIG_DIR/Pair Vibe Pocket.app.$$.tmp"
+rm -rf "$PAIR_TEMP"
+mkdir -p "$PAIR_TEMP/Contents/MacOS" "$HOME/Applications"
+cat > "$PAIR_TEMP/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>Pair Vibe Pocket</string>
+  <key>CFBundleIdentifier</key>
+  <string>au.edu.uts.vibepocket.pair</string>
+  <key>CFBundleName</key>
+  <string>Pair Vibe Pocket</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.10.0</string>
+  <key>CFBundleVersion</key>
+  <string>2</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+</dict>
+</plist>
+EOF
+cat > "$PAIR_TEMP/Contents/MacOS/Pair Vibe Pocket" <<'EOF'
+#!/bin/zsh
+set -u
+OUTPUT=$("$HOME/.local/bin/vibe-pocket-pair" 2>&1)
+STATUS=$?
+if (( STATUS != 0 )); then
+  /usr/bin/osascript - "$OUTPUT" <<'APPLESCRIPT'
+on run argv
+  display alert "Pairing unavailable" message (item 1 of argv) as critical buttons {"OK"} default button "OK"
+end run
+APPLESCRIPT
+fi
+exit $STATUS
+EOF
+chmod +x "$PAIR_TEMP/Contents/MacOS/Pair Vibe Pocket"
+plutil -lint "$PAIR_TEMP/Contents/Info.plist" >/dev/null
+codesign --force --deep --sign - --identifier au.edu.uts.vibepocket.pair "$PAIR_TEMP" >/dev/null
+rm -rf "$PAIR_APP"
+mv "$PAIR_TEMP" "$PAIR_APP"
 
 READY=0
 for _ in {1..80}; do
@@ -209,7 +262,14 @@ print "Codex control engine: HID and semantic shortcuts first; no pointer synthe
 print "Legacy Codex lifecycle hooks: $HOOKS_RESULT."
 print "Codex semantic shortcuts: $KEYBINDINGS_RESULT."
 print "Reload Codex once after the first shortcut installation."
-print "Pairing token is stored in $CONFIG_FILE with mode 0600."
+print "The Bridge administration secret is stored in $CONFIG_FILE with mode 0600."
+DISCOVERED_URL=${PUBLIC_URL:-$($NODE_PATH "$RUNTIME_DIR/bin/public-url.mjs" "$PORT" 2>/dev/null || true)}
+if [[ -n "$DISCOVERED_URL" ]]; then
+  print "Pair phones without typing credentials by opening: $PAIR_APP"
+  print "Command-line equivalent: $HOME/.local/bin/vibe-pocket-pair"
+else
+  print "No Tailscale Serve URL was detected. Set VIBE_POCKET_PUBLIC_URL before pairing."
+fi
 print "Grant Accessibility permission to this signed background host:"
 printf '  %q\n' "$HOST_APP"
 print "Request the macOS prompt with:"

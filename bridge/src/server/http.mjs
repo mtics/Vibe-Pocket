@@ -1,10 +1,11 @@
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { Failure } from "./failure.mjs";
+import { Invitations } from "../pairing/invitations.mjs";
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
-export function create({ service, events, token }) {
+export function create({ service, events, token, credentials, invitations = new Invitations({ issue: () => token }) }) {
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url, "http://localhost");
@@ -16,8 +17,20 @@ export function create({ service, events, token }) {
         });
         return;
       }
-      if (!authorized(request, token)) {
+      if (request.method === "POST" && url.pathname === "/v1/pairing/claim") {
+        const { code, nonce } = await readJson(request, 4 * 1024);
+        sendJson(response, 200, invitations.claim(code, nonce));
+        return;
+      }
+      if (!authorized(request, token, credentials)) {
         sendJson(response, 401, { error: { code: "unauthorized", message: "Pair Vibe Pocket before connecting." } });
+        return;
+      }
+      if (request.method === "DELETE" && url.pathname === "/v1/pocket/devices/current") {
+        if (!credentials?.revoke(bearer(request))) {
+          throw new Failure(400, "device_credential_required", "Only a paired device can revoke its credential.");
+        }
+        sendJson(response, 200, { revoked: true });
         return;
       }
       if (request.method === "GET" && url.pathname === "/v1/pocket/snapshot") {
@@ -56,12 +69,18 @@ export function create({ service, events, token }) {
   });
 }
 
-function authorized(request, token) {
-  const value = request.headers.authorization;
-  if (!value?.startsWith("Bearer ")) return false;
-  const candidate = Buffer.from(value.slice("Bearer ".length));
+function authorized(request, token, credentials) {
+  const raw = bearer(request);
+  if (raw == null) return false;
+  if (credentials?.accepts(raw)) return true;
+  const candidate = Buffer.from(raw);
   const expected = Buffer.from(token);
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+}
+
+function bearer(request) {
+  const value = request.headers.authorization;
+  return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : null;
 }
 
 function readJson(request, maxLength = 64 * 1024) {

@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { defaultPath } from "./profile/store.mjs";
 
-const DEFAULT_PORT = 4318;
+const DEFAULT_PORT = 4320;
 const BRIDGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PROFILE_FORBIDDEN_ROOT = findRepositoryRoot(BRIDGE_ROOT) ?? BRIDGE_ROOT;
 
@@ -29,7 +29,9 @@ export function load(environment = process.env, cwd = process.cwd()) {
     environment.VIBE_POCKET_OWNED_THREADS_PATH ?? join(dirname(profilePath), "owned-threads.json"),
     environment,
   );
-  return { host, port, token, workspaces, codexCommand, profilePath, ownedThreadsPath };
+  const pairingSocketPath = join(dirname(profilePath), "pairing.sock");
+  const devicesPath = join(dirname(profilePath), "paired-devices.json");
+  return { host, port, token, workspaces, codexCommand, profilePath, ownedThreadsPath, pairingSocketPath, devicesPath };
 }
 
 function parseProfilePath(value, environment) {

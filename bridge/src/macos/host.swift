@@ -1,4 +1,5 @@
 import ApplicationServices
+import AppKit
 import Darwin
 import Foundation
 
@@ -221,6 +222,10 @@ private enum Host {
         requestAccessibilityPermission()
         return
       }
+      if arguments.count == 2, arguments[0] == "show-pairing-file" {
+        try Pairing.show(documentAt: arguments[1])
+        return
+      }
       if arguments.first == "codex" {
         jsonReply(try runCodexControl(arguments: Array(arguments.dropFirst())))
         return
@@ -229,7 +234,7 @@ private enum Host {
         throw NSError(
           domain: "VibePocketBridgeHost",
           code: 64,
-          userInfo: [NSLocalizedDescriptionKey: "Usage: Vibe Pocket Bridge Host run <bridge-script> | codex <action>"],
+          userInfo: [NSLocalizedDescriptionKey: "Usage: Vibe Pocket Bridge Host run <bridge-script> | codex <action> | show-pairing-file <path>"],
         )
       }
       exit(try runBridge(arguments[1]))
