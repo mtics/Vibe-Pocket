@@ -51,6 +51,7 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
 test("changes model and reasoning in the visible desktop before confirming state", async () => {
   const calls = [];
   const settings = {
+    binding: { threadId: "thread-1" },
     model: {
       available: true,
       id: "gpt-sol",
@@ -68,19 +69,21 @@ test("changes model and reasoning in the visible desktop before confirming state
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
-      async resolveVisibleAgents() { return []; },
+      async resolveVisibleAgents() {
+        return [{ id: "agent-focused", label: "Focused task", focused: true }];
+      },
       async settings() { return settings; },
-      async validateModel(modelId) { return settings.model.options.find(({ id }) => id === modelId); },
-      async selectModel(modelId) {
+      async validateModel({ id }) { return settings.model.options.find((option) => option.id === id); },
+      async selectModel({ id }) {
         settings.model = {
           ...settings.model,
-          id: modelId,
-          options: settings.model.options.map((option) => ({ ...option, selected: option.id === modelId })),
+          id,
+          options: settings.model.options.map((option) => ({ ...option, selected: option.id === id })),
         };
         return settings;
       },
       reasoningTarget() { return "low"; },
-      async selectReasoning(level) {
+      async selectReasoning({ level }) {
         settings.reasoning = {
           available: true,
           label: "Low",
@@ -97,7 +100,8 @@ test("changes model and reasoning in the visible desktop before confirming state
         ok: true,
         foreground: true,
         controls: { "model-picker": true, reasoning: true },
-        agents: [],
+        identity: { mutationToken: "desktop-0123456789abcdef01234567" },
+        agents: [{ id: "agent-focused", label: "Focused task", focused: true }],
         reasoning: { modelLabel: "Sol", level: "minimal" },
       };
     },
@@ -112,9 +116,9 @@ test("changes model and reasoning in the visible desktop before confirming state
   assert.deepEqual(calls, [
     ["helper", "status", []],
     ["helper", "status", []],
-    ["helper", "select-model", ["gpt-sol"]],
+    ["helper", "select-model", ["gpt-sol", "desktop-0123456789abcdef01234567"]],
     ["helper", "status", []],
-    ["helper", "select-reasoning", ["low"]],
+    ["helper", "select-reasoning", ["low", "desktop-0123456789abcdef01234567"]],
   ]);
 });
 
@@ -123,9 +127,12 @@ test("rejects stale model IDs before any prefix-colliding desktop option can be 
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
-      async resolveVisibleAgents() { return []; },
+      async resolveVisibleAgents() {
+        return [{ id: "agent-focused", label: "Focused task", focused: true }];
+      },
       async settings() {
         return {
+          binding: { threadId: "thread-1" },
           model: {
             available: true,
             id: "gpt-solar",
@@ -143,7 +150,8 @@ test("rejects stale model IDs before any prefix-colliding desktop option can be 
         ok: true,
         taskState: "idle",
         controls: { "model-picker": true, reasoning: true },
-        agents: [],
+        identity: { mutationToken: "desktop-0123456789abcdef01234567" },
+        agents: [{ id: "agent-focused", label: "Focused task", focused: true }],
         reasoning: { modelLabel: "Solar", level: "low" },
       };
     },

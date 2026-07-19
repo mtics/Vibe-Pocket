@@ -72,6 +72,36 @@ test("shutdown is idempotent and waits for an active command before closing SSE 
   assert.deepEqual(order.slice(-2), ["cleanup", "desktop:disposed"]);
 });
 
+test("forces transports and finishes cleanup when graceful shutdown exceeds its deadline", async () => {
+  const never = new Promise(() => {});
+  const order = [];
+  const server = {
+    stopAccepting() { order.push("server:stop"); return never; },
+    drain() { return never; },
+    destroyConnections() { order.push("server:destroy"); },
+  };
+  const shutdown = new Shutdown({
+    servers: [server],
+    service: {
+      stop() { order.push("service:stop"); return never; },
+      dispose() { order.push("service:dispose"); },
+    },
+    events: { close() { order.push("events:close"); } },
+    cleanup: () => order.push("cleanup"),
+    deadlineMs: 25,
+  });
+
+  await assert.rejects(shutdown.close(), /shutdown exceeded its deadline/);
+  assert.deepEqual(order, [
+    "server:stop",
+    "service:stop",
+    "events:close",
+    "server:destroy",
+    "cleanup",
+    "service:dispose",
+  ]);
+});
+
 function fakeServer(name, drained, closed, order) {
   return {
     stopAccepting() {

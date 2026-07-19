@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { defaultPath } from "./profile/store.mjs";
@@ -40,11 +40,21 @@ function parseProfilePath(value, environment) {
     throw new Error("VIBE_POCKET_PROFILE_PATH must be an absolute path outside the repository.");
   }
   const profilePath = resolve(configuredPath);
-  const canonicalPath = resolveFromExistingAncestor(profilePath);
+  const provisionalPath = resolveFromExistingAncestor(profilePath);
+  if (isWithin(PROFILE_FORBIDDEN_ROOT, provisionalPath)) {
+    throw new Error("VIBE_POCKET_PROFILE_PATH must be outside the Vibe Pocket repository.");
+  }
+  let canonicalPath;
+  try {
+    mkdirSync(dirname(provisionalPath), { recursive: true });
+    canonicalPath = join(realpathSync(dirname(provisionalPath)), basename(provisionalPath));
+  } catch (error) {
+    throw new Error("VIBE_POCKET_PROFILE_PATH parent could not be prepared safely.", { cause: error });
+  }
   if (isWithin(PROFILE_FORBIDDEN_ROOT, canonicalPath)) {
     throw new Error("VIBE_POCKET_PROFILE_PATH must be outside the Vibe Pocket repository.");
   }
-  return profilePath;
+  return canonicalPath;
 }
 
 function resolveFromExistingAncestor(path) {
@@ -95,7 +105,7 @@ function findRepositoryRoot(start) {
 
 function parseWorkspaces(value, fallback, cwd) {
   if (!value) {
-    return { default: resolve(fallback ?? cwd) };
+    return { default: canonicalWorkspacePath(fallback ?? cwd, cwd) };
   }
 
   let parsed;
@@ -119,7 +129,21 @@ function parseWorkspaces(value, fallback, cwd) {
       if (!/^[a-zA-Z0-9_-]{1,48}$/.test(alias) || typeof path !== "string" || path.length === 0) {
         throw new Error("Each workspace needs a simple alias and a non-empty path.");
       }
-      return [alias, resolve(path)];
+      return [alias, canonicalWorkspacePath(path, cwd)];
     }),
   );
+}
+
+function canonicalWorkspacePath(path, cwd) {
+  const configuredPath = resolve(cwd, path);
+  try {
+    const canonicalPath = realpathSync(configuredPath);
+    if (!statSync(canonicalPath).isDirectory()) {
+      throw new Error("Configured workspace paths must be directories.");
+    }
+    return canonicalPath;
+  } catch (error) {
+    if (error?.message === "Configured workspace paths must be directories.") throw error;
+    throw new Error(`Configured workspace path could not be resolved safely: ${configuredPath}`, { cause: error });
+  }
 }

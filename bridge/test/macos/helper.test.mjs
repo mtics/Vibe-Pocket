@@ -104,7 +104,7 @@ test("menu selection revalidates foreground and window with deferred PID-scoped 
   );
 
   assert.match(source, /case "model-picker":[\s\S]*?openComposerMenu\(control\)/);
-  assert.match(source, /case "select-model":[\s\S]*?selectModel\(modelID/);
+  assert.match(source, /case "select-model":[\s\S]*?selectModel\([\s\S]*?modelID/);
   assert.match(modelSelection, /defer \{ interaction\.cleanup\(\) \}/);
   assert.match(reasoningSelection, /defer \{ interaction\.cleanup\(\) \}/);
   assert.match(accessSelection, /defer \{ interaction\.cleanup\(\) \}/);
@@ -113,13 +113,13 @@ test("menu selection revalidates foreground and window with deferred PID-scoped 
   assert.match(interaction, /AXUIElementPerformAction[\s\S]*?postKey\(fallbackKey, to: application\.processIdentifier\)/);
   assert.match(interaction, /postKey\(53, to: application\.processIdentifier\)/);
   assert.doesNotMatch(source, /postKey\(53\)(?!,)/);
-  assert.match(source, /case "select-reasoning":[\s\S]*?selectReasoning\(level/);
+  assert.match(source, /case "select-reasoning":[\s\S]*?selectReasoning\([\s\S]*?level/);
   assert.match(source, /observedLevel == requested/);
   assert.match(source, /modelMatches\(requested: requested, candidate:/);
   assert.doesNotMatch(modelSelection, /AXUIElementCreateApplication/);
   assert.doesNotMatch(reasoningSelection, /AXUIElementCreateApplication/);
   assert.doesNotMatch(accessSelection, /AXUIElementCreateApplication/);
-  assert.match(modelSelection, /modelMenuItem\(in: window\)[\s\S]*?modelOption\(in: window/);
+  assert.match(modelSelection, /modelMenuItem\(in: window\)[\s\S]*?modelOptions\(in: window/);
   assert.match(reasoningSelection, /reasoningMenuItem\(in: window\)[\s\S]*?reasoningOption\(in: window/);
   assert.match(accessSelection, /descendants\(of: window\)/);
   assert.match(source, /case "delete-backward":[\s\S]*?focusPrompt[\s\S]*?postKey\(51\)/);
@@ -130,8 +130,8 @@ test("both exact and delta reasoning entry points reject a running turn", async 
   const exact = source.slice(source.indexOf('case "select-reasoning"'), source.indexOf('case "reasoning"'));
   const delta = source.slice(source.indexOf('case "reasoning"'), source.indexOf('case "delete-backward"'));
 
-  assert.match(exact, /controlButton\(\.stop, in: area\) == nil/);
-  assert.match(delta, /controlButton\(\.stop, in: area\) == nil/);
+  assert.match(exact, /controlButton\(\.stop, in: snapshot\.area\) == nil/);
+  assert.match(delta, /controlButton\(\.stop, in: snapshot\.area\) == nil/);
   assert.match(delta, /exact advertised target level/);
 });
 
@@ -143,7 +143,8 @@ test("bridge child inherits normal termination signals", async () => {
   assert.notEqual(childRun, -1);
   assert.notEqual(ignoreTermination, -1);
   assert.ok(childRun < ignoreTermination);
-  assert.match(source, /asyncAfter[\s\S]*?Darwin\.kill\(childPID, SIGKILL\)/);
+  assert.match(source, /asyncAfter[\s\S]*?forceKill\(rootPID: rootPID\)/);
+  assert.match(source, /if includeRoot \{ Darwin\.kill\(rootPID, SIGKILL\) \}/);
 });
 
 test("control socket startup closes partial state and protects disconnected writes", async () => {
@@ -151,9 +152,10 @@ test("control socket startup closes partial state and protects disconnected writ
   const start = source.slice(source.indexOf("func start() throws"), source.indexOf("func stop()"));
 
   await execFileAsync("/usr/bin/swiftc", ["-frontend", "-parse", fileURLToPath(hostUrl)]);
-  assert.match(start, /defer \{[\s\S]*?Darwin\.close\(descriptor\)[\s\S]*?Darwin\.unlink\(socketPath\)/);
+  assert.match(start, /defer \{[\s\S]*?Darwin\.close\(descriptor\)[\s\S]*?if bound \{ unlinkOwnedSocket\(\) \}/);
   assert.match(start, /bound = true[\s\S]*?listening = true/);
-  assert.match(source, /setsockopt\(client, SOL_SOCKET, SO_NOSIGPIPE/);
+  assert.match(source, /socketIdentityIfPresent\(\)\) == ownedSocketIdentity[\s\S]*?Darwin\.unlink\(socketPath\)/);
+  assert.match(source, /Darwin\.setsockopt\([\s\S]*?client,[\s\S]*?SOL_SOCKET,[\s\S]*?SO_NOSIGPIPE/);
 });
 
 test("every launch cleans only an exact orphaned bridge listener", async () => {

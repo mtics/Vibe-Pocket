@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, sep } from "node:path";
 
 import { open } from "./open.mjs";
 import { Activity } from "./activity.mjs";
@@ -6,6 +8,8 @@ import { Settings } from "./settings.mjs";
 
 const MAX_THREADS = 100;
 const MAX_AGENT_COUNT = 24;
+const MAX_AGENT_LABEL_LENGTH = 64;
+const DEFAULT_FALLBACK_TTL_MS = 1_000;
 const AGENT_ID_PATTERN = /^agent-[a-f0-9]{24}$/;
 const ACTIVE_AGENT_STATES = new Set(["waiting", "error", "executing", "thinking", "unread"]);
 const AGENT_STATE_PRIORITY = new Map([
@@ -22,7 +26,9 @@ export class Catalog {
   #appServer;
   #openThread;
   #cacheTtlMs;
+  #fallbackTtlMs;
   #now;
+  #workspaces;
   #started = false;
   #startPromise = null;
   #cachedThreads = [];
@@ -31,13 +37,18 @@ export class Catalog {
   #activityReader;
   #settings;
   #focusedThreadId = null;
+  #lastSuccessfulAgents = [];
+  #failureStartedAt = null;
+  #freshness = { state: "unavailable", checkedAt: null, expiresAt: null };
 
   constructor({
     appServer,
     openThread = open,
     activityReader = new Activity(),
     cacheTtlMs = 3_000,
+    fallbackTtlMs = DEFAULT_FALLBACK_TTL_MS,
     now = Date.now,
+    workspaces = { default: process.cwd() },
   }) {
     if (!appServer) throw new TypeError("Catalog requires an app-server client.");
     this.#appServer = appServer;
@@ -45,10 +56,24 @@ export class Catalog {
     this.#activityReader = activityReader;
     this.#settings = new Settings({ appServer });
     this.#cacheTtlMs = cacheTtlMs;
+    this.#fallbackTtlMs = fallbackTtlMs;
     this.#now = now;
+    this.#workspaces = canonicalWorkspaces(workspaces);
+  }
+
+  get freshness() {
+    return { ...this.#freshness };
   }
 
   async resolveVisibleAgents(visibleAgents) {
+    try {
+      return await this.#resolveVisibleAgents(visibleAgents);
+    } catch (error) {
+      return this.#fallbackAgents(error);
+    }
+  }
+
+  async #resolveVisibleAgents(visibleAgents) {
     visibleAgents = Array.isArray(visibleAgents) ? visibleAgents : [];
 
     let threads = await this.#threads();
@@ -73,9 +98,8 @@ export class Catalog {
     const resolved = [];
     for (const agent of visibleAgents) {
       if (!agent || typeof agent.label !== "string") continue;
-      const matches = uniqueMatches(agent, threads);
-      if (matches.length !== 1 || assignedThreadIds.has(matches[0].id)) continue;
-      const thread = matches[0];
+      const thread = resolvedMatch(agent, threads, this.#focusedThreadId);
+      if (!thread || assignedThreadIds.has(thread.id)) continue;
       const id = agentIdForThread(thread.id);
       assignedThreadIds.add(thread.id);
       resolved.push({
@@ -85,6 +109,8 @@ export class Catalog {
           ? agent.state
           : (activityStates.get(thread.id) ?? agent.state),
         _threadId: thread.id,
+        _workspaceAlias: thread._catalogWorkspaceAlias,
+        _labelKey: normalizeLabel(threadLabel(thread)),
         _recencyAt: threadRecency(thread),
         _sourceIndex: resolved.length,
       });
@@ -99,6 +125,8 @@ export class Catalog {
         state: activityStates.get(thread.id) ?? "idle",
         focused: false,
         _threadId: thread.id,
+        _workspaceAlias: thread._catalogWorkspaceAlias,
+        _labelKey: normalizeLabel(label),
         _recencyAt: threadRecency(thread),
         _sourceIndex: resolved.length,
       });
@@ -121,8 +149,23 @@ export class Catalog {
       this.#focusedThreadId = null;
       selected = selected.map((agent) => ({ ...agent, focused: false }));
     }
-    this.#agentThreads = new Map(selected.map((agent) => [agent.id, agent._threadId]));
-    return selected.map(({ _threadId, _recencyAt, _sourceIndex, ...agent }) => agent);
+    selected = disambiguateLabels(selected);
+    const selectedThreads = new Map(threads.map((thread) => [thread.id, thread]));
+    this.#agentThreads = new Map(selected.map((agent) => [agent.id, selectedThreads.get(agent._threadId)]));
+    const agents = selected.map(({ _threadId, _workspaceAlias, _labelKey, _recencyAt, _sourceIndex, ...agent }) => ({
+      ...agent,
+      freshness: "fresh",
+      actionable: true,
+    }));
+    const checkedAt = this.#now();
+    this.#lastSuccessfulAgents = agents;
+    this.#failureStartedAt = null;
+    this.#freshness = {
+      state: "fresh",
+      checkedAt,
+      expiresAt: this.#cacheExpiresAt,
+    };
+    return agents;
   }
 
   async settings(visible) {
@@ -167,23 +210,27 @@ export class Catalog {
     if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) {
       throw new Error("A valid Codex task ID is required.");
     }
-    const threadId = this.#agentThreads.get(agentId);
-    if (!threadId) throw new Error("That Codex task is no longer available.");
-    await this.#openThread(threadId);
+    const candidate = this.#agentThreads.get(agentId);
+    if (!candidate || this.#freshness.state !== "fresh") {
+      throw new Error("That Codex task is no longer available.");
+    }
+    const thread = await this.#threadForOpen(candidate.id);
+    await this.#openThread(thread.id);
     return {
       ok: true,
       agentId,
-      threadId,
+      threadId: thread.id,
       message: "Opened the selected Codex task through its native task link.",
     };
   }
 
   async focusThread(threadId) {
-    await this.#openThread(threadId);
+    const thread = await this.#threadForOpen(threadId);
+    await this.#openThread(thread.id);
     return {
       ok: true,
-      agentId: agentIdForThread(threadId),
-      threadId,
+      agentId: agentIdForThread(thread.id),
+      threadId: thread.id,
       message: "Opened the requested Codex task through its native task link.",
     };
   }
@@ -193,6 +240,9 @@ export class Catalog {
     this.#focusedThreadId = null;
     this.#cachedThreads = [];
     this.#cacheExpiresAt = 0;
+    this.#lastSuccessfulAgents = [];
+    this.#failureStartedAt = null;
+    this.#freshness = { state: "unavailable", checkedAt: null, expiresAt: null };
     if (!this.#started && !this.#startPromise) return;
     try {
       await this.#startPromise;
@@ -211,7 +261,7 @@ export class Catalog {
       sortDirection: "desc",
       sortKey: "recency_at",
     });
-    this.#cachedThreads = uniqueTopLevelThreads(result?.data);
+    this.#cachedThreads = this.#scopedThreads(result?.data);
     this.#cacheExpiresAt = this.#now() + this.#cacheTtlMs;
     return this.#cachedThreads;
   }
@@ -224,7 +274,77 @@ export class Catalog {
       searchTerm,
       useStateDbOnly: true,
     });
-    return uniqueTopLevelThreads(result?.data);
+    return this.#scopedThreads(result?.data);
+  }
+
+  async #threadForOpen(threadId) {
+    try {
+      await this.#ensureStarted();
+      const result = await this.#appServer.request("thread/read", {
+        threadId,
+        includeTurns: false,
+      });
+      const thread = result?.thread;
+      if (!thread || thread.id !== threadId || thread.parentThreadId) {
+        throw new Error("That Codex task is no longer available.");
+      }
+      const scoped = this.#scopeThread(thread);
+      if (!scoped) {
+        throw new Error("That Codex task is outside the configured Vibe Pocket workspaces.");
+      }
+      return scoped;
+    } catch (error) {
+      this.#markFailure(error);
+      throw error;
+    }
+  }
+
+  #scopedThreads(value) {
+    return uniqueTopLevelThreads(value)
+      .map((thread) => this.#scopeThread(thread))
+      .filter(Boolean);
+  }
+
+  #scopeThread(thread) {
+    const workspace = workspaceForPath(this.#workspaces, thread?.cwd);
+    if (!workspace) return null;
+    return {
+      ...thread,
+      _catalogCanonicalCwd: workspace.canonicalPath,
+      _catalogWorkspaceAlias: workspace.alias,
+    };
+  }
+
+  #fallbackAgents(error) {
+    const timestamp = this.#markFailure(error);
+    const expiresAt = this.#failureStartedAt + this.#fallbackTtlMs;
+    if (this.#lastSuccessfulAgents.length === 0 || timestamp >= expiresAt) {
+      this.#lastSuccessfulAgents = [];
+      this.#freshness = { state: "expired", checkedAt: timestamp, expiresAt };
+      return [];
+    }
+    this.#freshness = { state: "stale", checkedAt: timestamp, expiresAt };
+    return this.#lastSuccessfulAgents.map((agent) => ({
+      ...agent,
+      focused: false,
+      freshness: "stale",
+      actionable: false,
+    }));
+  }
+
+  #markFailure(error) {
+    const timestamp = this.#now();
+    this.#failureStartedAt ??= timestamp;
+    this.#agentThreads.clear();
+    this.#focusedThreadId = null;
+    this.#cacheExpiresAt = 0;
+    this.#freshness = {
+      state: "stale",
+      checkedAt: timestamp,
+      expiresAt: this.#failureStartedAt + this.#fallbackTtlMs,
+      error: error?.message ?? "The Codex task catalog is unavailable.",
+    };
+    return timestamp;
   }
 
   async #ensureStarted() {
@@ -264,6 +384,15 @@ function uniqueMatches(agent, threads) {
   return threads.filter((thread) => labelMatchesThread(agent.label, thread));
 }
 
+function resolvedMatch(agent, threads, focusedThreadId) {
+  const matches = uniqueMatches(agent, threads);
+  if (matches.length === 1) return matches[0];
+  if (agent.focused === true && focusedThreadId) {
+    return matches.find((thread) => thread.id === focusedThreadId) ?? null;
+  }
+  return null;
+}
+
 function searchTermForLabel(label) {
   const term = label.replace(/(?:\.\.\.|…)$/, "").trim();
   return term.length >= 4 ? term : null;
@@ -293,6 +422,86 @@ function threadRecency(thread) {
     }
   }
   return 0;
+}
+
+function canonicalWorkspaces(workspaces) {
+  if (!workspaces || Array.isArray(workspaces) || typeof workspaces !== "object") {
+    throw new TypeError("Catalog workspaces must be an alias-to-path object.");
+  }
+  const entries = Object.entries(workspaces);
+  if (entries.length === 0) throw new TypeError("Catalog requires at least one workspace.");
+  return entries.map(([alias, path]) => {
+    if (typeof path !== "string" || path.length === 0) {
+      throw new TypeError("Catalog workspace paths must be non-empty strings.");
+    }
+    let canonicalPath;
+    let identity;
+    try {
+      canonicalPath = realpathSync(path);
+      identity = statSync(canonicalPath);
+    } catch (error) {
+      throw new Error(`Catalog workspace could not be resolved safely: ${path}`, { cause: error });
+    }
+    if (!identity.isDirectory()) throw new Error(`Catalog workspace is not a directory: ${path}`);
+    return { alias, canonicalPath, dev: identity.dev, ino: identity.ino };
+  });
+}
+
+function workspaceForPath(workspaces, path) {
+  if (typeof path !== "string" || path.length === 0) return null;
+  let canonicalPath;
+  try {
+    canonicalPath = realpathSync(path);
+    if (!statSync(canonicalPath).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  return workspaces
+    .filter((workspace) => {
+      try {
+        const current = statSync(workspace.canonicalPath);
+        return current.isDirectory()
+          && current.dev === workspace.dev
+          && current.ino === workspace.ino
+          && isWithin(workspace.canonicalPath, canonicalPath);
+      } catch {
+        return false;
+      }
+    })
+    .toSorted((left, right) => right.canonicalPath.length - left.canonicalPath.length)
+    .map((workspace) => ({ ...workspace, canonicalPath }))
+    .at(0) ?? null;
+}
+
+function isWithin(root, destination) {
+  const path = relative(root, destination);
+  return path === "" || (
+    !isAbsolute(path)
+    && path !== ".."
+    && !path.startsWith(`..${sep}`)
+  );
+}
+
+function disambiguateLabels(agents) {
+  const counts = new Map();
+  for (const agent of agents) {
+    const key = agent._labelKey || normalizeLabel(agent.label);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return agents.map((agent) => {
+    const key = agent._labelKey || normalizeLabel(agent.label);
+    if ((counts.get(key) ?? 0) < 2) return agent;
+    const suffix = ` [${agent._workspaceAlias}:${shortThreadKey(agent._threadId)}]`;
+    const available = Math.max(1, MAX_AGENT_LABEL_LENGTH - suffix.length);
+    const label = agent.label.length > available
+      ? `${agent.label.slice(0, Math.max(1, available - 3)).trimEnd()}...`
+      : agent.label;
+    return { ...agent, label: `${label}${suffix}` };
+  });
+}
+
+function shortThreadKey(threadId) {
+  return createHash("sha256").update(threadId).digest("hex").slice(0, 6);
 }
 
 export function agentIdForThread(threadId) {

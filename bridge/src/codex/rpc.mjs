@@ -13,6 +13,7 @@ export class Rpc extends EventEmitter {
   #args;
   #spawn;
   #requestTimeoutMs;
+  #stopTimeoutMs;
   #child = null;
   #startPromise = null;
   #initialized = false;
@@ -25,12 +26,14 @@ export class Rpc extends EventEmitter {
     args = ["app-server", "--listen", "stdio://"],
     spawnProcess = spawn,
     requestTimeoutMs = 10_000,
+    stopTimeoutMs = 2_000,
   } = {}) {
     super();
     this.#command = command;
     this.#args = args;
     this.#spawn = spawnProcess;
     this.#requestTimeoutMs = requestTimeoutMs;
+    this.#stopTimeoutMs = stopTimeoutMs;
   }
 
   get isRunning() {
@@ -61,9 +64,14 @@ export class Rpc extends EventEmitter {
 
   async stop() {
     const child = this.#child;
+    let failure = null;
     if (child) {
       this.#invalidateChild(child, new RpcTransportError("Codex app-server was stopped."));
-      if (child.exitCode == null) child.kill("SIGTERM");
+      try {
+        await this.#stopChild(child);
+      } catch (error) {
+        failure = error;
+      }
     }
     if (this.#startPromise) {
       try {
@@ -72,6 +80,7 @@ export class Rpc extends EventEmitter {
         // Stopping an initializing child intentionally rejects initialize.
       }
     }
+    if (failure) throw failure;
   }
 
   async request(method, params = {}) {
@@ -120,6 +129,7 @@ export class Rpc extends EventEmitter {
       child = this.#spawn(this.#command, this.#args, {
         stdio: ["pipe", "pipe", "pipe"],
         env: process.env,
+        detached: false,
       });
     } catch (error) {
       throw new RpcTransportError("Codex app-server could not be started.", { cause: error });
@@ -258,6 +268,35 @@ export class Rpc extends EventEmitter {
   #terminateChild(child, error) {
     this.#invalidateChild(child, error);
     if (child.exitCode == null) child.kill("SIGTERM");
+  }
+
+  async #stopChild(child) {
+    if (child.exitCode != null) return;
+    const terminated = this.#waitForExit(child, this.#stopTimeoutMs);
+    child.kill("SIGTERM");
+    if (await terminated) return;
+
+    const killed = this.#waitForExit(child, this.#stopTimeoutMs);
+    child.kill("SIGKILL");
+    if (await killed) return;
+    throw new RpcTransportError("Codex app-server did not exit after SIGKILL.");
+  }
+
+  #waitForExit(child, timeoutMs) {
+    if (child.exitCode != null) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (exited) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        child.off("exit", onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      const timeout = setTimeout(() => finish(false), timeoutMs);
+      child.once("exit", onExit);
+    });
   }
 
   #invalidateChild(child, error) {

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -87,7 +88,10 @@ test("loads an environment-configured profile path only outside the repository",
     VIBE_POCKET_TOKEN: "x".repeat(24),
     VIBE_POCKET_PROFILE_PATH: "/tmp/vibe-pocket-test/controller-profile.json",
   };
-  assert.equal(load(environment).profilePath, environment.VIBE_POCKET_PROFILE_PATH);
+  assert.equal(
+    load(environment).profilePath,
+    join(realpathSync(dirname(environment.VIBE_POCKET_PROFILE_PATH)), basename(environment.VIBE_POCKET_PROFILE_PATH)),
+  );
   assert.throws(
     () => load({ ...environment, VIBE_POCKET_PROFILE_PATH: "./controller-profile.json" }),
     /absolute path outside/,
@@ -146,7 +150,40 @@ test("accepts a safe profile path below non-existing ancestors", async (t) => {
   assert.equal(load({
     VIBE_POCKET_TOKEN: "x".repeat(24),
     VIBE_POCKET_PROFILE_PATH: profilePath,
-  }).profilePath, profilePath);
+  }).profilePath, join(realpathSync(dirname(profilePath)), basename(profilePath)));
+});
+
+test("retains canonical profile and workspace paths after configured symlinks retarget", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-config-retarget-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const safeProfileRoot = join(root, "safe-profile");
+  const safeWorkspace = join(root, "safe-workspace");
+  const alternate = join(root, "alternate");
+  const profileLink = join(root, "profile-link");
+  const workspaceLink = join(root, "workspace-link");
+  await mkdir(safeProfileRoot);
+  await mkdir(safeWorkspace);
+  await mkdir(alternate);
+  await symlink(safeProfileRoot, profileLink, "dir");
+  await symlink(safeWorkspace, workspaceLink, "dir");
+
+  const config = load({
+    VIBE_POCKET_TOKEN: "x".repeat(24),
+    VIBE_POCKET_PROFILE_PATH: join(profileLink, "nested", "controller-profile.json"),
+    VIBE_POCKET_WORKSPACES: JSON.stringify({ research: workspaceLink }),
+  });
+  assert.equal(config.profilePath, join(realpathSync(safeProfileRoot), "nested", "controller-profile.json"));
+  assert.equal(config.workspaces.research, realpathSync(safeWorkspace));
+
+  await rm(profileLink);
+  await rm(workspaceLink);
+  await symlink(alternate, profileLink, "dir");
+  await symlink(alternate, workspaceLink, "dir");
+
+  assert.equal(config.profilePath, join(realpathSync(safeProfileRoot), "nested", "controller-profile.json"));
+  assert.equal(config.ownedThreadsPath, join(realpathSync(safeProfileRoot), "nested", "owned-threads.json"));
+  assert.equal(config.pairingSocketPath, join(realpathSync(safeProfileRoot), "nested", "pairing.sock"));
+  assert.equal(config.workspaces.research, realpathSync(safeWorkspace));
 });
 
 test("does not expose a configurable desktop-control engine", () => {

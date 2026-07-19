@@ -2,6 +2,8 @@ import { createConnection } from "node:net";
 
 import { open } from "../task/open.mjs";
 
+const MUTATION_BINDING = Symbol("desktopMutationBinding");
+
 export class Desktop {
   #socketPath;
   #run;
@@ -45,9 +47,14 @@ export class Desktop {
     } catch {
       settings = null;
     }
-    const modelAvailable = settings?.model.available === true && result.controls?.["model-picker"] === true;
-    const reasoningAvailable = settings?.reasoning.available === true && result.controls?.reasoning === true;
-    return {
+    const binding = mutationBinding(result, settings, agents);
+    const modelAvailable = Boolean(
+      binding && settings?.model.available === true && result.controls?.["model-picker"] === true,
+    );
+    const reasoningAvailable = Boolean(
+      binding && settings?.reasoning.available === true && result.controls?.reasoning === true,
+    );
+    const view = {
       ...result,
       agents,
       model: settings?.model ? { ...settings.model, available: modelAvailable } : undefined,
@@ -64,6 +71,8 @@ export class Desktop {
         reasoning: reasoningAvailable,
       },
     };
+    Object.defineProperty(view, MUTATION_BINDING, { value: binding });
+    return view;
   }
 
   get voiceActive() {
@@ -132,10 +141,16 @@ export class Desktop {
     if (!this.#threadCatalog) throw new Error("Native Codex model selection is unavailable.");
     return this.#enqueue(async () => {
       const current = await this.#statusNow();
-      this.#requireSettingsAvailable(current, "model");
-      const selected = await this.#threadCatalog.validateModel(modelId);
-      await this.#invokeNow("select-model", [selected.id], "");
-      const settings = await this.#threadCatalog.selectModel(selected.id);
+      const binding = this.#requireSettingsAvailable(current, "model");
+      const selected = await this.#threadCatalog.validateModel({
+        id: modelId,
+        threadId: binding.threadId,
+      });
+      await this.#invokeNow("select-model", [selected.id, binding.desktopToken], "");
+      const settings = await this.#threadCatalog.selectModel({
+        id: selected.id,
+        threadId: binding.threadId,
+      });
       return { ok: true, message: `Selected ${settings.model.label}.`, settings };
     });
   }
@@ -145,10 +160,10 @@ export class Desktop {
     if (delta !== -1 && delta !== 1) throw new Error("Reasoning adjustment must be one step.");
     return this.#enqueue(async () => {
       const current = await this.#statusNow();
-      this.#requireSettingsAvailable(current, "reasoning");
+      const binding = this.#requireSettingsAvailable(current, "reasoning");
       const target = this.#threadCatalog.reasoningTarget(delta);
       if (!target) throw new Error("Codex reasoning cannot move farther in that direction.");
-      return this.#selectReasoningNow(target);
+      return this.#selectReasoningNow(target, binding);
     });
   }
 
@@ -156,11 +171,11 @@ export class Desktop {
     if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
     return this.#enqueue(async () => {
       const current = await this.#statusNow();
-      this.#requireSettingsAvailable(current, "reasoning");
+      const binding = this.#requireSettingsAvailable(current, "reasoning");
       if (!this.#threadCatalog.hasReasoningLevel(level)) {
         throw new Error("The requested Codex reasoning level is unavailable or stale.");
       }
-      return this.#selectReasoningNow(level);
+      return this.#selectReasoningNow(level, binding);
     });
   }
 
@@ -241,9 +256,12 @@ export class Desktop {
     );
   }
 
-  async #selectReasoningNow(level) {
-    await this.#invokeNow("select-reasoning", [level], "");
-    const settings = await this.#threadCatalog.selectReasoning(level);
+  async #selectReasoningNow(level, binding) {
+    await this.#invokeNow("select-reasoning", [level, binding.desktopToken], "");
+    const settings = await this.#threadCatalog.selectReasoning({
+      level,
+      threadId: binding.threadId,
+    });
     return { ok: true, message: `Selected ${settings.reasoning.label} reasoning.`, settings };
   }
 
@@ -254,8 +272,22 @@ export class Desktop {
     if (status.controls?.[kind] !== true) {
       throw new Error(`The visible Codex ${kind} control is unavailable.`);
     }
+    const binding = status[MUTATION_BINDING];
+    if (!binding) {
+      throw new Error(`The visible Codex ${kind} identity is unresolved.`);
+    }
+    return binding;
   }
 
+}
+
+function mutationBinding(result, settings, agents) {
+  const desktopToken = result?.identity?.mutationToken;
+  const threadId = settings?.binding?.threadId;
+  const focusedAgents = Array.isArray(agents) ? agents.filter(({ focused }) => focused === true) : [];
+  if (typeof desktopToken !== "string" || !/^desktop-[a-f0-9]{24,64}$/.test(desktopToken)) return null;
+  if (typeof threadId !== "string" || !threadId || focusedAgents.length !== 1) return null;
+  return Object.freeze({ desktopToken, threadId });
 }
 
 function runSocketRequest(socketPath, action, args, input = "", timeoutMs = 10_000) {

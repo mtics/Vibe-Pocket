@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
+import { createConnection } from "node:net";
+import { once } from "node:events";
 import test from "node:test";
 
 import { create, PROTOCOL_VERSION } from "../../src/server/http.mjs";
@@ -9,8 +11,9 @@ import { Invitations } from "../../src/pairing/invitations.mjs";
 const TOKEN = "test-token-with-at-least-24-characters";
 const DEVICE_TOKEN = "vp1.testdevice.abcdefghijklmnopqrstuvwxyzABCDEFG";
 
-async function withServer(run, { eventHub = null } = {}) {
+async function withServer(run, { eventHub = null, deadlines = {} } = {}) {
   const calls = [];
+  const commandPrincipals = [];
   const attachedThreads = [];
   const hooks = [];
   const service = {
@@ -23,8 +26,9 @@ async function withServer(run, { eventHub = null } = {}) {
       hooks.push({ event, payload });
       return { hookSpecificOutput: { hookEventName: event } };
     },
-    async command(command, idempotencyKey) {
+    async command(command, idempotencyKey, principal) {
       calls.push({ command, idempotencyKey });
+      commandPrincipals.push(principal);
       return { accepted: true, commandId: "cmd_test", revision: "r_8" };
     },
   };
@@ -35,9 +39,9 @@ async function withServer(run, { eventHub = null } = {}) {
     accepts: (candidate) => candidate === DEVICE_TOKEN && deviceActive,
     resolve: (candidate) => {
       if (candidate === DEVICE_TOKEN && deviceActive) {
-        return { id: "device:test", revocable: true, valid: () => deviceActive };
+        return { id: "device:test", role: "device", revocable: true, valid: () => deviceActive };
       }
-      if (candidate === TOKEN) return { id: "root:test", revocable: false, valid: () => true };
+      if (candidate === TOKEN) return { id: "root:test", role: "root", revocable: false, valid: () => true };
       return null;
     },
     revoke: (candidate) => {
@@ -46,11 +50,20 @@ async function withServer(run, { eventHub = null } = {}) {
       return true;
     },
   };
-  const server = create({ service, events, token: TOKEN, credentials, invitations });
+  const server = create({ service, events, token: TOKEN, credentials, invitations, deadlines });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await run({ baseUrl: `http://127.0.0.1:${port}`, calls, attachedThreads, hooks, invitations, server });
+    await run({
+      baseUrl: `http://127.0.0.1:${port}`,
+      port,
+      calls,
+      commandPrincipals,
+      attachedThreads,
+      hooks,
+      invitations,
+      server,
+    });
   } finally {
     await server.stopAccepting();
   }
@@ -70,7 +83,7 @@ test("health check distinguishes reachability without exposing controller state"
 });
 
 test("snapshot and commands remain authenticated", async () => {
-  await withServer(async ({ baseUrl, calls }) => {
+  await withServer(async ({ baseUrl, calls, commandPrincipals }) => {
     const unauthorized = await fetch(`${baseUrl}/v1/pocket/snapshot`);
     assert.equal(unauthorized.status, 401);
 
@@ -94,6 +107,7 @@ test("snapshot and commands remain authenticated", async () => {
       command: { kind: "binding", inputId: "key_voice" },
       idempotencyKey: "gesture-123",
     }]);
+    assert.equal(commandPrincipals[0].role, "root");
   });
 });
 
@@ -203,6 +217,82 @@ test("Codex lifecycle hooks are authenticated and forward bounded JSON", async (
     assert.deepEqual(await response.json(), { hookSpecificOutput: { hookEventName: "PreToolUse" } });
     assert.deepEqual(hooks, [{ event: "PreToolUse", payload }]);
   });
+});
+
+test("device credentials cannot call root-only desktop attachment or Codex hooks", async () => {
+  await withServer(async ({ baseUrl, attachedThreads, hooks }) => {
+    const attach = await fetch(`${baseUrl}/v1/pocket/desktop/attach`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${DEVICE_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ threadId: "019f2ce2-e042-7ab0-a73d-9fa41d58e210" }),
+    });
+    assert.equal(attach.status, 403);
+    assert.equal((await attach.json()).error.code, "root_credential_required");
+
+    const hook = await fetch(`${baseUrl}/v1/pocket/codex-hooks/PreToolUse`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${DEVICE_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ hook_event_name: "PreToolUse" }),
+    });
+    assert.equal(hook.status, 403);
+    assert.equal((await hook.json()).error.code, "root_credential_required");
+    assert.deepEqual(attachedThreads, []);
+    assert.deepEqual(hooks, []);
+  });
+});
+
+test("closes an unauthenticated early-response body without blocking drain", async () => {
+  await withServer(async ({ baseUrl, server }) => {
+    const { request, response } = unfinishedRequest(`${baseUrl}/v1/pocket/commands`, {
+      "Content-Length": 100,
+      "Content-Type": "application/json",
+      "Idempotency-Key": "unauthenticated-slow-body",
+    });
+    request.write("{");
+
+    const unauthorized = await within(response, 250, "unauthenticated body held the response open");
+    assert.equal(unauthorized.status, 401);
+    assert.equal(unauthorized.headers.connection, "close");
+    await within(server.drain(), 250, "unauthenticated body blocked request drain");
+  });
+});
+
+test("times out a slow authenticated body and closes its connection", async () => {
+  await withServer(async ({ baseUrl, calls, server }) => {
+    const { request, response } = unfinishedRequest(`${baseUrl}/v1/pocket/commands`, {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Length": 20,
+      "Content-Type": "application/json",
+      "Idempotency-Key": "timed-out-body",
+    });
+    request.write('{"kind"');
+
+    const timedOut = await within(response, 300, "slow body did not reach its deadline");
+    assert.equal(timedOut.status, 408);
+    assert.equal(timedOut.headers.connection, "close");
+    assert.equal(JSON.parse(timedOut.body).error.code, "request_timeout");
+    await within(server.drain(), 250, "timed-out body blocked request drain");
+    assert.deepEqual(calls, []);
+  }, { deadlines: { bodyMs: 40, shutdownMs: 80 } });
+});
+
+test("destroys a raw socket with incomplete headers at the shutdown deadline", async () => {
+  await withServer(async ({ port, server }) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    await once(socket, "connect");
+    socket.write("POST /v1/pocket/commands HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer");
+    const closed = once(socket, "close");
+
+    await within(server.stopAccepting(), 300, "partial headers blocked server shutdown");
+    await within(closed, 100, "partial-header socket remained open");
+    assert.equal(socket.destroyed, true);
+  }, { deadlines: { headersMs: 500, shutdownMs: 40 } });
 });
 
 test("rejects an unfinished oversized body promptly and does not block shutdown", async () => {

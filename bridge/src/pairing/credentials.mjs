@@ -62,6 +62,7 @@ export class Credentials {
     if (equal(candidate, this.rootToken)) {
       return Object.freeze({
         id: `credential:${digest(candidate)}`,
+        role: "root",
         revocable: false,
         valid: () => true,
       });
@@ -74,6 +75,7 @@ export class Credentials {
     const deviceId = match[1];
     return Object.freeze({
       id: `credential:${candidateDigest}`,
+      role: "device",
       revocable: true,
       valid: () => {
         const current = this.#devices.get(deviceId);

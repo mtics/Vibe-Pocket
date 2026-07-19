@@ -9,7 +9,19 @@ export class Events {
     this.heartbeatMs = heartbeatMs;
   }
 
-  connect(request, response, identity = null) {
+  connect(request, response, principal = null) {
+    principal = normalizePrincipal(principal);
+    if (!principal.valid()) {
+      response.writeHead(401, {
+        "Cache-Control": "no-store",
+        Connection: "close",
+        "Content-Type": "application/json; charset=utf-8",
+      });
+      response.end(JSON.stringify({
+        error: { code: "credential_revoked", message: "This paired device credential has been revoked." },
+      }));
+      return false;
+    }
     response.writeHead(200, {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
@@ -17,7 +29,8 @@ export class Events {
       "X-Accel-Buffering": "no",
     });
     const client = {
-      identity,
+      identity: principal.id,
+      principal,
       request,
       response,
       closed: false,
@@ -38,13 +51,14 @@ export class Events {
       this.#history.push(reset);
       if (this.#history.length > this.historyLimit) this.#history.shift();
       this.#write(client, formatEvent(reset));
-      return;
+      return true;
     }
     for (const event of this.#history) {
       if (!Number.isNaN(lastId) && event.id > lastId) {
         if (!this.#write(client, formatEvent(event))) return;
       }
     }
+    return true;
   }
 
   publish(type, data) {
@@ -92,6 +106,10 @@ export class Events {
 
   #write(client, chunk) {
     if (client.closed) return false;
+    if (!client.principal.valid()) {
+      this.#disconnect(client, { end: true });
+      return false;
+    }
     let accepted;
     try {
       accepted = client.response.write(chunk);
@@ -124,4 +142,12 @@ export class Events {
 
 function formatEvent(event) {
   return `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`;
+}
+
+function normalizePrincipal(principal) {
+  if (typeof principal === "string") {
+    return { id: principal, valid: () => true };
+  }
+  if (principal && typeof principal.valid === "function") return principal;
+  return { id: principal?.id ?? null, valid: () => true };
 }

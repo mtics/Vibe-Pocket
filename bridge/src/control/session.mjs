@@ -26,8 +26,8 @@ export class Session {
   #profileStore;
   #activeLayerId;
   #state;
-  #queue = new Queue();
-  #idempotency = new Idempotency();
+  #queue;
+  #idempotency;
   #refresh;
   #ready = null;
   #stopping = null;
@@ -40,6 +40,8 @@ export class Session {
     profile,
     profileStore = null,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    maxPendingCommands,
+    maxPendingCommandsPerPrincipal,
   }) {
     if (!desktop) {
       throw new TypeError("The control session requires a visible Codex desktop.");
@@ -47,6 +49,13 @@ export class Session {
     this.#desktop = desktop;
     this.#profile = profile ? normalize(profile) : createDefault();
     this.#profileStore = profileStore;
+    this.#queue = new Queue({
+      ...(maxPendingCommands == null ? {} : { maxPending: maxPendingCommands }),
+      ...(maxPendingCommandsPerPrincipal == null ? {} : {
+        maxPendingPerPrincipal: maxPendingCommandsPerPrincipal,
+      }),
+    });
+    this.#idempotency = new Idempotency();
     this.#activeLayerId = this.#profile.layers[0].id;
     this.#state = new State({ events, workspaces, taskId: TASK_ID });
     this.#refresh = new Refresh({
@@ -134,13 +143,17 @@ export class Session {
 
   async command(command, idempotencyKey, principal = null) {
     await this.#ready;
-    return this.#idempotency.once(idempotencyKey, command, ({ dispatch }) => (
+    principal = normalizePrincipal(principal);
+    return this.#idempotency.once(idempotencyKey, command, ({ dispatch, admission }) => (
       this.#queue.run(async () => {
         const authority = (operation) => dispatch(() => this.#dispatch(operation));
         await this.#execute(command, authority);
         return { commandId: `cmd_${randomUUID()}`, accepted: true, revision: this.#state.revision };
-      }, { principal })
-    ));
+      }, { principal, admission })
+    ), {
+      principal,
+      admit: () => this.#queue.reserve({ principal }),
+    });
   }
 
   async #execute(command, authority) {
@@ -347,4 +360,14 @@ export class Session {
     this.#refresh.invalidate();
     return operation();
   }
+}
+
+function normalizePrincipal(principal) {
+  if (principal == null) {
+    return { id: "principal:local-root", role: "root", revocable: false, valid: () => true };
+  }
+  return {
+    ...principal,
+    role: principal.role ?? (principal.revocable ? "device" : "root"),
+  };
 }

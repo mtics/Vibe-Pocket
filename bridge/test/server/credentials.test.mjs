@@ -33,6 +33,8 @@ test("device credentials persist only a hash and survive restart", async () => {
   assert.equal(reloaded.accepts(token), true);
   assert.equal(reloaded.accepts(`${token}x`), false);
   const principal = reloaded.resolve(token);
+  assert.equal(reloaded.resolve(ROOT).role, "root");
+  assert.equal(principal.role, "device");
   assert.equal(principal.revocable, true);
   assert.equal(principal.valid(), true);
   assert.equal(reloaded.revoke(token), true);
@@ -112,4 +114,22 @@ test("treats rename as committed when the following directory sync fails", async
   assert.equal(credentials.accepts(token), false);
   assert.equal(new Credentials({ path, rootToken: ROOT }).accepts(token), false);
   assert.equal(syncCalls, 4);
+});
+
+test("invalidates the live principal when device-cap eviction commits", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "vibe-pocket-credentials-eviction-"));
+  const path = join(directory, "paired-devices.json");
+  let sequence = 0;
+  const credentials = new Credentials({
+    path,
+    rootToken: ROOT,
+    randomId: () => `device${String(sequence += 1).padStart(4, "0")}`,
+    randomSecret: () => SECRET,
+  });
+  const firstToken = credentials.issue();
+  const firstPrincipal = credentials.resolve(firstToken);
+  for (let index = 1; index < 25; index += 1) credentials.issue();
+
+  assert.equal(firstPrincipal.valid(), false);
+  assert.equal(credentials.accepts(firstToken), false);
 });

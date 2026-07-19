@@ -2,6 +2,7 @@ import { Failure } from "./failure.mjs";
 
 export function readJson(request, {
   maxBytes = 64 * 1024,
+  timeoutMs = 10_000,
   invalidMessage = "Request body must be valid JSON.",
   tooLargeMessage = "Request payload is too large.",
 } = {}) {
@@ -10,11 +11,25 @@ export function readJson(request, {
     let bytes = 0;
     let settled = false;
 
+    const timer = setTimeout(() => {
+      request.pause();
+      finish(() => reject(new Failure(408, "request_timeout", "Request body was not received before the deadline.")));
+    }, timeoutMs);
+    timer.unref();
+
     const finish = (operation) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       operation();
     };
+
+    const declaredLength = Number.parseInt(request.headers["content-length"] ?? "0", 10);
+    if (Number.isSafeInteger(declaredLength) && declaredLength > maxBytes) {
+      request.pause();
+      finish(() => reject(new Failure(413, "body_too_large", tooLargeMessage)));
+      return;
+    }
 
     request.on("data", (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);

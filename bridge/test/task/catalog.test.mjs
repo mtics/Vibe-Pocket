@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { Catalog } from "../../src/task/catalog.mjs";
 
 class FakeAppServer {
   constructor(threads, searchResults = {}) {
-    this.threads = threads;
-    this.searchResults = searchResults;
+    this.threads = threads.map(withDefaultCwd);
+    this.searchResults = Object.fromEntries(Object.entries(searchResults).map(([term, results]) => (
+      [term, results.map(withDefaultCwd)]
+    )));
     this.calls = [];
+    this.failure = null;
   }
 
   async start() {
@@ -16,6 +22,11 @@ class FakeAppServer {
 
   async request(method, params) {
     this.calls.push([method, params]);
+    if (this.failure) throw this.failure;
+    if (method === "thread/read") {
+      const searchable = [...this.threads, ...Object.values(this.searchResults).flat()];
+      return { thread: searchable.find(({ id }) => id === params.threadId) ?? null };
+    }
     assert.equal(method, "thread/list");
     return { data: params.searchTerm ? (this.searchResults[params.searchTerm] ?? []) : this.threads };
   }
@@ -23,6 +34,10 @@ class FakeAppServer {
   async stop() {
     this.calls.push(["stop"]);
   }
+}
+
+function withDefaultCwd(thread) {
+  return { cwd: process.cwd(), ...thread };
 }
 
 class FakeActivityReader {
@@ -88,6 +103,10 @@ test("resolves visible task rows to stable native Codex task links", async () =>
   assert.deepEqual(appServer.calls, [
     ["start"],
     ["thread/list", { limit: 100, sortDirection: "desc", sortKey: "recency_at" }],
+    ["thread/read", {
+      threadId: "019e9088-b456-7b30-9df2-2ddcaa16d004",
+      includeTurns: false,
+    }],
   ]);
 
   await catalog.dispose();
@@ -196,6 +215,7 @@ test("finds an active visible task beyond the recent catalog through a bounded t
       searchTerm: title,
       useStateDbOnly: true,
     }],
+    ["thread/read", { threadId: "thread-older-active", includeTurns: false }],
   ]);
 });
 
@@ -281,4 +301,109 @@ test("sorts task groups by status and recent activity after the focused task", a
     "Recent idle",
     "Old idle",
   ]);
+});
+
+test("filters canonical workspace escapes and rechecks focus targets before opening", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-catalog-scope-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "workspace");
+  const project = join(workspace, "project");
+  const outside = join(root, "outside");
+  const current = join(workspace, "current");
+  await mkdir(project, { recursive: true });
+  await mkdir(outside);
+  await symlink(project, current, "dir");
+
+  const appServer = new FakeAppServer([
+    { id: "thread-allowed", name: "Allowed task", cwd: current, parentThreadId: null },
+    { id: "thread-outside", name: "Outside task", cwd: outside, parentThreadId: null },
+  ]);
+  const opened = [];
+  const catalog = new Catalog({
+    appServer,
+    workspaces: { research: workspace },
+    openThread: async (threadId) => { opened.push(threadId); },
+  });
+
+  const agents = await catalog.resolveVisibleAgents([]);
+  assert.deepEqual(agents.map(({ label }) => label), ["Allowed task"]);
+
+  await unlink(current);
+  await symlink(outside, current, "dir");
+  await assert.rejects(
+    () => catalog.focusAgent(agents[0].id),
+    /outside the configured Vibe Pocket workspaces/i,
+  );
+  await assert.rejects(
+    () => catalog.focusThread("thread-outside"),
+    /outside the configured Vibe Pocket workspaces/i,
+  );
+  assert.deepEqual(opened, []);
+});
+
+test("preserves provable focus and disambiguates duplicate titles", async () => {
+  const title = "A duplicate task title that remains readable in the controller";
+  const appServer = new FakeAppServer([
+    { id: "thread-duplicate-one", name: title, parentThreadId: null },
+  ]);
+  const catalog = new Catalog({ appServer, cacheTtlMs: 0, openThread: async () => {} });
+
+  const initial = await catalog.resolveVisibleAgents([
+    { label: title, state: "idle", focused: true },
+  ]);
+  const focusedId = initial[0].id;
+  appServer.threads.push(withDefaultCwd({
+    id: "thread-duplicate-two",
+    name: title,
+    parentThreadId: null,
+  }));
+
+  const ambiguous = await catalog.resolveVisibleAgents([
+    { label: "A duplicate task title that remains…", state: "idle", focused: true },
+  ]);
+  assert.equal(ambiguous.length, 2);
+  assert.equal(ambiguous.find(({ focused }) => focused)?.id, focusedId);
+  assert.equal(new Set(ambiguous.map(({ label }) => label)).size, 2);
+  assert.ok(ambiguous.every(({ label }) => label.length <= 64 && /\[default:[a-f0-9]{6}\]$/.test(label)));
+
+  const unknown = new Catalog({ appServer, cacheTtlMs: 0, openThread: async () => {} });
+  const unresolved = await unknown.resolveVisibleAgents([
+    { label: "A duplicate task title that remains…", state: "idle", focused: true },
+  ]);
+  assert.equal(unresolved.some(({ focused }) => focused), false);
+  assert.equal(new Set(unresolved.map(({ label }) => label)).size, 2);
+});
+
+test("marks a short fallback stale, clears focus actions, and expires it", async () => {
+  let now = 1_000;
+  const appServer = new FakeAppServer([
+    { id: "thread-freshness", name: "Fresh task", parentThreadId: null },
+  ]);
+  const opened = [];
+  const catalog = new Catalog({
+    appServer,
+    cacheTtlMs: 0,
+    fallbackTtlMs: 500,
+    now: () => now,
+    openThread: async (threadId) => { opened.push(threadId); },
+  });
+  const fresh = await catalog.resolveVisibleAgents([
+    { label: "Fresh task", state: "idle", focused: true },
+  ]);
+  assert.equal(fresh[0].freshness, "fresh");
+  assert.equal(catalog.freshness.state, "fresh");
+
+  appServer.failure = new Error("catalog offline");
+  now = 1_100;
+  const stale = await catalog.resolveVisibleAgents([]);
+  assert.deepEqual(stale.map(({ focused, freshness, actionable }) => ({ focused, freshness, actionable })), [
+    { focused: false, freshness: "stale", actionable: false },
+  ]);
+  assert.equal(catalog.freshness.state, "stale");
+  await assert.rejects(() => catalog.focusAgent(fresh[0].id), /no longer available/i);
+  assert.deepEqual(opened, []);
+
+  now = 1_600;
+  assert.deepEqual(await catalog.resolveVisibleAgents([]), []);
+  assert.equal(catalog.freshness.state, "expired");
 });

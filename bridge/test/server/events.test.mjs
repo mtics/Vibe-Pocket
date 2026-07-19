@@ -70,3 +70,32 @@ test("closes only SSE streams owned by a revoked credential identity", () => {
   assert.match(secondResponse.chunks.join(""), /revision/);
   hub.close();
 });
+
+test("revalidates an SSE principal before publishing to an evicted credential", () => {
+  const hub = new Events({ heartbeatMs: 60_000 });
+  const request = new EventEmitter();
+  request.headers = {};
+  const response = new FakeResponse();
+  let valid = true;
+  hub.connect(request, response, { id: "device:evicted", valid: () => valid });
+  const chunksBeforeEviction = response.chunks.length;
+
+  valid = false;
+  hub.publish("snapshot_changed", { revision: "r_secret" });
+
+  assert.equal(response.ended, 1);
+  assert.equal(response.chunks.length, chunksBeforeEviction);
+  hub.close();
+});
+
+test("denies an SSE principal that is already invalid", () => {
+  const hub = new Events({ heartbeatMs: 60_000 });
+  const request = new EventEmitter();
+  request.headers = {};
+  const response = new FakeResponse();
+
+  assert.equal(hub.connect(request, response, { id: "device:evicted", valid: () => false }), false);
+  assert.equal(response.ended, 1);
+  assert.equal(response.headers.Connection, "close");
+  hub.close();
+});

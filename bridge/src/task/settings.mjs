@@ -46,7 +46,8 @@ export class Settings {
     };
     const confirmed = thread?.id ? this.#confirmed.get(thread.id) : null;
     this.#settle(thread?.id, confirmed, observed);
-    const visibleModel = this.#match(visible.modelLabel);
+    const visibleMatches = this.#matches(visible.modelLabel);
+    const visibleModel = visibleMatches.length === 1 ? visibleMatches[0] : null;
     const selected = visibleModel
       ?? this.#models.get(confirmed?.model ?? observed?.model);
     const efforts = selected?.efforts ?? [];
@@ -55,14 +56,21 @@ export class Settings {
       : typeof visible.level === "string" ? visible.level : null;
     const level = [visibleLevel, confirmed?.reasoningEffort, observed?.reasoningEffort]
       .find((effort) => efforts.includes(effort)) ?? null;
-    return this.#view(thread?.id, selected, level, visible);
+    return this.#view(thread?.id, selected, level, {
+      ...visible,
+      modelAmbiguous: visibleMatches.length > 1,
+    });
   }
 
-  async selectModel(modelId) {
-    const current = this.#requireCurrent();
+  async selectModel(selection) {
+    const { value: modelId, threadId, bound } = mutationSelection(selection, "id");
+    const current = this.#requireCurrent(bound ? threadId : null);
     await this.#resume(current.threadId);
     const selected = this.#models.get(modelId);
     if (!selected) throw new Error("The requested Codex model is unavailable.");
+    if (!this.#modelIdentityIsUnique(selected)) {
+      throw new Error("The requested Codex model is ambiguous in the desktop model menu.");
+    }
     const level = selected.efforts.includes(current.level)
       ? current.level
       : selected.defaultEffort ?? selected.efforts[0] ?? null;
@@ -76,11 +84,20 @@ export class Settings {
     return this.#view(current.threadId, selected, level);
   }
 
-  async modelOption(modelId, { refresh = false } = {}) {
+  async modelOption(selection, { refresh = false } = {}) {
+    const { value: modelId, threadId, bound } = mutationSelection(selection, "id");
     await this.start({ refresh });
+    if (bound) this.#requireCurrent(threadId);
     const selected = this.#models.get(modelId);
     if (!selected) throw new Error("The requested Codex model is unavailable or stale.");
-    return { id: selected.id, label: selected.label };
+    if (!this.#modelIdentityIsUnique(selected)) {
+      throw new Error("The requested Codex model is ambiguous in the desktop model menu.");
+    }
+    return {
+      id: selected.id,
+      label: selected.label,
+      ...(bound ? { threadId } : {}),
+    };
   }
 
   async adjustReasoning(delta) {
@@ -93,8 +110,9 @@ export class Settings {
     return this.selectReasoning(level);
   }
 
-  async selectReasoning(level) {
-    const current = this.#requireCurrent();
+  async selectReasoning(selection) {
+    const { value: level, threadId, bound } = mutationSelection(selection, "level");
+    const current = this.#requireCurrent(bound ? threadId : null);
     await this.#resume(current.threadId);
     if (!current.efforts.includes(level)) {
       throw new Error("The requested Codex reasoning level is unavailable or stale.");
@@ -119,15 +137,19 @@ export class Settings {
   }
 
   hasReasoningLevel(level) {
+    if (level && typeof level === "object") level = level.level;
     return typeof level === "string" && this.#current?.efforts.includes(level) === true;
   }
 
   #view(threadId, selected, level, visible = {}) {
     const efforts = selected?.efforts ?? [];
+    const modelAmbiguous = visible.modelAmbiguous === true
+      || (selected ? !this.#modelIdentityIsUnique(selected) : false);
     this.#current = threadId && selected ? { threadId, model: selected.id, efforts, level } : null;
     return {
+      binding: threadId ? { threadId } : null,
       model: {
-        available: Boolean(threadId && selected && this.#models.size > 0),
+        available: Boolean(threadId && selected && this.#models.size > 0 && !modelAmbiguous),
         id: selected?.id ?? null,
         label: selected?.label ?? visible.modelLabel ?? "",
         options: [...this.#models.values()].map((model) => ({
@@ -146,8 +168,11 @@ export class Settings {
     };
   }
 
-  #requireCurrent() {
+  #requireCurrent(expectedThreadId = null) {
     if (!this.#current?.threadId) throw new Error("No focused Codex task is available for settings changes.");
+    if (expectedThreadId && this.#current.threadId !== expectedThreadId) {
+      throw new Error("The focused Codex task changed before its settings mutation.");
+    }
     return this.#current;
   }
 
@@ -212,13 +237,33 @@ export class Settings {
     if (!confirmed.model && !confirmed.reasoningEffort) this.#confirmed.delete(threadId);
   }
 
-  #match(label) {
+  #matches(label) {
     const candidate = canonical(label);
-    if (!candidate) return null;
-    return [...this.#models.values()].find((model) => (
+    if (!candidate) return [];
+    return [...this.#models.values()].filter((model) => (
       canonical(model.id) === candidate || canonical(model.label) === candidate
-    )) ?? null;
+    ));
   }
+
+  #modelIdentityIsUnique(selected) {
+    const candidates = new Set([canonical(selected.id), canonical(selected.label)].filter(Boolean));
+    if (candidates.size === 0) return false;
+    return [...this.#models.values()].filter((model) => (
+      candidates.has(canonical(model.id)) || candidates.has(canonical(model.label))
+    )).length === 1;
+  }
+}
+
+function mutationSelection(selection, property) {
+  if (typeof selection === "string") {
+    return { value: selection, threadId: null, bound: false };
+  }
+  const value = selection?.[property];
+  const threadId = selection?.threadId;
+  if (typeof value !== "string" || !value || typeof threadId !== "string" || !threadId) {
+    throw new Error("A bound Codex settings mutation is required.");
+  }
+  return { value, threadId, bound: true };
 }
 
 function reasoningLabel(value) {
