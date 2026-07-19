@@ -33,8 +33,11 @@ Xiaomi.
   action instead of recording audio inside Vibe Pocket.
 - **Workflow controls:** launch configurable review, debug, refactor, and test
   prompts from four always-visible controls.
-- **Reasoning control:** rotate the dial to move one available reasoning level;
-  tap its center to open the native model picker.
+- **Model and reasoning controls:** choose a concrete advertised model on the
+  phone and move through every supported reasoning level using the focused
+  task's confirmed Codex settings.
+- **Two-stage delete:** tap Delete for one backward deletion; hold it to clear
+  the complete visible draft.
 - **One-action pairing:** a short-lived invitation discovers the Tailscale
   origin and issues a separate device credential without exposing
   the Mac administration secret.
@@ -46,12 +49,12 @@ flowchart LR
     phone["Android app"]
     bridge["Node.js Bridge"]
     host["Signed Swift host"]
-    catalog["Codex app-server catalog"]
+    catalog["Codex app-server task + model catalog"]
     desktop["ChatGPT Codex on macOS"]
 
     phone -->|"Bluetooth HID reports"| desktop
     phone -->|"HTTPS + device credential"| bridge
-    bridge -->|"Read-only task discovery"| catalog
+    bridge -->|"Read-only task and model discovery"| catalog
     bridge -->|"Native codex:// task links"| desktop
     bridge -->|"Whitelisted operations"| host
     host -->|"Semantic shortcuts / scoped AX"| desktop
@@ -62,11 +65,11 @@ operation:
 
 | Path | Used for | Important property |
 | --- | --- | --- |
-| Bluetooth HID | Accept, Reject, Stop, Voice, navigation, mode, reasoning | Standard keyboard reports; no Bridge round trip |
+| Bluetooth HID | Accept, Reject, Stop, Voice, Delete, navigation, and mode | Standard keyboard reports; no Bridge round trip |
 | Native task links | Agent and task switching | Uses the exact Codex thread ID; no pointer synthesis |
-| Authenticated Bridge | New task, Clear, Access, workflows, profile changes | Strict command and configuration schemas |
+| Authenticated Bridge | New task, HID fallbacks, Access, workflows, profile changes | Strict command and configuration schemas |
 | Swift host | Visible controls without a stable shortcut | Whitelisted AX press/value operations; never moves the pointer |
-| Codex app-server | Read-only task catalog | Does not create or resume hidden tasks during discovery |
+| Codex app-server | Read-only task and model catalog | Supplies stable task and model IDs without pretending to control the desktop process |
 
 For the detailed transport decision, see
 [CONTROL_TRANSPORT.md](CONTROL_TRANSPORT.md).
@@ -204,10 +207,14 @@ The main Control screen keeps the complete working surface in one place:
 | --- | --- |
 | Agent rail | Show the focused task first, then active tasks by status and recent activity |
 | Direction pad | Navigate Codex without a separate key page |
-| Common actions | Accept, Reject, Voice, Clear, Stop, task creation, focus, mode, and access |
-| Model and reasoning | Open the model picker and adjust the available reasoning level |
-| Workflows | Start one of four editable prompts in a new visible Codex task |
-| L1 layer chord | Hold L1 with a mapped key to select one of six controller layers |
+| Common actions | Accept, Reject, Voice, Delete, Stop, task creation, focus, mode, and access |
+| Workflows | Start one of four editable prompts above the directional controls |
+| Model and reasoning | Select a model on the phone and adjust its exact supported reasoning level |
+| Voice | Use the full-width bottom control for the primary push-to-talk action |
+| Shift layer chord | Hold Shift with a mapped key to select one of six controller layers |
+
+Delete uses two gestures on the default layer: tap removes one character and
+hold clears the full visible draft.
 
 Settings is a modal surface for Bluetooth host selection, layer names and
 colors, gesture mappings, workflow prompts, and advanced connection recovery.
