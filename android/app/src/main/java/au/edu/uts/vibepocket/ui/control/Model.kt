@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
@@ -103,29 +105,36 @@ internal fun Model(
 
     if (showOptions) {
         ModalBottomSheet(onDismissRequest = { showOptions = false }) {
-            Text(
-                "Choose model",
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            state.options.forEach { option ->
-                val optionPending = inFlightIds.contains("model:${option.id}")
-                val optionEnabled = enabled && !optionPending && !option.selected
-                ListItem(
-                    headlineContent = { Text(option.label) },
-                    supportingContent = if (option.selected) ({ Text("Current model") }) else null,
-                    trailingContent = when {
-                        optionPending -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
-                        option.selected -> ({ Icon(Icons.Default.Check, contentDescription = "Selected") })
-                        else -> null
-                    },
-                    modifier = Modifier.fillMaxWidth().clickable(enabled = optionEnabled) {
-                        if (optionEnabled && onModel(option.id)) showOptions = false
-                    },
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(
+                    "Choose model",
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
                 )
+                state.options.forEach { option ->
+                    val optionPending = inFlightIds.contains("model:${option.id}")
+                    val optionEnabled = enabled && !optionPending && !option.selected
+                    ListItem(
+                        headlineContent = { Text(option.label) },
+                        supportingContent = if (option.selected) ({ Text("Current model") }) else null,
+                        trailingContent = when {
+                            optionPending -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
+                            option.selected -> ({ Icon(Icons.Default.Check, contentDescription = "Selected") })
+                            else -> null
+                        },
+                        modifier = Modifier.fillMaxWidth().clickable(enabled = optionEnabled) {
+                            if (optionEnabled && onModel(option.id)) showOptions = false
+                        },
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
             }
-            Spacer(Modifier.height(16.dp))
         }
     }
 }

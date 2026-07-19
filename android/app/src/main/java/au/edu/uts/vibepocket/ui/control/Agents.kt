@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 internal fun Agents(
     snapshot: Snapshot,
     inFlightIds: Set<String>,
+    blocked: Boolean,
     onAgent: (String) -> Unit,
 ) {
     val slots = snapshot.agentSlots().filter { it.agent != null }
@@ -89,7 +90,7 @@ internal fun Agents(
                             role = Role.Button
                             selected = slot.focused
                         }
-                        .clickable(enabled = slot.canFocus && !loading, onClick = { onAgent(agent.id) })
+                        .clickable(enabled = slot.canFocus && !loading && !blocked, onClick = { onAgent(agent.id) })
                         .padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {

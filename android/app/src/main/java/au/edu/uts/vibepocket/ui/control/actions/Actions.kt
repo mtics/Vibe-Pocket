@@ -30,6 +30,7 @@ internal fun Actions(
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val byId = inputs.associateBy(Input::id)
@@ -41,6 +42,7 @@ internal fun Actions(
             onInput = onInput,
             onVoiceStart = onVoiceStart,
             onVoiceStop = onVoiceStop,
+            blocked = blocked,
             modifier = modifier,
         )
         State.Kind.READY, State.Kind.QUESTION, State.Kind.DECISION, State.Kind.RUNNING -> Controller(
@@ -53,6 +55,7 @@ internal fun Actions(
             onNavigationRepeat = onNavigationRepeat,
             onVoiceStart = onVoiceStart,
             onVoiceStop = onVoiceStop,
+            blocked = blocked,
             modifier = modifier,
         )
     }
@@ -69,12 +72,13 @@ private fun Controller(
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    blocked: Boolean,
     modifier: Modifier,
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val footer = listOfNotNull(byId["key_reject"], byId["key_stop"])
         Row(
-            Modifier.fillMaxWidth().heightIn(min = 208.dp),
+            Modifier.fillMaxWidth().heightIn(min = 208.dp, max = 300.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -87,7 +91,7 @@ private fun Controller(
                 onNavigationRepeat = onNavigationRepeat,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
-                blocked = false,
+                blocked = blocked,
                 modifier = Modifier.weight(1.15f).aspectRatio(1f),
             )
             Column(
@@ -99,7 +103,7 @@ private fun Controller(
                     byId["key_clear"],
                     byId["key_new_task"],
                     byId["key_accept"],
-                ).forEach { input ->
+                ).distinctBy(Input::id).forEach { input ->
                     val isMode = input.id == modeInput?.id
                     InputButton(
                         input = input,
@@ -108,7 +112,7 @@ private fun Controller(
                         onInput = onInput,
                         onVoiceStart = onVoiceStart,
                         onVoiceStop = onVoiceStop,
-                        blocked = false,
+                        blocked = blocked,
                         labelPlacement = if (isMode) LabelPlacement.TEXT else LabelPlacement.BESIDE,
                         labelOverride = if (isMode) {
                             snapshot.desktop?.mode?.label?.takeIf(String::isNotBlank) ?: "Default"
@@ -128,7 +132,7 @@ private fun Controller(
                     onInput = onInput,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
-                    blocked = false,
+                    blocked = blocked,
                     labelPlacement = LabelPlacement.BESIDE,
                     modifier = Modifier.weight(1f).heightIn(min = 60.dp),
                 )
@@ -145,6 +149,7 @@ private fun Error(
     onInput: (String, Gesture.Kind) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    blocked: Boolean,
     modifier: Modifier,
 ) {
     Column(
@@ -159,7 +164,7 @@ private fun Error(
                 onInput = onInput,
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
-                blocked = false,
+                blocked = blocked,
                 labelPlacement = LabelPlacement.BESIDE,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
             )

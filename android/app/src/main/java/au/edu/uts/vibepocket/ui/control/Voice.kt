@@ -29,6 +29,7 @@ internal fun Voice(
         onVoiceStart = onVoiceStart,
         onVoiceStop = onVoiceStop,
         blocked = blocked,
+        dedicatedVoiceControl = true,
         labelPlacement = LabelPlacement.BESIDE,
         modifier = modifier.fillMaxWidth().heightIn(min = 64.dp),
     )

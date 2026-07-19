@@ -11,6 +11,7 @@ import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.profile.Workflow
+import au.edu.uts.vibepocket.ui.control.contextTransitionPending
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -73,8 +74,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -145,7 +151,7 @@ internal fun Settings(
             || pending.startsWith("color:")
             || pending.startsWith("workflow:")
             || pending == "reset-profile"
-    }
+    } || contextTransitionPending(inFlightIds)
     val candidate = remember(config, url) {
         runCatching { Config(url, config.credential) }
     }
@@ -179,9 +185,11 @@ internal fun Settings(
             modifier = Modifier
                 .fillMaxWidth()
                 .imePadding(),
+            contentAlignment = Alignment.TopCenter,
         ) {
             Column(
                 modifier = Modifier
+                    .widthIn(max = 720.dp)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp)
@@ -289,6 +297,7 @@ internal fun Settings(
                         value = layerName,
                         onValueChange = { if (it.length <= 40) layerName = it },
                         modifier = Modifier.weight(1f),
+                        enabled = !busy,
                         singleLine = true,
                         label = { Text("Layer name") },
                     )
@@ -305,6 +314,20 @@ internal fun Settings(
                         colors.forEach { color ->
                             val parsed = profileColor(color)
                             val selected = layer.color.equals(color, ignoreCase = true)
+                            val selectable = !busy && !selected
+                            val ringFallback = if (
+                                contrastRatio(Color.Black, parsed) >= contrastRatio(Color.White, parsed)
+                            ) {
+                                Color.Black
+                            } else {
+                                Color.White
+                            }
+                            val ring = contrastingColor(
+                                preferred = MaterialTheme.colorScheme.onSurface,
+                                background = parsed,
+                                fallback = ringFallback,
+                                minimumRatio = 3f,
+                            )
                             Box(
                                 modifier = Modifier
                                     .size(34.dp)
@@ -312,11 +335,16 @@ internal fun Settings(
                                     .background(parsed)
                                     .border(
                                         if (selected) 3.dp else 1.dp,
-                                        if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                        if (selected) ring else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
                                         CircleShape,
                                     )
-                                    .semantics { contentDescription = "Layer color $color" }
-                                    .clickable(enabled = !busy && !selected, onClick = { onColor(layer.id, color) }),
+                                    .semantics {
+                                        role = Role.Button
+                                        this.selected = selected
+                                        contentDescription = "Layer color $color"
+                                        if (!selectable && !selected) disabled()
+                                    }
+                                    .clickable(enabled = selectable, onClick = { onColor(layer.id, color) }),
                             )
                         }
                     }
@@ -391,6 +419,7 @@ internal fun Settings(
             binding = resolved.binding,
             currentAction = resolved.action,
             catalog = selectedController.choices,
+            enabled = !busy,
             onDismiss = { target = null },
             onSelect = { actionId ->
                 onUpdate(selected.layerId, selected.inputId, selected.gesture, actionId)
@@ -446,25 +475,34 @@ private fun SettingsLayers(
         layers.forEachIndexed { index, layer ->
             val selected = layer.id == activeLayerId
             val color = profileColor(layer.color)
+            val surface = MaterialTheme.colorScheme.surface
+            val background = if (selected) compositedBackground(color, 0.22f, surface) else surface
             val accent = contrastingColor(
                 preferred = color,
-                background = MaterialTheme.colorScheme.surface,
+                background = background,
                 fallback = MaterialTheme.colorScheme.onSurface,
                 minimumRatio = 4.5f,
             )
             val loading = "layer:${layer.id}" in inFlightIds
+            val selectable = enabled && !selected && !loading
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (selected) color.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface)
+                    .background(background)
                     .border(
                         if (selected) 2.dp else 1.dp,
                         accent.copy(alpha = if (selected) 1f else 0.55f),
                         RoundedCornerShape(6.dp),
                     )
-                    .clickable(enabled = enabled && !selected && !loading, onClick = { onLayer(layer.id) }),
+                    .semantics {
+                        role = Role.Button
+                        this.selected = selected
+                        contentDescription = layerSemanticsLabel(index, layer.name)
+                        if (!selectable && !selected) disabled()
+                    }
+                    .clickable(enabled = selectable, onClick = { onLayer(layer.id) }),
                 contentAlignment = Alignment.Center,
             ) {
                 if (loading) {
@@ -490,6 +528,7 @@ private fun WorkflowEditor(
             value = prompt,
             onValueChange = { if (it.length <= 4_000) prompt = it },
             modifier = Modifier.fillMaxWidth(),
+            enabled = !busy,
             label = { Text(workflow.label) },
             minLines = 3,
             maxLines = 6,
@@ -562,6 +601,7 @@ private fun ActionPicker(
     binding: Binding?,
     currentAction: Action?,
     catalog: List<Choice>,
+    enabled: Boolean,
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit,
     onClear: () -> Unit,
@@ -572,7 +612,7 @@ private fun ActionPicker(
         text = {
             Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
                 if (currentAction != null) {
-                    TextButton(onClick = onClear, modifier = Modifier.fillMaxWidth()) {
+                    TextButton(onClick = onClear, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
                         Text("Clear mapping", color = MaterialTheme.colorScheme.error)
                     }
                     HorizontalDivider()
@@ -581,19 +621,19 @@ private fun ActionPicker(
                     target.gesture == Gesture.Kind.TAP || entry.action.type != "voice"
                 }.forEach { entry ->
                     val selected = entry.action == currentAction
-                    val enabled = entry.action.type != "voice" || binding.allowsVoiceMapping()
+                    val optionEnabled = enabled && (entry.action.type != "voice" || binding.allowsVoiceMapping())
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = enabled) { onSelect(entry.id) }
-                            .alpha(if (enabled) 1f else 0.48f)
+                            .clickable(enabled = optionEnabled) { onSelect(entry.id) }
+                            .alpha(if (optionEnabled) 1f else 0.48f)
                             .padding(horizontal = 4.dp, vertical = 11.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(entry.label, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary)
                         }
-                        if (!enabled) {
+                        if (enabled && !optionEnabled) {
                             Text(
                                 "Clear Double and Hold mappings first",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

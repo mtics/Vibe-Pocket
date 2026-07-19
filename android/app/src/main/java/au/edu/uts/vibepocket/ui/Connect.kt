@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContent
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,69 +52,76 @@ internal fun Connect(
 ) {
     var invitation by rememberSaveable { mutableStateOf("") }
     var advanced by rememberSaveable { mutableStateOf(false) }
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeContent)
-            .imePadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 28.dp, vertical = 32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .imePadding(),
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Box(
-            modifier = Modifier.size(72.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
-        }
-        Spacer(Modifier.height(20.dp))
-        Text("Vibe Pocket", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Scan the code shown on your Mac",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
         Column(
-            modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp),
+            modifier = Modifier
+                .widthIn(max = 560.dp)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 28.dp, vertical = 32.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (isConnecting) CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
-            error?.let {
-                if (isConnecting) Spacer(Modifier.height(12.dp))
-                ErrorNotice(it)
-            }
-        }
-        TextButton(onClick = { advanced = !advanced }) {
-            Icon(
-                if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(6.dp))
-            Text("Paste invitation")
-        }
-        if (advanced) {
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = invitation,
-                onValueChange = { invitation = it },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 2,
-                maxLines = 4,
-                label = { Text("Pairing invitation") },
-                leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
-            )
-            Spacer(Modifier.height(14.dp))
-            Button(
-                onClick = { onInvitation(invitation) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isConnecting && invitation.isNotBlank(),
-                shape = RoundedCornerShape(8.dp),
+            Box(
+                modifier = Modifier.size(72.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                contentAlignment = Alignment.Center,
             ) {
-                Text("Continue")
+                Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+            }
+            Spacer(Modifier.height(20.dp))
+            Text("Vibe Pocket", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Scan the code shown on your Mac",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (isConnecting) CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                error?.let {
+                    if (isConnecting) Spacer(Modifier.height(12.dp))
+                    ErrorNotice(it)
+                }
+            }
+            TextButton(onClick = { advanced = !advanced }) {
+                Icon(
+                    if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Paste invitation")
+            }
+            if (advanced) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = invitation,
+                    onValueChange = { invitation = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                    label = { Text("Pairing invitation") },
+                    leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
+                )
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = { onInvitation(invitation) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isConnecting && invitation.isNotBlank(),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text("Continue")
+                }
             }
         }
     }

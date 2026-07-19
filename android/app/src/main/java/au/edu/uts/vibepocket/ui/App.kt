@@ -14,19 +14,24 @@ import au.edu.uts.vibepocket.session.Feedback
 import au.edu.uts.vibepocket.session.Session
 import au.edu.uts.vibepocket.ui.control.Screen
 import au.edu.uts.vibepocket.ui.control.Voice
-import au.edu.uts.vibepocket.ui.control.keyInputs
+import au.edu.uts.vibepocket.ui.control.contextTransitionPending
+import au.edu.uts.vibepocket.ui.control.dedicatedVoiceInput
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeContent
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
@@ -58,9 +63,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -199,6 +208,7 @@ internal fun App(viewModel: Session) {
                 PairingDialog(
                     invitation = invitation,
                     busy = state.inFlightIds.any { it.startsWith("connection:") },
+                    error = state.error,
                     onConfirm = viewModel::pair,
                     onDismiss = viewModel::dismissPairing,
                 )
@@ -260,6 +270,7 @@ internal fun App(viewModel: Session) {
         }
     }
     val snapshot = state.snapshot
+    val transitionPending = contextTransitionPending(state.inFlightIds)
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -277,15 +288,17 @@ internal fun App(viewModel: Session) {
                         .background(MaterialTheme.colorScheme.background)
                         .windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Bottom))
                         .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 4.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
                     Voice(
-                        input = keyInputs(current).firstOrNull { it.id == "key_voice" },
+                        input = dedicatedVoiceInput(current, voiceOwnerInputId),
                         snapshot = current,
                         inFlightIds = state.inFlightIds,
                         onInput = onInput,
                         onVoiceStart = onVoiceStart,
                         onVoiceStop = onVoiceStop,
-                        blocked = false,
+                        blocked = transitionPending,
+                        modifier = Modifier.widthIn(max = 720.dp),
                     )
                 }
             }
@@ -349,6 +362,7 @@ internal fun App(viewModel: Session) {
                     onClick = {
                         if (viewModel.resetProfile()) confirmReset = false
                     },
+                    enabled = !transitionPending,
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                 ) { Text("Reset") }
             },
@@ -394,6 +408,7 @@ internal fun App(viewModel: Session) {
         PairingDialog(
             invitation = invitation,
             busy = state.inFlightIds.any { it.startsWith("connection:") },
+            error = state.error,
             onConfirm = viewModel::pair,
             onDismiss = viewModel::dismissPairing,
         )
@@ -404,13 +419,25 @@ internal fun App(viewModel: Session) {
 private fun PairingDialog(
     invitation: Invitation,
     busy: Boolean,
+    error: String?,
     onConfirm: () -> Boolean,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Pair with this Mac?") },
-        text = { Text(invitation.origin.removePrefix("https://")) },
+        text = {
+            Column {
+                Text(invitation.origin.removePrefix("https://"))
+                error?.takeIf { it.isNotBlank() }?.let { message ->
+                    Spacer(Modifier.height(12.dp))
+                    ErrorNotice(
+                        message = message,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive },
+                    )
+                }
+            }
+        },
         confirmButton = {
             TextButton(onClick = { onConfirm() }, enabled = !busy) {
                 if (busy) {

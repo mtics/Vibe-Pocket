@@ -54,6 +54,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
@@ -215,6 +216,9 @@ internal fun contrastingColor(
     fallback: Color,
     minimumRatio: Float = 4.5f,
 ): Color = if (contrastRatio(preferred, background) >= minimumRatio) preferred else fallback
+
+internal fun compositedBackground(foreground: Color, alpha: Float, background: Color): Color =
+    foreground.copy(alpha = alpha).compositeOver(background)
 
 internal fun layerSemanticsLabel(index: Int, name: String): String {
     val ordinal = "Layer ${index + 1}"

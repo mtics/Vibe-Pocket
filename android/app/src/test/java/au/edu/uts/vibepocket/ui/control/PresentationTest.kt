@@ -7,6 +7,7 @@ import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
 import au.edu.uts.vibepocket.profile.Choice
@@ -15,7 +16,9 @@ import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PresentationTest {
@@ -56,11 +59,74 @@ class PresentationTest {
     }
 
     @Test
+    fun voiceMappingIdentitySurvivesAvailabilityAndActiveRefreshes() {
+        val input = Input("touch_primary", Input.Kind.TOUCH, "Touch", "touch")
+        val idle = snapshot(
+            inputs = listOf(input),
+            actions = mapOf(input.id to Action("voice")),
+            voice = Voice(available = true, active = false),
+            capabilities = Capabilities(voice = true),
+        )
+        val active = snapshot(
+            inputs = listOf(input),
+            actions = mapOf(input.id to Action("voice")),
+            voice = Voice(available = false, active = true),
+            capabilities = Capabilities(voice = true),
+        )
+
+        assertEquals(idle.voiceMappingIdentity(input.id), active.voiceMappingIdentity(input.id))
+        assertEquals(input, dedicatedVoiceInput(active))
+    }
+
+    @Test
+    fun dedicatedVoiceControlPrefersTheInputThatStartedListening() {
+        val owner = Input("dial_voice", Input.Kind.DIAL, "Dial", "cycle")
+        val newlyMapped = Input("touch_voice", Input.Kind.TOUCH, "Touch", "touch")
+        val snapshot = snapshot(
+            inputs = listOf(owner, newlyMapped),
+            actions = mapOf(newlyMapped.id to Action("voice")),
+            voice = Voice(available = false, active = true),
+            capabilities = Capabilities(voice = true),
+        )
+
+        assertEquals(owner, dedicatedVoiceInput(snapshot, activeOwnerInputId = owner.id))
+    }
+
+    @Test
+    fun contextTransitionsBlockForAgentLayerAndModelOnly() {
+        assertTrue(contextTransitionPending(setOf("agent:a")))
+        assertTrue(contextTransitionPending(setOf("layer:default")))
+        assertTrue(contextTransitionPending(setOf("model:o3")))
+        assertFalse(contextTransitionPending(setOf("input:key_accept:tap", "mapping:key_accept:tap")))
+    }
+
+    @Test
+    fun talkBackLabelsExposeEveryNonTapGesture() {
+        assertNull(gestureAccessibilityAction(Gesture.Kind.TAP))
+        assertEquals("Run double-tap mapping", gestureAccessibilityAction(Gesture.Kind.DOUBLE_TAP))
+        assertEquals("Run hold mapping", gestureAccessibilityAction(Gesture.Kind.HOLD))
+    }
+
+    @Test
+    fun unrepresentedInputsPreserveEveryConfigurableControl() {
+        val visible = Input("key_accept", Input.Kind.KEY, "Accept", "check")
+        val touch = Input("touch_primary", Input.Kind.TOUCH, "Touch", "touch")
+        val dial = Input("dial_primary", Input.Kind.DIAL, "Dial", "cycle")
+
+        assertEquals(listOf(touch, dial), unrepresentedInputs(listOf(visible, touch, dial), setOf(visible.id)))
+    }
+
+    @Test
     fun agentChipWidthDoesNotDependOnFocus() {
         assertEquals(160, AgentChipWidthDp)
     }
 
-    private fun snapshot(inputs: List<Input>, actions: Map<String, Action>): Snapshot {
+    private fun snapshot(
+        inputs: List<Input>,
+        actions: Map<String, Action>,
+        voice: Voice? = null,
+        capabilities: Capabilities = Capabilities(reasoning = true, workflow = true),
+    ): Snapshot {
         val layer = Layer(
             id = "layer-1",
             name = "Default",
@@ -72,7 +138,7 @@ class PresentationTest {
         return Snapshot(
             revision = "r1",
             status = Status("ready", null),
-            capabilities = Capabilities(reasoning = true, workflow = true),
+            capabilities = capabilities,
             desktop = Desktop(
                 profile = Profile(1, inputs, emptyList(), listOf(layer)),
                 gestures = emptyList(),
@@ -83,7 +149,7 @@ class PresentationTest {
                 agents = emptyList(),
                 focusedAgentIndex = -1,
                 focusedAgentId = null,
-                voice = null,
+                voice = voice,
                 mode = Selector(false, ""),
                 reasoning = Reasoning(
                     available = true,

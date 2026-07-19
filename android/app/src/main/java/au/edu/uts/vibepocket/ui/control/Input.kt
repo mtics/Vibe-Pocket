@@ -70,8 +70,12 @@ internal enum class LabelPlacement {
     TEXT,
 }
 
-internal fun voiceControlAvailable(inputId: String, mapped: Boolean, active: Boolean): Boolean =
-    mapped || active && inputId == "key_voice"
+internal fun voiceControlAvailable(
+    inputId: String,
+    mapped: Boolean,
+    active: Boolean,
+    dedicated: Boolean = false,
+): Boolean = mapped || active && (dedicated || inputId == "key_voice")
 
 @Composable
 internal fun InputButton(
@@ -84,6 +88,7 @@ internal fun InputButton(
     navigationRepeatEnabled: Boolean = false,
     onNavigationRepeat: (String, Boolean) -> Unit = { _, _ -> },
     blocked: Boolean = false,
+    dedicatedVoiceControl: Boolean = false,
     labelPlacement: LabelPlacement = LabelPlacement.BELOW,
     labelOverride: String? = null,
     supportingLabel: String? = null,
@@ -92,9 +97,15 @@ internal fun InputButton(
 ) {
     val gestures = Gesture.Kind.entries.filter { snapshot.inputEnabled(input.id, it) }
     val action = snapshot.actionFor(input.id)
-    val voiceMapped = snapshot.voiceTapEnabled(input.id)
+    val voiceMapping = snapshot.voiceMappingIdentity(input.id)
+    val voiceAvailable = voiceMapping != null && snapshot.inputEnabled(input.id, Gesture.Kind.TAP)
     val desktopVoiceActive = snapshot.desktop?.voice?.active == true
-    val voiceControl = voiceControlAvailable(input.id, voiceMapped, desktopVoiceActive)
+    val voiceControl = voiceControlAvailable(
+        inputId = input.id,
+        mapped = voiceMapping != null,
+        active = desktopVoiceActive,
+        dedicated = dedicatedVoiceControl,
+    )
     val voiceActive = voiceControl && desktopVoiceActive
     val label = if (voiceActive) {
         "Listening..."
@@ -106,13 +117,15 @@ internal fun InputButton(
     val container = container(action, voiceActive)
     val pending = inFlightIds.any { it.startsWith("input:${input.id}:") } &&
         !snapshot.inputAllowsQueuedRepeat(input.id)
-    val interactive = voiceActive || !blocked && (voiceControl || gestures.isNotEmpty())
-    val voicePressEnabled = voiceMapped && !voiceActive && !pending && !blocked
+    val interactive = voiceActive || !blocked && (voiceAvailable || gestures.isNotEmpty())
+    val voicePressEnabled = voiceAvailable && !voiceActive && !pending && !blocked
     val repeat = navigationRepeatEnabled && !pending && !blocked
+    val currentInput by rememberUpdatedState(onInput)
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)
     val currentRepeat by rememberUpdatedState(onNavigationRepeat)
-    val voiceToggleEnabled = voiceControl && (voiceActive || (!blocked && !pending))
+    val currentVoicePressEnabled by rememberUpdatedState(voicePressEnabled)
+    val voiceToggleEnabled = voiceActive || voiceAvailable && !blocked && !pending
     val voiceActionLabel = voiceAccessibilityAction(voiceActive)
     val toggleVoice: () -> Boolean = {
         when {
@@ -127,6 +140,18 @@ internal fun InputButton(
     val mapped = gestures.joinToString { kind ->
         snapshot.desktop?.gestures?.firstOrNull { it.kind == kind }?.label
             ?: kind.wireValue.replace('_', ' ')
+    }
+    val gestureActions = if (!voiceControl && !blocked && !pending && !repeat) {
+        gestures.mapNotNull { gesture ->
+            gestureAccessibilityAction(gesture)?.let { label ->
+                CustomAccessibilityAction(label) {
+                    currentInput(input.id, gesture)
+                    true
+                }
+            }
+        }
+    } else {
+        emptyList()
     }
 
     Column(
@@ -148,12 +173,16 @@ internal fun InputButton(
                     } else {
                         disabled()
                     }
+                } else {
+                    if (gestureActions.isNotEmpty()) customActions = gestureActions
+                    if (!interactive) disabled()
                 }
             }
-            .pointerInput(input.id, voicePressEnabled) {
-                if (!voicePressEnabled) return@pointerInput
+            .pointerInput(voiceMapping) {
+                if (voiceMapping == null) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    if (!currentVoicePressEnabled) return@awaitEachGesture
                     val started = currentVoiceStart(input.id)
                     try {
                         var held = true
@@ -189,7 +218,7 @@ internal fun InputButton(
                         enabled = true,
                         onClick = { toggleVoice() },
                     )
-                } else if (voiceMapped) {
+                } else if (voiceMapping != null) {
                     Modifier
                 } else {
                     Modifier.combinedClickable(

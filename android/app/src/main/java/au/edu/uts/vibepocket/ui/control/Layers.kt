@@ -1,6 +1,7 @@
 package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.profile.Layer
+import au.edu.uts.vibepocket.ui.compositedBackground
 import au.edu.uts.vibepocket.ui.contrastingColor
 import au.edu.uts.vibepocket.ui.layerSemanticsLabel
 import au.edu.uts.vibepocket.ui.profileColor
@@ -88,9 +89,11 @@ private fun LayerButton(
     modifier: Modifier = Modifier,
 ) {
     val profileAccent = profileColor(layer.color)
+    val surface = MaterialTheme.colorScheme.surface
+    val background = if (active) compositedBackground(profileAccent, 0.18f, surface) else surface
     val accent = contrastingColor(
         preferred = profileAccent,
-        background = MaterialTheme.colorScheme.surface,
+        background = background,
         fallback = MaterialTheme.colorScheme.onSurface,
         minimumRatio = 3f,
     )
@@ -99,7 +102,7 @@ private fun LayerButton(
         modifier = modifier
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(if (active) profileAccent.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface)
+            .background(background)
             .border(
                 width = 1.dp,
                 color = if (active) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),

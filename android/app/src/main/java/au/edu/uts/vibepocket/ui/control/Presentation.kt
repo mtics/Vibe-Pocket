@@ -4,9 +4,52 @@ import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Choice
 import au.edu.uts.vibepocket.profile.FallbackInputs
+import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 
 internal const val AgentChipWidthDp = 160
+
+internal data class VoiceMappingIdentity(
+    val layerId: String?,
+    val inputId: String,
+)
+
+internal fun contextTransitionPending(inFlightIds: Set<String>): Boolean =
+    inFlightIds.any { id ->
+        id.startsWith("agent:") || id.startsWith("layer:") || id.startsWith("model:")
+    }
+
+internal fun Snapshot.voiceMappingIdentity(inputId: String): VoiceMappingIdentity? {
+    val profile = desktop?.profile
+    if (profile == null) {
+        return if (inputId == "key_voice") VoiceMappingIdentity(null, inputId) else null
+    }
+    val layer = activeLayer ?: return null
+    val action = layer.bindings[inputId]?.actions?.get(Gesture.Kind.TAP)
+    return if (action?.type == "voice") VoiceMappingIdentity(layer.id, inputId) else null
+}
+
+internal fun dedicatedVoiceInput(snapshot: Snapshot, activeOwnerInputId: String? = null): Input? {
+    val candidates = (snapshot.desktop?.profile?.inputs.orEmpty() + FallbackInputs).distinctBy(Input::id)
+    if (snapshot.desktop?.voice?.active == true) {
+        candidates.firstOrNull { it.id == activeOwnerInputId }?.let { return it }
+    }
+    candidates.firstOrNull { snapshot.voiceMappingIdentity(it.id) != null }?.let { return it }
+    return if (snapshot.desktop?.voice?.active == true) {
+        candidates.firstOrNull { it.id == "key_voice" }
+    } else {
+        null
+    }
+}
+
+internal fun unrepresentedInputs(inputs: List<Input>, representedIds: Set<String>): List<Input> =
+    inputs.filterNot { it.id in representedIds }
+
+internal fun gestureAccessibilityAction(gesture: Gesture.Kind): String? = when (gesture) {
+    Gesture.Kind.DOUBLE_TAP -> "Run double-tap mapping"
+    Gesture.Kind.HOLD -> "Run hold mapping"
+    Gesture.Kind.TAP -> null
+}
 
 internal fun keyInputs(snapshot: Snapshot): List<Input> {
     val profile = snapshot.desktop?.profile?.inputs.orEmpty().filter { it.kind == Input.Kind.KEY }

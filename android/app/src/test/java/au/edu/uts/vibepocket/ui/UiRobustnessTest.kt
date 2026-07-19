@@ -68,6 +68,7 @@ class UiRobustnessTest {
         assertTrue(voiceControlAvailable("key_voice", mapped = false, active = true))
         assertTrue(voiceControlAvailable("key_delete", mapped = true, active = true))
         assertFalse(voiceControlAvailable("key_delete", mapped = false, active = true))
+        assertTrue(voiceControlAvailable("dial_voice", mapped = false, active = true, dedicated = true))
     }
 
     @Test
@@ -101,6 +102,20 @@ class UiRobustnessTest {
 
         assertEquals(fallback, result)
         assertTrue(contrastRatio(result, Color.White) >= 4.5f)
+    }
+
+    @Test
+    fun selectedLayerContrastUsesItsCompositedBackground() {
+        val layerColor = Color(0xFF4A90E2)
+        val background = compositedBackground(layerColor, alpha = 0.22f, background = Color.White)
+        val content = contrastingColor(
+            preferred = layerColor,
+            background = background,
+            fallback = Color.Black,
+            minimumRatio = 4.5f,
+        )
+
+        assertTrue(contrastRatio(content, background) >= 4.5f)
     }
 
     @Test
