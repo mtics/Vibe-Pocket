@@ -7,10 +7,14 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.activity.compose.setContent
+import au.edu.uts.vibepocket.connection.Vault
+import au.edu.uts.vibepocket.session.Session
+import au.edu.uts.vibepocket.ui.App
+import au.edu.uts.vibepocket.ui.Theme
 
 class MainActivity : ComponentActivity() {
-    private val viewModel by viewModels<PocketViewModel> {
-        PocketViewModelFactory(SecureConfigStore(applicationContext))
+    private val viewModel by viewModels<Session> {
+        Session.create(Vault(applicationContext))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -21,8 +25,8 @@ class MainActivity : ComponentActivity() {
         )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
-            VibePocketTheme {
-                VibePocketApp(viewModel = viewModel)
+            Theme {
+                App(viewModel = viewModel)
             }
         }
     }

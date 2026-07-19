@@ -1,0 +1,254 @@
+package au.edu.uts.vibepocket.control
+
+import au.edu.uts.vibepocket.profile.Action
+import au.edu.uts.vibepocket.profile.Choice
+import au.edu.uts.vibepocket.profile.Gesture
+import au.edu.uts.vibepocket.profile.Layer
+import au.edu.uts.vibepocket.profile.Profile
+
+data class Snapshot(
+    val revision: String,
+    val status: Status,
+    val capabilities: Capabilities,
+    val desktop: Desktop? = null,
+) {
+    val activeLayer: Layer?
+        get() = desktop?.profile?.layers?.firstOrNull { it.id == desktop.activeLayerId }
+
+    fun actionFor(inputId: String, gesture: Gesture.Kind = Gesture.Kind.TAP): Action? =
+        activeLayer?.bindings?.get(inputId)?.actions?.get(gesture)
+
+    fun inputEnabled(inputId: String, gesture: Gesture.Kind = Gesture.Kind.TAP): Boolean {
+        val action = actionFor(inputId, gesture)
+        if (action == null) return legacyInputEnabled(inputId, gesture)
+        return actionEnabled(action)
+    }
+
+    fun voiceTapEnabled(inputId: String): Boolean {
+        if (!inputEnabled(inputId, Gesture.Kind.TAP)) return false
+        return actionFor(inputId, Gesture.Kind.TAP)?.type == "voice" ||
+            (desktop?.profile == null && inputId == "key_voice")
+    }
+
+    fun supportsHidNavigationRepeat(inputId: String, hidConnected: Boolean): Boolean {
+        if (!hidConnected || desktop?.question != null) return false
+        val tapAction = actionFor(inputId, Gesture.Kind.TAP)
+        return tapAction?.type == "navigate" &&
+            inputEnabled(inputId, Gesture.Kind.TAP) &&
+            actionFor(inputId, Gesture.Kind.DOUBLE_TAP) == null &&
+            actionFor(inputId, Gesture.Kind.HOLD) == null
+    }
+
+    fun agentFocusEnabled(agentId: String): Boolean {
+        val state = desktop ?: return false
+        return capabilities.focusAgent && state.agents.any { it.id == agentId }
+    }
+
+    private fun actionEnabled(action: Action): Boolean = when (action.type) {
+        "approve" -> capabilities.approve
+        "reject" -> capabilities.reject
+        "voice" -> desktop?.voice?.available ?: capabilities.voice
+        "stop" -> capabilities.stop
+        "new_task" -> capabilities.newTask
+        "mode_cycle" -> capabilities.modeCycle && desktop?.foreground == true
+        "access_cycle" -> capabilities.accessCycle && desktop?.foreground == true
+        "clear_input" -> capabilities.clearInput
+        "focus_next", "focus_agent" -> capabilities.focusAgent
+        "select_layer" -> desktop?.profile?.layers?.any { it.id == action.layerId } == true
+        "navigate" -> capabilities.navigate && desktop?.foreground == true
+        "reasoning_depth" -> capabilities.reasoning && desktop?.foreground == true &&
+            desktop.reasoning.allows(action.delta)
+        "workflow" -> capabilities.workflow && desktop?.foreground == true
+        "attach" -> status.state == "ready"
+        else -> false
+    }
+
+    private fun legacyInputEnabled(inputId: String, gesture: Gesture.Kind): Boolean {
+        if (desktop?.profile != null || gesture != Gesture.Kind.TAP) return false
+        return when (inputId) {
+            "key_accept" -> capabilities.approve
+            "key_reject" -> capabilities.reject
+            "key_voice" -> capabilities.voice
+            "key_stop" -> capabilities.stop
+            "key_new_task" -> capabilities.newTask
+            "key_attach" -> status.state == "ready"
+            else -> false
+        }
+    }
+}
+
+/** The control surface need not rebuild for a revision or status-message-only update. */
+internal fun Snapshot.sameSurface(other: Snapshot): Boolean =
+    status.state == other.status.state &&
+        capabilities == other.capabilities &&
+        desktop == other.desktop
+
+data class Status(
+    val state: String,
+    val message: String?,
+)
+
+data class Capabilities(
+    val voice: Boolean = false,
+    val stop: Boolean = false,
+    val newTask: Boolean = false,
+    val approve: Boolean = false,
+    val reject: Boolean = false,
+    val clearInput: Boolean = false,
+    val focusAgent: Boolean = false,
+    val modeCycle: Boolean = false,
+    val accessCycle: Boolean = false,
+    val navigate: Boolean = false,
+    val reasoning: Boolean = false,
+    val workflow: Boolean = false,
+)
+
+data class Desktop(
+    val profile: Profile?,
+    val gestures: List<Gesture>,
+    val choices: List<Choice>,
+    val activeLayerId: String?,
+    val foreground: Boolean,
+    val activity: Activity,
+    val agents: List<Agent>,
+    val focusedAgentIndex: Int,
+    val focusedAgentId: String?,
+    val voice: Voice?,
+    val mode: Selector,
+    val access: Selector = Selector(false, ""),
+    val reasoning: Reasoning,
+    val question: Question? = null,
+)
+
+data class Question(
+    val index: Int,
+    val count: Int,
+    val header: String,
+    val text: String,
+    val options: List<Option>,
+    val selectedOptionIndex: Int,
+    val hasSpokenAnswer: Boolean,
+    val isSecret: Boolean,
+) {
+    data class Option(
+        val label: String,
+        val description: String,
+    )
+}
+
+data class Agent(
+    val id: String,
+    val label: String,
+    val activity: Activity,
+    val focused: Boolean,
+) {
+    internal data class Slot(
+        val agent: Agent?,
+        val canFocus: Boolean,
+        val focused: Boolean,
+    )
+}
+
+internal const val MaxAgents = 24
+internal val AgentId = Regex("^agent-[a-f0-9]{24}$")
+
+internal fun Snapshot.agentSlots(): List<Agent.Slot> = desktop?.agents.orEmpty()
+    .take(MaxAgents)
+    .map { agent ->
+        Agent.Slot(
+            agent = agent,
+            canFocus = agentFocusEnabled(agent.id),
+            focused = agent.focused || agent.id == desktop?.focusedAgentId,
+        )
+    }
+
+data class Voice(
+    val available: Boolean,
+    val active: Boolean,
+)
+
+data class Selector(
+    val available: Boolean,
+    val label: String,
+)
+
+data class Reasoning(
+    val available: Boolean,
+    val label: String,
+    val modelLabel: String = "",
+    val level: Level?,
+    val canIncrease: Boolean,
+    val canDecrease: Boolean,
+) {
+    enum class Level(val wireValue: String) {
+        MINIMAL("minimal"),
+        LOW("low"),
+        MEDIUM("medium"),
+        HIGH("high"),
+        XHIGH("xhigh"),
+        ;
+
+        fun shifted(delta: Int?): Level? {
+            if (delta != -1 && delta != 1) return null
+            return entries.getOrNull(ordinal + delta)
+        }
+
+        val displayLabel: String
+            get() = when (this) {
+                MINIMAL -> "Minimal"
+                LOW -> "Low"
+                MEDIUM -> "Medium"
+                HIGH -> "High"
+                XHIGH -> "Extra high"
+            }
+
+        val canIncrease: Boolean get() = this != XHIGH
+        val canDecrease: Boolean get() = this != MINIMAL
+
+        companion object {
+            fun fromWire(value: String?): Level? = entries.firstOrNull { it.wireValue == value }
+        }
+    }
+
+    fun allows(delta: Int?): Boolean = available && when (delta) {
+        1 -> canIncrease
+        -1 -> canDecrease
+        else -> false
+    }
+
+    fun shifted(delta: Int?): Reasoning? {
+        if (!allows(delta)) return null
+        val target = level?.shifted(delta) ?: return null
+        return copy(
+            level = target,
+            canIncrease = target.canIncrease,
+            canDecrease = target.canDecrease,
+        )
+    }
+
+    companion object {
+        val Unavailable = Reasoning(
+            available = false,
+            label = "",
+            modelLabel = "",
+            level = null,
+            canIncrease = false,
+            canDecrease = false,
+        )
+    }
+}
+
+enum class Activity(val wireValue: String) {
+    IDLE("idle"),
+    UNREAD("unread"),
+    THINKING("thinking"),
+    EXECUTING("executing"),
+    WAITING("waiting"),
+    COMPLETE("complete"),
+    ERROR("error"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): Activity = entries.firstOrNull { it.wireValue == value } ?: IDLE
+    }
+}

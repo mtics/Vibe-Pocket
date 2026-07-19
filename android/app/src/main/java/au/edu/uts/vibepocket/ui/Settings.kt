@@ -1,0 +1,533 @@
+package au.edu.uts.vibepocket.ui
+
+import au.edu.uts.vibepocket.connection.Config
+import au.edu.uts.vibepocket.connection.resolveDraft
+import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.hid.Status as HidStatus
+import au.edu.uts.vibepocket.profile.Action
+import au.edu.uts.vibepocket.profile.Binding
+import au.edu.uts.vibepocket.profile.Choice
+import au.edu.uts.vibepocket.profile.Gesture
+import au.edu.uts.vibepocket.profile.Input
+import au.edu.uts.vibepocket.profile.Layer
+import au.edu.uts.vibepocket.profile.Workflow
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+
+private data class Target(
+    val input: Input,
+    val gesture: Gesture.Kind,
+)
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun Settings(
+    config: Config,
+    snapshot: Snapshot?,
+    hidState: HidStatus,
+    inFlightIds: Set<String>,
+    connectionError: String?,
+    onDismiss: () -> Unit,
+    onSaveConnection: (String, String) -> Boolean,
+    onDisconnect: () -> Unit,
+    onPairHid: () -> Unit,
+    onConnectHid: (String) -> Boolean,
+    onRefreshHid: () -> Unit,
+    onLayer: (String) -> Boolean,
+    onUpdate: (String, String, Gesture.Kind, String) -> Unit,
+    onClear: (String, String, Gesture.Kind) -> Unit,
+    onRename: (String, String) -> Boolean,
+    onColor: (String, String) -> Boolean,
+    onWorkflow: (String, String) -> Boolean,
+) {
+    val controller = snapshot?.desktop
+    val profile = controller?.profile
+    val layer = profile?.layers?.firstOrNull { it.id == controller.activeLayerId } ?: profile?.layers?.firstOrNull()
+    var url by remember(config.normalizedUrl) { mutableStateOf(config.normalizedUrl) }
+    var token by remember { mutableStateOf("") }
+    var tokenVisible by remember { mutableStateOf(false) }
+    var saveTarget by remember { mutableStateOf<Config?>(null) }
+    var target by remember { mutableStateOf<Target?>(null) }
+    var layerName by rememberSaveable(layer?.id, layer?.name) { mutableStateOf(layer?.name.orEmpty()) }
+    var confirmDisconnect by remember { mutableStateOf(false) }
+    val busy = inFlightIds.any { pending ->
+        pending.startsWith("mapping:")
+            || pending.startsWith("rename:")
+            || pending.startsWith("color:")
+            || pending.startsWith("workflow:")
+            || pending == "reset-profile"
+    }
+    val candidate = remember(config, url, token) {
+        runCatching { resolveDraft(config, url, token) }
+    }
+    val validConfig = candidate.getOrNull()
+    val connectionDirty = validConfig != null && (
+        validConfig.normalizedUrl != config.normalizedUrl || validConfig.token != config.token
+    )
+    val savingConnection = inFlightIds.any { it.startsWith("connection:") }
+
+    LaunchedEffect(config.normalizedUrl, config.token, saveTarget) {
+        val target = saveTarget ?: return@LaunchedEffect
+        if (config.normalizedUrl == target.normalizedUrl && config.token == target.token) {
+            saveTarget = null
+            onDismiss()
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to controller")
+                    }
+                },
+                title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
+                actions = {
+                    FilledTonalButton(
+                        onClick = {
+                            validConfig?.let { candidateConfig ->
+                                if (onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.token)) {
+                                    saveTarget = candidateConfig
+                                }
+                            }
+                        },
+                        enabled = connectionDirty && inFlightIds.isEmpty(),
+                        modifier = Modifier.width(104.dp).height(48.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                    ) {
+                        if (savingConnection) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Save")
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(padding)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            SectionHeader(Icons.Default.Link, "Bridge & pairing")
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Bridge URL") },
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Replacement token") },
+                visualTransformation = if (tokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { tokenVisible = !tokenVisible }) {
+                        Icon(
+                            if (tokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (tokenVisible) "Hide pairing token" else "Show pairing token",
+                        )
+                    }
+                },
+            )
+            candidate.exceptionOrNull()?.message?.let { message ->
+                Text(
+                    message,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (saveTarget != null && !savingConnection) {
+                connectionError?.let { message ->
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+
+            SectionHeader(Icons.Default.Bluetooth, "Virtual hardware")
+            Hardware(
+                state = hidState,
+                onPair = onPairHid,
+                onConnect = onConnectHid,
+                onRefresh = onRefreshHid,
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+            SectionHeader(Icons.Default.Tune, "Controller profile")
+            if (profile == null || layer == null || controller.choices.isEmpty()) {
+                Text(
+                    "Controller profile unavailable",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
+            } else {
+                SettingsLayers(
+                    layers = profile.layers.take(6),
+                    activeLayerId = layer.id,
+                    inFlightIds = inFlightIds,
+                    enabled = snapshot.status.state == "ready" && !busy,
+                    onLayer = onLayer,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = layerName,
+                        onValueChange = { if (it.length <= 40) layerName = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("Layer name") },
+                    )
+                    FilledTonalButton(
+                        onClick = { onRename(layer.id, layerName) },
+                        enabled = !busy && layerName.trim().isNotEmpty() && layerName.trim() != layer.name,
+                        modifier = Modifier.height(48.dp),
+                        shape = RoundedCornerShape(6.dp),
+                    ) { Text("Rename") }
+                }
+                Text("Layer color", style = MaterialTheme.typography.labelLarge)
+                LayerColors.chunked(4).forEach { colors ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        colors.forEach { color ->
+                            val parsed = profileColor(color)
+                            val selected = layer.color.equals(color, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(parsed)
+                                    .border(
+                                        if (selected) 3.dp else 1.dp,
+                                        if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                        CircleShape,
+                                    )
+                                    .semantics { contentDescription = "Layer color $color" }
+                                    .clickable(enabled = !busy && !selected, onClick = { onColor(layer.id, color) }),
+                            )
+                        }
+                    }
+                }
+                profile.inputs.forEach { input ->
+                    MappingRow(
+                        input = input,
+                        binding = layer.bindings[input.id],
+                        catalog = controller.choices,
+                        enabled = !busy,
+                        onSelect = { gesture -> target = Target(input, gesture) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f))
+                }
+                if (profile.workflows.isNotEmpty()) {
+                    Text("Workflow prompts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    profile.workflows.forEach { workflow ->
+                        WorkflowEditor(
+                            workflow = workflow,
+                            busy = busy,
+                            onSave = { prompt -> onWorkflow(workflow.id, prompt) },
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+            SectionHeader(Icons.AutoMirrored.Filled.Logout, "Connection")
+            OutlinedButton(
+                onClick = { confirmDisconnect = true },
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(6.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Disconnect and forget pairing")
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+
+    target?.let { selected ->
+        val selectedLayer = layer ?: return@let
+        val selectedController = controller ?: return@let
+        ActionPicker(
+            target = selected,
+            currentAction = selectedLayer.bindings[selected.input.id]?.actions?.get(selected.gesture),
+            catalog = selectedController.choices,
+            onDismiss = { target = null },
+            onSelect = { actionId ->
+                onUpdate(selectedLayer.id, selected.input.id, selected.gesture, actionId)
+                target = null
+            },
+            onClear = {
+                onClear(selectedLayer.id, selected.input.id, selected.gesture)
+                target = null
+            },
+        )
+    }
+
+    if (confirmDisconnect) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("Forget this Bridge?") },
+            text = { Text("The saved Bridge URL and pairing token will be removed from this phone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDisconnect = false
+                        onDisconnect()
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Disconnect") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDisconnect = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun SectionHeader(icon: ImageVector, label: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun SettingsLayers(
+    layers: List<Layer>,
+    activeLayerId: String,
+    inFlightIds: Set<String>,
+    enabled: Boolean,
+    onLayer: (String) -> Boolean,
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        layers.forEachIndexed { index, layer ->
+            val selected = layer.id == activeLayerId
+            val color = profileColor(layer.color)
+            val loading = "layer:${layer.id}" in inFlightIds
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (selected) color.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surface)
+                    .border(if (selected) 2.dp else 1.dp, color.copy(alpha = if (selected) 1f else 0.42f), RoundedCornerShape(6.dp))
+                    .clickable(enabled = enabled && !selected && !loading, onClick = { onLayer(layer.id) }),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(17.dp), color = color, strokeWidth = 2.dp)
+                } else {
+                    Text("${index + 1}", color = color, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkflowEditor(
+    workflow: Workflow,
+    busy: Boolean,
+    onSave: (String) -> Boolean,
+) {
+    var prompt by rememberSaveable(workflow.id, workflow.prompt) { mutableStateOf(workflow.prompt) }
+    val trimmed = prompt.trim()
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        OutlinedTextField(
+            value = prompt,
+            onValueChange = { if (it.length <= 4_000) prompt = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(workflow.label) },
+            minLines = 3,
+            maxLines = 6,
+        )
+        TextButton(
+            onClick = { onSave(prompt) },
+            enabled = !busy && trimmed.isNotEmpty() && trimmed != workflow.prompt,
+            modifier = Modifier.align(Alignment.End),
+        ) {
+            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Save")
+        }
+    }
+}
+
+@Composable
+private fun MappingRow(
+    input: Input,
+    binding: Binding?,
+    catalog: List<Choice>,
+    enabled: Boolean,
+    onSelect: (Gesture.Kind) -> Unit,
+) {
+    val pushToTalk = binding?.actions?.get(Gesture.Kind.TAP)?.type == "voice"
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Icon(iconForInput(input.icon), contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(input.label, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+        }
+        Gesture.Kind.entries.forEach { gesture ->
+            val action = binding?.actions?.get(gesture)
+            val label = catalog.firstOrNull { it.action == action }?.label ?: action?.type ?: "Unmapped"
+            val gestureEnabled = enabled && (!pushToTalk || gesture == Gesture.Kind.TAP)
+            Column(
+                modifier = Modifier
+                    .width(61.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(
+                        if (action == null) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                        else MaterialTheme.colorScheme.primaryContainer,
+                    )
+                    .clickable(enabled = gestureEnabled, onClick = { onSelect(gesture) })
+                    .alpha(if (gestureEnabled) 1f else 0.38f)
+                    .padding(horizontal = 4.dp, vertical = 5.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(gesture.shortLabel, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                Text(
+                    label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActionPicker(
+    target: Target,
+    currentAction: Action?,
+    catalog: List<Choice>,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${target.input.label} · ${target.gesture.shortLabel}") },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                if (currentAction != null) {
+                    TextButton(onClick = onClear, modifier = Modifier.fillMaxWidth()) {
+                        Text("Clear mapping", color = MaterialTheme.colorScheme.error)
+                    }
+                    HorizontalDivider()
+                }
+                catalog.filter { entry ->
+                    target.gesture == Gesture.Kind.TAP || entry.action.type != "voice"
+                }.forEach { entry ->
+                    val selected = entry.action == currentAction
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(entry.id) }
+                            .padding(horizontal = 4.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(entry.label, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
