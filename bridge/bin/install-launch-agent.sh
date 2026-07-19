@@ -38,7 +38,6 @@ if (( ${#TOKEN} < 24 )); then
 fi
 umask 077
 mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents"
-mkdir -p "$RUNTIME_DIR"
 
 # Stop the previous job before replacing its runtime. Older releases launched
 # the Host through `open`, so clean up only that exact detached command line.
@@ -64,8 +63,7 @@ fi
 # stops only a listener whose command and working directory match this runtime.
 /bin/zsh "$BRIDGE_DIR/bin/cleanup-stale-listener.sh" "$PORT" "$RUNTIME_DIR" --all-exact
 
-rm -rf "$RUNTIME_DIR/node_modules"
-ditto "$BRIDGE_DIR" "$RUNTIME_DIR"
+/bin/zsh "$BRIDGE_DIR/bin/replace-runtime.sh" "$BRIDGE_DIR" "$RUNTIME_DIR"
 chmod +x "$RUNTIME_DIR/bin/run-launchd.sh"
 chmod +x "$RUNTIME_DIR/bin/cleanup-stale-listener.sh"
 chmod +x "$RUNTIME_DIR/bin/attach-current-task.sh"
@@ -74,13 +72,6 @@ chmod +x "$RUNTIME_DIR/bin/install-codex-hooks.mjs"
 chmod +x "$RUNTIME_DIR/bin/install-codex-keybindings.mjs"
 chmod +x "$RUNTIME_DIR/bin/public-url.mjs"
 chmod +x "$RUNTIME_DIR/bin/pair-phone.sh"
-# Remove obsolete direct-control artifacts from earlier releases.
-rm -rf "$RUNTIME_DIR/Vibe Pocket Bridge Host.app"
-rm -f \
-  "$RUNTIME_DIR/src/pocket-controller-service.mjs" \
-  "$RUNTIME_DIR/src/pocket-service.mjs" \
-  "$RUNTIME_DIR/test/pocket-controller-service.test.mjs" \
-  "$RUNTIME_DIR/test/pocket-service.test.mjs"
 
 HOST_SOURCE="$RUNTIME_DIR/src/macos/host.swift"
 CONTROL_SOURCE="$RUNTIME_DIR/src/macos/helper.swift"
