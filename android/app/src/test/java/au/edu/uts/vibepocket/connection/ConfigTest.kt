@@ -13,29 +13,8 @@ class ConfigTest {
     )
 
     @Test
-    fun sameOriginBlankTokenKeepsTheStoredSecret() {
-        val resolved = resolveDraft(saved, "https://m5.example.test", "")
-
-        assertEquals("https://m5.example.test", resolved.normalizedUrl)
-        assertEquals(saved.token, resolved.token)
-    }
-
-    @Test
-    fun changedOriginRequiresAReplacementToken() {
-        val error = assertThrows(IllegalArgumentException::class.java) {
-            resolveDraft(saved, "https://other.example.test", "")
-        }
-
-        assertTrue(error.message.orEmpty().contains("new pairing token"))
-    }
-
-    @Test
-    fun changedOriginUsesOnlyTheReplacementToken() {
-        val replacement = "zyxwvutsrqponmlkjihgfedc"
-        val resolved = resolveDraft(saved, "https://other.example.test", replacement)
-
-        assertEquals("https://other.example.test", resolved.normalizedUrl)
-        assertEquals(replacement, resolved.token)
+    fun originIsCanonicalizedIndependentlyOfTheCredential() {
+        assertEquals("https://m5.example.test", saved.normalizedUrl)
     }
 
     @Test
@@ -47,23 +26,23 @@ class ConfigTest {
             "https://m5.example.test#fragment",
         ).forEach { url ->
             assertThrows(IllegalArgumentException::class.java) {
-                Config(url, saved.token)
+                Config(url, saved.credential)
             }
         }
     }
 
     @Test
-    fun tokenRejectsControlCharacters() {
+    fun credentialRejectsControlCharacters() {
         assertThrows(IllegalArgumentException::class.java) {
             Config("https://m5.example.test", "0123456789abcdefghijklmn\n")
         }
     }
 
     @Test
-    fun stringRepresentationRedactsTheToken() {
+    fun stringRepresentationRedactsTheCredential() {
         val rendered = saved.toString()
 
         assertTrue(rendered.contains("<redacted>"))
-        assertFalse(rendered.contains(saved.token))
+        assertFalse(rendered.contains(saved.credential))
     }
 }

@@ -23,7 +23,7 @@ class Vault(context: Context) : Store {
     override fun save(config: Config) {
         val payload = JSONObject()
             .put("baseUrl", config.normalizedUrl)
-            .put("token", config.token)
+            .put("token", config.credential)
             .toString()
         check(preferences.edit().putString(CONFIG_KEY, encrypt(payload)).commit()) {
             "Vibe Pocket could not save the Bridge configuration."
@@ -36,7 +36,7 @@ class Vault(context: Context) : Store {
             val payload = JSONObject(decrypt(encrypted))
             Config(
                 baseUrl = payload.getString("baseUrl"),
-                token = payload.getString("token"),
+                credential = payload.getString("token"),
             )
         }.getOrNull()
     }

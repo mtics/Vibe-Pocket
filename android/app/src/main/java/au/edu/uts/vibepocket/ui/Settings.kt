@@ -1,7 +1,6 @@
 package au.edu.uts.vibepocket.ui
 
 import au.edu.uts.vibepocket.connection.Config
-import au.edu.uts.vibepocket.connection.resolveDraft
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.hid.Status as HidStatus
 import au.edu.uts.vibepocket.profile.Action
@@ -37,10 +36,9 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,6 +48,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -72,10 +72,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -95,6 +91,7 @@ internal fun Settings(
     onDismiss: () -> Unit,
     onSaveConnection: (String, String) -> Boolean,
     onDisconnect: () -> Unit,
+    onResetProfile: () -> Unit,
     onPairHid: () -> Unit,
     onConnectHid: (String) -> Boolean,
     onRefreshHid: () -> Unit,
@@ -109,12 +106,11 @@ internal fun Settings(
     val profile = controller?.profile
     val layer = profile?.layers?.firstOrNull { it.id == controller.activeLayerId } ?: profile?.layers?.firstOrNull()
     var url by remember(config.normalizedUrl) { mutableStateOf(config.normalizedUrl) }
-    var token by remember { mutableStateOf("") }
-    var tokenVisible by remember { mutableStateOf(false) }
     var saveTarget by remember { mutableStateOf<Config?>(null) }
     var target by remember { mutableStateOf<Target?>(null) }
     var layerName by rememberSaveable(layer?.id, layer?.name) { mutableStateOf(layer?.name.orEmpty()) }
     var confirmDisconnect by remember { mutableStateOf(false) }
+    var recoveryExpanded by rememberSaveable { mutableStateOf(false) }
     val busy = inFlightIds.any { pending ->
         pending.startsWith("mapping:")
             || pending.startsWith("rename:")
@@ -122,108 +118,98 @@ internal fun Settings(
             || pending.startsWith("workflow:")
             || pending == "reset-profile"
     }
-    val candidate = remember(config, url, token) {
-        runCatching { resolveDraft(config, url, token) }
+    val candidate = remember(config, url) {
+        runCatching { Config(url, config.credential) }
     }
     val validConfig = candidate.getOrNull()
-    val connectionDirty = validConfig != null && (
-        validConfig.normalizedUrl != config.normalizedUrl || validConfig.token != config.token
-    )
+    val connectionDirty = validConfig != null && validConfig.normalizedUrl != config.normalizedUrl
     val savingConnection = inFlightIds.any { it.startsWith("connection:") }
 
-    LaunchedEffect(config.normalizedUrl, config.token, saveTarget) {
+    LaunchedEffect(config.normalizedUrl, config.credential, saveTarget) {
         val target = saveTarget ?: return@LaunchedEffect
-        if (config.normalizedUrl == target.normalizedUrl && config.token == target.token) {
+        if (config.normalizedUrl == target.normalizedUrl && config.credential == target.credential) {
             saveTarget = null
             onDismiss()
         }
     }
 
-    Scaffold(
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to controller")
-                    }
-                },
-                title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
-                actions = {
-                    FilledTonalButton(
-                        onClick = {
-                            validConfig?.let { candidateConfig ->
-                                if (onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.token)) {
-                                    saveTarget = candidateConfig
-                                }
-                            }
-                        },
-                        enabled = connectionDirty && inFlightIds.isEmpty(),
-                        modifier = Modifier.width(104.dp).height(48.dp),
-                        shape = RoundedCornerShape(6.dp),
-                        contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
-                    ) {
-                        if (savingConnection) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Save")
-                        }
-                    }
-                    Spacer(Modifier.width(8.dp))
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
-        },
-    ) { padding ->
+        dragHandle = { BottomSheetDefaults.DragHandle() },
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(padding)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SectionHeader(Icons.Default.Link, "Bridge & pairing")
-            OutlinedTextField(
-                value = url,
-                onValueChange = { url = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Bridge URL") },
-            )
-            OutlinedTextField(
-                value = token,
-                onValueChange = { token = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Replacement token") },
-                visualTransformation = if (tokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                trailingIcon = {
-                    IconButton(onClick = { tokenVisible = !tokenVisible }) {
-                        Icon(
-                            if (tokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = if (tokenVisible) "Hide pairing token" else "Show pairing token",
-                        )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                FilledTonalButton(
+                    onClick = {
+                        validConfig?.let { candidateConfig ->
+                            if (onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.credential)) {
+                                saveTarget = candidateConfig
+                            }
+                        }
+                    },
+                    enabled = connectionDirty && inFlightIds.isEmpty(),
+                    modifier = Modifier.width(96.dp).height(44.dp),
+                    shape = RoundedCornerShape(6.dp),
+                    contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                ) {
+                    if (savingConnection) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Save")
                     }
-                },
-            )
-            candidate.exceptionOrNull()?.message?.let { message ->
-                Text(
-                    message,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Close settings")
+                }
             }
-            if (saveTarget != null && !savingConnection) {
-                connectionError?.let { message ->
+            SectionHeader(Icons.Default.Link, "Bridge & pairing")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Default.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(config.normalizedUrl.removePrefix("https://"), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                TextButton(onClick = { recoveryExpanded = !recoveryExpanded }) {
+                    Text(if (recoveryExpanded) "Hide" else "Advanced")
+                }
+            }
+            if (recoveryExpanded) {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Bridge URL") },
+                )
+                candidate.exceptionOrNull()?.message?.let { message ->
                     Text(
                         message,
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                     )
+                }
+                if (saveTarget != null && !savingConnection) {
+                    connectionError?.let { message ->
+                        Text(
+                            message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
@@ -312,6 +298,16 @@ internal fun Settings(
                         )
                     }
                 }
+                OutlinedButton(
+                    onClick = onResetProfile,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    enabled = !busy,
+                    shape = RoundedCornerShape(6.dp),
+                ) {
+                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Reset controller profile")
+                }
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
@@ -353,7 +349,7 @@ internal fun Settings(
         AlertDialog(
             onDismissRequest = { confirmDisconnect = false },
             title = { Text("Forget this Bridge?") },
-            text = { Text("The saved Bridge URL and pairing token will be removed from this phone.") },
+            text = { Text("The saved Bridge address and this phone's device credential will be removed.") },
             confirmButton = {
                 TextButton(
                     onClick = {

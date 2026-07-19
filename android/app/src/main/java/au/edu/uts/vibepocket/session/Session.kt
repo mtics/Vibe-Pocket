@@ -7,6 +7,7 @@ import au.edu.uts.vibepocket.bridge.Client
 import au.edu.uts.vibepocket.bridge.Events
 import au.edu.uts.vibepocket.bridge.Http
 import au.edu.uts.vibepocket.connection.Config
+import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Action
@@ -87,7 +88,26 @@ class Session(
         }
     }
 
-    fun connect(baseUrl: String, token: String): Boolean = connection.connect(baseUrl, token)
+    fun connect(baseUrl: String, credential: String): Boolean = connection.connect(baseUrl, credential)
+
+    fun offer(value: String): Boolean {
+        val invitation = runCatching { Invitation.parse(value) }
+            .getOrElse {
+                connectionRejected(it)
+                return false
+            }
+        _state.update { it.copy(invitation = invitation, error = null) }
+        return true
+    }
+
+    fun pair(): Boolean {
+        val invitation = _state.value.invitation ?: return false
+        return connection.pair(invitation)
+    }
+
+    fun dismissPairing() {
+        _state.update { it.copy(invitation = null) }
+    }
 
     fun disconnect() = connection.disconnect()
 
@@ -159,7 +179,7 @@ class Session(
         lastEventId = null
         eventError = null
         pending.clear()
-        _state.value = State(config = config, snapshot = snapshot)
+        _state.value = State(config = config, snapshot = snapshot, invitation = null)
         if (foreground) startEvents(config)
         _feedback.tryEmit(Feedback.Success)
     }

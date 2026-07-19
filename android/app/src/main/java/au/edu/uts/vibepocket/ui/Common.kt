@@ -95,7 +95,7 @@ internal fun ErrorNotice(message: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-internal fun Loading(isRefreshing: Boolean, onRefresh: () -> Unit) {
+internal fun Loading(isRefreshing: Boolean, error: String?, onRefresh: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -103,7 +103,7 @@ internal fun Loading(isRefreshing: Boolean, onRefresh: () -> Unit) {
     ) {
         if (isRefreshing) CircularProgressIndicator(Modifier.size(30.dp), strokeWidth = 3.dp)
         Spacer(Modifier.height(12.dp))
-        Text(if (isRefreshing) "Connecting to M5..." else "No controller state yet")
+        Text(error ?: if (isRefreshing) "Connecting to Bridge..." else "No controller state yet")
         if (!isRefreshing) {
             Spacer(Modifier.height(12.dp))
             FilledTonalButton(onClick = onRefresh, shape = RoundedCornerShape(8.dp)) {

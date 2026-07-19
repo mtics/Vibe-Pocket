@@ -4,29 +4,34 @@ import java.net.URI
 
 data class Config(
     val baseUrl: String,
-    val token: String,
+    val credential: String,
 ) {
-    private val uri = runCatching { URI(baseUrl.trim()) }
-        .getOrElse { throw IllegalArgumentException("The Vibe Pocket bridge URL is invalid.") }
+    val normalizedUrl: String = normalizeOrigin(baseUrl)
 
     init {
-        require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()) {
-            "Vibe Pocket requires an HTTPS bridge URL."
-        }
-        require(
-            uri.rawUserInfo == null &&
-                uri.rawQuery == null &&
-                uri.rawFragment == null &&
-                (uri.rawPath.isNullOrEmpty() || uri.rawPath == "/")
-        ) {
-            "Use only the Bridge HTTPS origin, without a path, query, fragment, or user info."
-        }
-        require(token.length in 24..512 && token.none(Char::isISOControl)) {
-            "The Vibe Pocket access token is invalid."
+        require(credential.length in 24..512 && credential.none(Char::isISOControl)) {
+            "The Vibe Pocket device credential is invalid."
         }
     }
 
-    val normalizedUrl: String = URI(
+    override fun toString(): String = "Config(baseUrl=$normalizedUrl, credential=<redacted>)"
+}
+
+internal fun normalizeOrigin(value: String): String {
+    val uri = runCatching { URI(value.trim()) }
+        .getOrElse { throw IllegalArgumentException("The Vibe Pocket bridge URL is invalid.") }
+    require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()) {
+        "Vibe Pocket requires an HTTPS bridge URL."
+    }
+    require(
+        uri.rawUserInfo == null &&
+            uri.rawQuery == null &&
+            uri.rawFragment == null &&
+            (uri.rawPath.isNullOrEmpty() || uri.rawPath == "/")
+    ) {
+        "Use only the Bridge HTTPS origin, without a path, query, fragment, or user info."
+    }
+    return URI(
         "https",
         null,
         requireNotNull(uri.host).lowercase(),
@@ -35,23 +40,4 @@ data class Config(
         null,
         null,
     ).toASCIIString()
-
-    override fun toString(): String = "Config(baseUrl=$normalizedUrl, token=<redacted>)"
-}
-
-internal fun resolveDraft(
-    saved: Config,
-    baseUrl: String,
-    replacementToken: String,
-): Config {
-    val candidateUrl = Config(baseUrl.trim(), saved.token)
-    val originChanged = candidateUrl.normalizedUrl != saved.normalizedUrl
-    val replacement = replacementToken.trim()
-    require(!originChanged || replacement.isNotEmpty()) {
-        "A new pairing token is required when the Bridge URL changes."
-    }
-    return Config(
-        baseUrl = candidateUrl.normalizedUrl,
-        token = replacement.ifEmpty { saved.token },
-    )
 }

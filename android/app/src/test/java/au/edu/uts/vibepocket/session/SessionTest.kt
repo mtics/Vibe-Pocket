@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModelStore
 import au.edu.uts.vibepocket.bridge.Client
 import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.connection.Config
+import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Capabilities
@@ -269,7 +270,7 @@ class SessionTest {
         )
         runCurrent()
 
-        assertTrue(viewModel.connect(replacement.baseUrl, replacement.token))
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.credential))
         runCurrent()
 
         assertEquals(replacement, store.config)
@@ -291,7 +292,7 @@ class SessionTest {
         )
         runCurrent()
 
-        assertTrue(viewModel.connect(replacement.baseUrl, replacement.token))
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.credential))
         runCurrent()
 
         assertEquals(original, store.config)
@@ -314,7 +315,7 @@ class SessionTest {
         )
         runCurrent()
 
-        assertTrue(viewModel.connect(replacement.baseUrl, replacement.token))
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.credential))
         runCurrent()
         viewModel.disconnect()
         client.candidateRelease.complete(Unit)
@@ -377,6 +378,28 @@ class SessionTest {
         client.startRelease.complete(Unit)
         runCurrent()
         assertEquals(listOf(Command.VoiceStart, Command.VoiceStop), client.commands)
+    }
+
+    @Test
+    fun failedPairingCanRetryWithTheSamePhoneNonce() = runTest(dispatcher) {
+        val store = FakeStore(null)
+        val client = RetryPairClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        val code = "a".repeat(43)
+
+        assertTrue(viewModel.offer("vibepocket://pair?origin=https%3A%2F%2Fm5.example.test&code=$code"))
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals("The first response was lost.", viewModel.state.value.error)
+        assertTrue(viewModel.state.value.invitation != null)
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(2, client.nonces.size)
+        assertEquals(client.nonces.first(), client.nonces.last())
+        assertEquals("https://m5.example.test", store.config?.normalizedUrl)
+        assertEquals(null, viewModel.state.value.invitation)
     }
 
     private fun voiceViewModel(): Pair<Session, BlockingVoiceClient> {
@@ -478,6 +501,20 @@ class SessionTest {
             if (snapshotCalls > 1) candidateRelease.await()
             return VOICE_SNAPSHOT
         }
+
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class RetryPairClient : Client {
+        val nonces = mutableListOf<String>()
+
+        override suspend fun claim(invitation: Invitation, nonce: String): Config {
+            nonces += nonce
+            if (nonces.size == 1) throw Failure("The first response was lost.")
+            return Config(invitation.origin, "vp1.testdevice.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        }
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
 
         override suspend fun command(config: Config, command: Command) = Unit
     }

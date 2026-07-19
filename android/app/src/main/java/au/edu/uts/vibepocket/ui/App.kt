@@ -6,11 +6,13 @@ import android.content.Intent
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import au.edu.uts.vibepocket.hid.Keyboard
+import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.input.Dispatch
 import au.edu.uts.vibepocket.input.remote
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.session.Feedback
 import au.edu.uts.vibepocket.session.Session
+import au.edu.uts.vibepocket.ui.control.Screen
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -33,6 +35,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -61,6 +65,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun App(viewModel: Session) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -162,12 +167,27 @@ internal fun App(viewModel: Session) {
         }
     }
 
+    LaunchedEffect(state.error, state.config) {
+        val message = state.error
+        if (state.config != null && !message.isNullOrBlank()) snackbar.showSnackbar(message)
+    }
+
     if (state.config == null) {
-        Connect(
-            onConnect = viewModel::connect,
-            error = state.error,
-            isConnecting = state.inFlightIds.any { it.startsWith("connection:") },
-        )
+        Box(Modifier.fillMaxSize()) {
+            Connect(
+                onInvitation = viewModel::offer,
+                error = state.error,
+                isConnecting = state.inFlightIds.any { it.startsWith("connection:") },
+            )
+            state.invitation?.let { invitation ->
+                PairingDialog(
+                    invitation = invitation,
+                    busy = state.inFlightIds.any { it.startsWith("connection:") },
+                    onConfirm = viewModel::pair,
+                    onDismiss = viewModel::dismissPairing,
+                )
+            }
+        }
         return
     }
 
@@ -217,45 +237,18 @@ internal fun App(viewModel: Session) {
         }
     }
 
-    if (showSettings) {
-        Settings(
-            config = requireNotNull(state.config),
-            snapshot = state.snapshot,
-            hidState = hidState,
-            inFlightIds = state.inFlightIds,
-            connectionError = state.error,
-            onDismiss = { showSettings = false },
-            onSaveConnection = viewModel::connect,
-            onDisconnect = viewModel::disconnect,
-            onPairHid = onPairHid,
-            onConnectHid = hidController::connect,
-            onRefreshHid = {
-                if (hidController.hasPermissions()) hidController.start()
-                hidController.refreshHosts()
-            },
-            onLayer = onLayer,
-            onUpdate = { layerId, inputId, gesture, actionId ->
-                if (viewModel.updateBinding(layerId, inputId, gesture, actionId)) {
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                }
-            },
-            onClear = { layerId, inputId, gesture ->
-                if (viewModel.clearBinding(layerId, inputId, gesture)) {
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                }
-            },
-            onRename = viewModel::renameLayer,
-            onColor = viewModel::updateLayerColor,
-            onWorkflow = viewModel::updateWorkflowPrompt,
-        )
-        return
-    }
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("Vibe Pocket", fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Text(
+                        "Vibe Pocket",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
                 actions = {
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = "Open settings")
@@ -266,12 +259,6 @@ internal fun App(viewModel: Session) {
                         } else {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh controller state")
                         }
-                    }
-                    IconButton(
-                        onClick = { confirmReset = true },
-                        enabled = state.snapshot?.desktop?.profile != null && state.inFlightIds.isEmpty(),
-                    ) {
-                        Icon(Icons.Filled.Restore, contentDescription = "Reset controller profile")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -285,11 +272,10 @@ internal fun App(viewModel: Session) {
         ) {
             val snapshot = state.snapshot
             if (snapshot == null) {
-                Loading(isRefreshing = state.isRefreshing, onRefresh = viewModel::refresh)
+                Loading(isRefreshing = state.isRefreshing, error = state.error, onRefresh = viewModel::refresh)
             } else {
-                Control(
+                Screen(
                     snapshot = snapshot,
-                    statusMessage = state.error ?: snapshot.status.message,
                     hidNavigationAvailable = hidState.connected,
                     inFlightIds = state.inFlightIds,
                     onInput = onInput,
@@ -297,7 +283,7 @@ internal fun App(viewModel: Session) {
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
-                    onModelPicker = onModelPicker,
+                    onModel = onModelPicker,
                     onLayer = onLayer,
                 )
             }
@@ -320,4 +306,73 @@ internal fun App(viewModel: Session) {
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
         )
     }
+
+    if (showSettings) {
+        Settings(
+            config = requireNotNull(state.config),
+            snapshot = state.snapshot,
+            hidState = hidState,
+            inFlightIds = state.inFlightIds,
+            connectionError = state.error,
+            onDismiss = { showSettings = false },
+            onSaveConnection = viewModel::connect,
+            onDisconnect = viewModel::disconnect,
+            onResetProfile = { confirmReset = true },
+            onPairHid = onPairHid,
+            onConnectHid = hidController::connect,
+            onRefreshHid = {
+                if (hidController.hasPermissions()) hidController.start()
+                hidController.refreshHosts()
+            },
+            onLayer = onLayer,
+            onUpdate = { layerId, inputId, gesture, actionId ->
+                if (viewModel.updateBinding(layerId, inputId, gesture, actionId)) {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                }
+            },
+            onClear = { layerId, inputId, gesture ->
+                if (viewModel.clearBinding(layerId, inputId, gesture)) {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                }
+            },
+            onRename = viewModel::renameLayer,
+            onColor = viewModel::updateLayerColor,
+            onWorkflow = viewModel::updateWorkflowPrompt,
+        )
+    }
+
+    state.invitation?.let { invitation ->
+        PairingDialog(
+            invitation = invitation,
+            busy = state.inFlightIds.any { it.startsWith("connection:") },
+            onConfirm = viewModel::pair,
+            onDismiss = viewModel::dismissPairing,
+        )
+    }
+}
+
+@Composable
+private fun PairingDialog(
+    invitation: Invitation,
+    busy: Boolean,
+    onConfirm: () -> Boolean,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Pair with this Mac?") },
+        text = { Text(invitation.origin.removePrefix("https://")) },
+        confirmButton = {
+            TextButton(onClick = { onConfirm() }, enabled = !busy) {
+                if (busy) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Pair")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }

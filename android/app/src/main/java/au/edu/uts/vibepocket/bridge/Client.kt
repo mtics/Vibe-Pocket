@@ -1,6 +1,7 @@
 package au.edu.uts.vibepocket.bridge
 
 import au.edu.uts.vibepocket.connection.Config
+import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.Snapshot
 import kotlinx.coroutines.Dispatchers
@@ -10,36 +11,67 @@ import java.io.BufferedReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.Executors
 
 interface Client {
     suspend fun snapshot(config: Config): Snapshot
     suspend fun command(config: Config, command: Command)
+    suspend fun claim(invitation: Invitation, nonce: String): Config =
+        throw Failure("This build cannot claim pairing invitations.")
+    suspend fun revoke(config: Config) = Unit
 }
 
 class Http : Client {
+    override suspend fun revoke(config: Config) = withContext(Dispatchers.IO) {
+        call(config.normalizedUrl, "/v1/pocket/devices/current", "DELETE", credential = config.credential)
+        Unit
+    }
+
+    override suspend fun claim(invitation: Invitation, nonce: String): Config = withContext(Dispatchers.IO) {
+        val body = JSONObject().put("code", invitation.code).put("nonce", nonce)
+        val response = try {
+            call(invitation.origin, "/v1/pairing/claim", "POST", body)
+        } catch (error: IOException) {
+            call(invitation.origin, "/v1/pairing/claim", "POST", body)
+        }
+        if (response.optInt("protocolVersion", -1) != ProtocolVersion) {
+            throw Failure("The Bridge uses an incompatible pairing protocol.")
+        }
+        val capabilities = response.optJSONArray("capabilities")
+        val hasDeviceCredential = capabilities != null && (0 until capabilities.length())
+            .any { capabilities.optString(it) == "device_credentials" }
+        if (!hasDeviceCredential) throw Failure("The Bridge cannot issue a device credential.")
+        val claimed = Config(response.getString("baseUrl"), response.getString("token"))
+        if (claimed.normalizedUrl != invitation.origin) {
+            throw Failure("The Bridge returned pairing credentials for a different address.")
+        }
+        Config(invitation.origin, claimed.credential)
+    }
+
     override suspend fun snapshot(config: Config): Snapshot = withContext(Dispatchers.IO) {
-        decode(call(config, "/v1/pocket/snapshot", "GET"))
+        decode(call(config.normalizedUrl, "/v1/pocket/snapshot", "GET", credential = config.credential))
     }
 
     override suspend fun command(config: Config, command: Command) = withContext(Dispatchers.IO) {
-        call(config, "/v1/pocket/commands", "POST", command.encode())
+        call(config.normalizedUrl, "/v1/pocket/commands", "POST", command.encode(), config.credential)
         Unit
     }
 
     private fun call(
-        config: Config,
+        baseUrl: String,
         path: String,
         method: String,
         body: JSONObject? = null,
+        credential: String? = null,
     ): JSONObject {
-        val connection = (URL(config.normalizedUrl + path).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 20_000
             readTimeout = 75_000
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("Authorization", "Bearer ${config.token}")
+            credential?.let { setRequestProperty("Authorization", "Bearer $it") }
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -110,7 +142,7 @@ class Events(
             connectTimeout = 20_000
             readTimeout = 0
             setRequestProperty("Accept", "text/event-stream")
-            setRequestProperty("Authorization", "Bearer ${config.token}")
+            setRequestProperty("Authorization", "Bearer ${config.credential}")
             currentLastEventId?.takeIf(String::isNotBlank)?.let { setRequestProperty("Last-Event-ID", it) }
         }
         connection = stream
@@ -145,3 +177,5 @@ class Events(
 }
 
 class Failure(message: String) : IllegalStateException(message)
+
+private const val ProtocolVersion = 6

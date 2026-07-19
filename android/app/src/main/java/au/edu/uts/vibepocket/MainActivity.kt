@@ -1,5 +1,6 @@
 package au.edu.uts.vibepocket
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -24,10 +25,23 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        consume(intent)
         setContent {
             Theme {
                 App(viewModel = viewModel)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        consume(intent)
+    }
+
+    private fun consume(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val invitation = intent.dataString ?: return
+        setIntent(Intent(intent).setData(null))
+        viewModel.offer(invitation)
     }
 }
