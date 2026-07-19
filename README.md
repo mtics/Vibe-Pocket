@@ -3,7 +3,7 @@
 [![Android 10+](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](#requirements)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#requirements)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](#requirements)
-[![Protocol v5](https://img.shields.io/badge/protocol-v5-0969DA)](CONTROL_TRANSPORT.md)
+[![Protocol v6](https://img.shields.io/badge/protocol-v6-0969DA)](CONTROL_TRANSPORT.md)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-F59E0B)](#project-status)
 
 Vibe Pocket turns an Android phone into a programmable control surface for
@@ -25,18 +25,19 @@ Xiaomi.
 
 - **Hybrid control:** latency-sensitive frontmost actions use Bluetooth HID;
   task-aware actions use authenticated semantic commands.
-- **Agent navigation:** inspect bounded task labels and states, then open an
-  exact task through its stable Codex thread ID.
+- **Single-screen control:** active agents, a directional pad, common actions,
+  model and reasoning controls, and workflows share one control surface.
 - **Programmable surface:** six layers with independent tap, double-tap, and
   hold mappings.
 - **Codex-native voice:** push-to-talk controls the ChatGPT desktop dictation
   action instead of recording audio inside Vibe Pocket.
 - **Workflow controls:** launch configurable review, debug, refactor, and test
-  prompts from a four-way workflow pad.
+  prompts from four always-visible controls.
 - **Reasoning control:** rotate the dial to move one available reasoning level;
   tap its center to open the native model picker.
-- **Local-first deployment:** the Bridge binds to loopback, stores its token in
-  a mode-`0600` file, and can be exposed privately through Tailscale Serve.
+- **One-action pairing:** a short-lived invitation discovers the Tailscale
+  origin and issues a separate device credential without exposing
+  the Mac administration secret.
 
 ## How It Works
 
@@ -49,7 +50,7 @@ flowchart LR
     desktop["ChatGPT Codex on macOS"]
 
     phone -->|"Bluetooth HID reports"| desktop
-    phone -->|"HTTPS + pairing token"| bridge
+    phone -->|"HTTPS + device credential"| bridge
     bridge -->|"Read-only task discovery"| catalog
     bridge -->|"Native codex:// task links"| desktop
     bridge -->|"Whitelisted operations"| host
@@ -118,7 +119,7 @@ VIBE_POCKET_WORKSPACE="$HOME/path/to/workspace" \
 
 The installer:
 
-- generates a pairing token when one is not supplied;
+- generates a Mac-only Bridge administration secret when one is not supplied;
 - copies the Bridge runtime into the user Application Support directory;
 - builds and ad-hoc signs **Vibe Pocket Bridge Host.app**;
 - installs a user LaunchAgent;
@@ -152,8 +153,9 @@ tailscale serve status
 If the CLI is not in `PATH` on macOS, use
 `/Applications/Tailscale.app/Contents/MacOS/Tailscale` in place of `tailscale`.
 
-Use the HTTPS URL reported by Tailscale as the Bridge URL. Do not enable
-Tailscale Funnel; the Bridge is intended for private tailnet access only.
+Do not enable Tailscale Funnel; the Bridge is intended for private tailnet
+access only. Vibe Pocket discovers the matching root Serve handler when a
+pairing invitation is created.
 
 ### 4. Build and install the Android app
 
@@ -166,40 +168,50 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 If Gradle cannot locate the toolchain, export `JAVA_HOME` for JDK 17 and set
 `ANDROID_HOME` to the local Android SDK before running the build.
 
-### 5. Connect Vibe Pocket
-
-Read the locally stored pairing token:
+### 5. Pair Vibe Pocket
 
 ```sh
-zsh -c 'source "$HOME/Library/Application Support/Vibe Pocket/bridge.env"; print -r -- "$VIBE_POCKET_TOKEN"'
+~/.local/bin/vibe-pocket-pair
 ```
 
-On the phone:
+The installer also creates **Pair Vibe Pocket.app** in `~/Applications`, so
+the same pairing flow can be started from Finder or Spotlight without a
+terminal.
 
-1. Enter the HTTPS Bridge URL and pairing token, then connect.
-2. Open **Settings > Virtual hardware** and tap **Pair**.
-3. Allow Nearby devices access when Android requests it.
-4. Open macOS Bluetooth settings and pair the phone as a keyboard.
-5. Return to Vibe Pocket and select the paired Mac if it was not selected
+When one authorized ADB device is connected, the command opens the invitation
+directly on that phone. Otherwise, it opens a QR window on the Mac. The
+invitation expires after five minutes and can be claimed only once.
+
+On the phone, confirm the displayed Mac address and tap **Pair**. Vibe Pocket
+stores the resulting per-device credential with Android Keystore encryption.
+Normal setup never asks for a URL or key. **Recovery details** accepts a complete
+short-lived invitation, while **Advanced connection** can retain the current
+device credential when only the Bridge URL changes.
+
+Then configure Bluetooth HID:
+
+1. Open **Settings > Virtual hardware** and tap **Pair**.
+2. Allow Nearby devices access when Android requests it.
+3. Open macOS Bluetooth settings and pair the phone as a keyboard.
+4. Return to Vibe Pocket and select the paired Mac if it was not selected
    automatically.
 
 ## Using the Controller
 
-The main Control screen keeps task selection and the active control deck in one
-place:
+The main Control screen keeps the complete working surface in one place:
 
 | Surface | Purpose |
 | --- | --- |
-| Agents | Show the focused task first, then running, waiting, unread, completed, and idle tasks by activity |
-| Keys | Submit or reject intent, control Voice and Stop, navigate, change mode/access, and create tasks |
+| Agent rail | Show the focused task first, then active tasks by status and recent activity |
+| Direction pad | Navigate Codex without a separate key page |
+| Common actions | Accept, Reject, Voice, Clear, Stop, task creation, focus, mode, and access |
+| Model and reasoning | Open the model picker and adjust the available reasoning level |
 | Workflows | Start one of four editable prompts in a new visible Codex task |
-| Reasoning | Adjust the available reasoning level or open the model picker |
 | L1 layer chord | Hold L1 with a mapped key to select one of six controller layers |
 
-Settings provides Bridge credentials, Bluetooth host selection, layer names and
-colors, gesture mappings, and workflow prompts. Connection credentials are
-stored only after **Save** is pressed; mapping and profile changes are persisted
-through the authenticated Bridge.
+Settings is a modal surface for Bluetooth host selection, layer names and
+colors, gesture mappings, workflow prompts, and advanced connection recovery.
+Normal pairing does not expose or require credentials.
 
 ## Configuration
 
@@ -207,7 +219,7 @@ The LaunchAgent installer accepts these environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VIBE_POCKET_TOKEN` | Generated on first install | Pairing secret; must contain at least 24 characters |
+| `VIBE_POCKET_TOKEN` | Generated on first install | Mac-only administration secret; must contain at least 24 characters |
 | `VIBE_POCKET_PORT` | `4320` | Loopback Bridge port |
 | `VIBE_POCKET_WORKSPACE` | Repository root | Workspace the controller may operate in |
 | `VIBE_POCKET_CODEX_COMMAND` | First `codex` in `PATH` | Codex CLI executable |
@@ -221,9 +233,11 @@ Runtime state is stored outside the repository:
 
 | Path | Contents |
 | --- | --- |
-| `~/Library/Application Support/Vibe Pocket/bridge.env` | Mode-`0600` Bridge configuration and token |
+| `~/Library/Application Support/Vibe Pocket/bridge.env` | Mode-`0600` Bridge configuration and administration secret |
 | `~/Library/Application Support/Vibe Pocket/controller-profile.json` | Layers, mappings, colors, and workflow prompts |
 | `~/Library/Application Support/Vibe Pocket/owned-threads.json` | Bounded set of task IDs owned by Vibe Pocket |
+| `~/Library/Application Support/Vibe Pocket/paired-devices.json` | Mode-`0600` hashes of issued device credentials |
+| `~/Library/Application Support/Vibe Pocket/pairing.sock` | Mode-`0600` local invitation-creation socket |
 | `~/Library/Application Support/Vibe Pocket/runtime` | Installed Bridge runtime |
 | `~/Library/Logs/Vibe Pocket` | LaunchAgent output and errors |
 
@@ -231,9 +245,11 @@ Runtime state is stored outside the repository:
 
 - The Bridge binds to `127.0.0.1`; remote access is expected to come from a
   private HTTPS proxy.
-- Every snapshot, event stream, command, attachment, and configuration request
-  requires the pairing token. `/healthz` exposes only service and protocol
-  metadata.
+- Invitation creation is available only through a mode-`0600` Unix socket.
+  Tailscale Serve exposes the short-lived claim endpoint, never the Mac
+  administration credential.
+- Each phone receives an independent bearer credential. The Bridge persists
+  only its SHA-256 hash; `/healthz` exposes only service and protocol metadata.
 - Controller actions and mappings are validated against a fixed semantic
   whitelist. There is no raw keyboard, arbitrary Accessibility, or shell
   endpoint.
@@ -243,7 +259,7 @@ Runtime state is stored outside the repository:
   stale visible task labels are rejected.
 - Workflow prompts are bounded and persisted locally. Normal workflow presses
   send only a workflow ID.
-- Android stores the pairing token with an Android Keystore AES-GCM key and
+- Android stores its device credential with an Android Keystore AES-GCM key and
   does not request microphone, location, or Bluetooth scanning permission.
 - Only an explicit Attach or task selection may bring ChatGPT forward; ordinary
   control actions do not intentionally activate it.
@@ -266,7 +282,8 @@ Vibe-Pocket/
 |-- bridge/
 |   |-- src/codex/            Codex RPC, tasks, settings, turns, and intent
 |   |-- src/control/          Command, queue, refresh, state, and session flow
-|   |-- src/macos/            Signed Swift host and desktop adapter
+|   |-- src/macos/            Signed host, pairing window, and desktop adapter
+|   |-- src/pairing/          Invitations and device credentials
 |   |-- src/profile/          Profile validation and persistence
 |   |-- src/server/           Authenticated HTTP and event server
 |   `-- src/task/             Task discovery, activity, ownership, and links
@@ -294,7 +311,7 @@ cd android
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The current verified baseline contains 100 passing Bridge tests and 66 passing
+The current verified baseline contains 107 passing Bridge tests and 67 passing
 Android JVM tests. The Swift host also passes standalone type checking.
 
 ## Troubleshooting
