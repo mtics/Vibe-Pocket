@@ -205,6 +205,26 @@ test("bridge child inherits normal termination signals", async () => {
   assert.match(source, /if includeRoot \{ Darwin\.kill\(rootPID, SIGKILL\) \}/);
 });
 
+test("bridge child starts from an allowlisted environment without user shell startup files", async () => {
+  const source = await readFile(hostUrl, "utf8");
+  const environment = source.slice(
+    source.indexOf("private func bridgeEnvironment"),
+    source.indexOf("private func runBridge"),
+  );
+  const launch = source.slice(
+    source.indexOf("private func runBridge"),
+    source.indexOf("private func runCodexControl"),
+  );
+
+  assert.match(environment, /"HOME": FileManager\.default\.homeDirectoryForCurrentUser\.path/);
+  assert.match(environment, /"PATH": "\/opt\/homebrew\/bin:[^"]+"/);
+  assert.match(environment, /"VIBE_POCKET_HOST_SOCKET": controlSocketPath\(\)/);
+  assert.match(environment, /inherited\["VIBE_POCKET_CONFIG_FILE"\]/);
+  assert.doesNotMatch(environment, /var environment = ProcessInfo\.processInfo\.environment/);
+  assert.match(launch, /child\.arguments = \["-f", scriptPath\]/);
+  assert.match(launch, /child\.environment = bridgeEnvironment\(\)/);
+});
+
 test("control socket startup closes partial state and protects disconnected writes", async () => {
   const source = await readFile(hostUrl, "utf8");
   const start = source.slice(source.indexOf("func start() throws"), source.indexOf("func stop()"));

@@ -420,19 +420,36 @@ private final class ProcessTreeTerminator {
   }
 }
 
+private func bridgeEnvironment() -> [String: String] {
+  let inherited = ProcessInfo.processInfo.environment
+  var environment = [
+    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+    "USER": NSUserName(),
+    "LOGNAME": NSUserName(),
+    "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "TMPDIR": NSTemporaryDirectory(),
+    "LANG": "en_US.UTF-8",
+    "VIBE_POCKET_HOST_SOCKET": controlSocketPath(),
+  ]
+  if let configPath = inherited["VIBE_POCKET_CONFIG_FILE"],
+     configPath.hasPrefix("/"),
+     configPath.utf8.count <= Int(PATH_MAX) {
+    environment["VIBE_POCKET_CONFIG_FILE"] = configPath
+  }
+  return environment
+}
+
 private func runBridge(_ scriptPath: String) throws -> Int32 {
   let controlServer = CodexControlServer(socketPath: controlSocketPath())
   try controlServer.start()
   defer { controlServer.stop() }
   let child = Process()
   child.executableURL = URL(fileURLWithPath: "/bin/zsh")
-  child.arguments = [scriptPath]
+  child.arguments = ["-f", scriptPath]
   child.standardInput = FileHandle.standardInput
   child.standardOutput = FileHandle.standardOutput
   child.standardError = FileHandle.standardError
-  var environment = ProcessInfo.processInfo.environment
-  environment["VIBE_POCKET_HOST_SOCKET"] = controlSocketPath()
-  child.environment = environment
+  child.environment = bridgeEnvironment()
 
   // Spawn before changing this process's dispositions so Node inherits the
   // default termination behavior across zsh's exec.

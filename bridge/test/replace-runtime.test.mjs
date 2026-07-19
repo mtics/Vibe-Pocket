@@ -11,7 +11,7 @@ test("replaces the deployed runtime with an exact source snapshot", () => {
   const root = mkdtempSync(join(tmpdir(), "vibe-pocket-runtime-"));
   const source = join(root, "source");
   const target = join(root, "runtime");
-  mkdirSync(join(source, "src"), { recursive: true });
+  createRuntime(source);
   mkdirSync(join(source, "node_modules", "ignored"), { recursive: true });
   mkdirSync(join(target, "src"), { recursive: true });
   writeFileSync(join(source, "src", "current.mjs"), "current\n");
@@ -26,6 +26,22 @@ test("replaces the deployed runtime with an exact source snapshot", () => {
   assert.throws(() => readFileSync(join(target, "node_modules", "ignored", "index.js"), "utf8"), { code: "ENOENT" });
 });
 
+test("rejects an incomplete snapshot before moving the healthy runtime", () => {
+  const root = mkdtempSync(join(tmpdir(), "vibe-pocket-runtime-"));
+  const source = join(root, "source");
+  const target = join(root, "runtime");
+  mkdirSync(join(source, "src"), { recursive: true });
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(source, "src", "index.mjs"), "incomplete\n");
+  writeFileSync(join(target, "healthy.mjs"), "healthy\n");
+
+  const result = spawnSync("/bin/zsh", [helper.pathname, source, target], { encoding: "utf8" });
+
+  assert.equal(result.status, 65);
+  assert.match(result.stderr, /Runtime source is incomplete or unsafe/);
+  assert.equal(readFileSync(join(target, "healthy.mjs"), "utf8"), "healthy\n");
+});
+
 test("leaves the previous runtime intact when the source is invalid", () => {
   const root = mkdtempSync(join(tmpdir(), "vibe-pocket-runtime-"));
   const target = join(root, "runtime");
@@ -37,3 +53,18 @@ test("leaves the previous runtime intact when the source is invalid", () => {
   assert.equal(result.status, 64);
   assert.equal(readFileSync(join(target, "healthy.mjs"), "utf8"), "healthy\n");
 });
+
+function createRuntime(root) {
+  for (const path of [
+    "package.json",
+    "src/index.mjs",
+    "bin/run-launchd.sh",
+    "src/macos/host.swift",
+    "src/macos/helper.swift",
+    "src/macos/pairing.swift",
+  ]) {
+    const destination = join(root, path);
+    mkdirSync(join(destination, ".."), { recursive: true });
+    writeFileSync(destination, `${path}\n`);
+  }
+}
