@@ -7,6 +7,7 @@ import au.edu.uts.vibepocket.control.Capabilities
 import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.MaxAgents
+import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
@@ -42,6 +43,8 @@ internal fun decode(root: JSONObject): Snapshot {
             clearInput = controls.optBoolean("clear-input", false),
             focusAgent = controls.optBoolean("focus-agent", false),
             modeCycle = controls.optBoolean("mode-cycle", false),
+            modelPicker = controls.optBoolean("model-picker", false),
+            model = controls.optBoolean("model", false),
             accessCycle = controls.optBoolean("access-cycle", false),
             navigate = controls.optBoolean("navigate", false),
             reasoning = controls.optBoolean("reasoning", false),
@@ -83,6 +86,7 @@ private fun decodeDesktop(value: JSONObject?): Desktop? {
         voice = decodeVoice(value.optJSONObject("voice")),
         mode = decodeSelector(value.optJSONObject("mode")),
         access = decodeSelector(value.optJSONObject("access")),
+        model = decodeModel(value.optJSONObject("model")),
         reasoning = decodeReasoning(value.optJSONObject("reasoning")),
         question = decodeQuestion(value.optJSONObject("userInput")),
     )
@@ -187,7 +191,8 @@ private fun decodeAction(value: JSONObject?): Action? {
     value ?: return null
     val type = value.safeString("type") ?: return null
     return when (type) {
-        "approve", "reject", "voice", "new_task", "stop", "mode_cycle", "access_cycle", "clear_input", "focus_next", "attach" ->
+        "approve", "reject", "voice", "new_task", "stop", "mode_cycle", "model_picker", "access_cycle",
+        "delete_backward", "clear_input", "focus_next", "attach" ->
             Action(type)
         "navigate" -> value.safeString("direction")
             ?.takeIf { it in setOf("up", "down", "left", "right") }
@@ -218,12 +223,33 @@ private fun decodeReasoning(value: JSONObject?): Reasoning {
     return Reasoning(
         available = available,
         label = value?.safeString("label")?.take(64).orEmpty(),
-        modelLabel = value?.safeString("modelLabel")?.take(64).orEmpty(),
         level = Reasoning.Level.fromWire(value?.safeString("level")),
         // These fields were added after protocol v5. Defaulting to the overall
         // capability keeps a rolling bridge/app upgrade interactive.
         canIncrease = available && value.optBoolean("canIncrease", true),
         canDecrease = available && value.optBoolean("canDecrease", true),
+    )
+}
+
+private fun decodeModel(value: JSONObject?): Model {
+    value ?: return Model.Unavailable
+    val options = value.optJSONArray("options").objects().mapNotNull { option ->
+        val id = option.safeString("id")
+            ?.takeIf { it.matches(Regex("^[a-zA-Z0-9._-]{1,128}$")) }
+            ?: return@mapNotNull null
+        Model.Option(
+            id = id,
+            label = option.safeString("label")?.take(80) ?: id,
+            selected = option.optBoolean("selected", false),
+        )
+    }.distinctBy(Model.Option::id).take(20)
+    val selectedId = value.safeString("id")?.takeIf { id -> options.any { it.id == id } }
+        ?: options.singleOrNull { it.selected }?.id
+    return Model(
+        available = value.optBoolean("available", false) && options.isNotEmpty(),
+        id = selectedId,
+        label = value.safeString("label")?.take(80).orEmpty(),
+        options = options.map { it.copy(selected = it.id == selectedId) },
     )
 }
 
@@ -259,6 +285,7 @@ internal fun Command.encode(): JSONObject = when (this) {
         .put("gesture", gesture.wireValue)
     is Command.SelectLayer -> JSONObject().put("kind", "select_layer").put("layerId", layerId)
     is Command.FocusAgent -> JSONObject().put("kind", "focus_agent").put("agentId", agentId)
+    is Command.SelectModel -> JSONObject().put("kind", "select_model").put("modelId", modelId)
     is Command.UpdateBinding -> JSONObject()
         .put("kind", "update_binding")
         .put("layerId", layerId)
@@ -289,6 +316,7 @@ internal fun Command.encode(): JSONObject = when (this) {
     Command.VoiceStop -> JSONObject().put("kind", "voice_stop")
     Command.Stop -> JSONObject().put("kind", "stop")
     Command.NewTask -> JSONObject().put("kind", "new_task")
+    Command.ModelPicker -> JSONObject().put("kind", "model_picker")
     Command.Approve -> JSONObject().put("kind", "approve")
     Command.Reject -> JSONObject().put("kind", "reject")
 }

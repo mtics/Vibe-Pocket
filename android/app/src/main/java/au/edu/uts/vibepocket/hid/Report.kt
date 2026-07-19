@@ -83,6 +83,7 @@ internal object Mapping {
             ),
             Chord(usage = Report.USAGE_BACKSPACE),
         )
+        "delete_backward" -> listOf(Chord(usage = Report.USAGE_BACKSPACE))
         "navigate" -> when (action.direction) {
             "up" -> listOf(Chord(usage = Report.USAGE_UP))
             "down" -> listOf(Chord(usage = Report.USAGE_DOWN))

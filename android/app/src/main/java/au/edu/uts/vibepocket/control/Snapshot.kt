@@ -50,14 +50,15 @@ data class Snapshot(
         "voice" -> desktop?.voice?.available ?: capabilities.voice
         "stop" -> capabilities.stop
         "new_task" -> capabilities.newTask
-        "mode_cycle" -> capabilities.modeCycle && desktop?.foreground == true
+        "mode_cycle" -> capabilities.modeCycle
+        "model_picker" -> capabilities.modelPicker && desktop?.foreground == true
         "access_cycle" -> capabilities.accessCycle && desktop?.foreground == true
-        "clear_input" -> capabilities.clearInput
+        "delete_backward", "clear_input" -> capabilities.clearInput
         "focus_next", "focus_agent" -> capabilities.focusAgent
         "select_layer" -> desktop?.profile?.layers?.any { it.id == action.layerId } == true
         "navigate" -> capabilities.navigate && desktop?.foreground == true
-        "reasoning_depth" -> capabilities.reasoning && desktop?.foreground == true &&
-            desktop.reasoning.allows(action.delta)
+        "reasoning_depth" -> capabilities.reasoning &&
+            desktop?.reasoning?.allows(action.delta) == true
         "workflow" -> capabilities.workflow && desktop?.foreground == true
         "attach" -> status.state == "ready"
         else -> false
@@ -97,6 +98,8 @@ data class Capabilities(
     val clearInput: Boolean = false,
     val focusAgent: Boolean = false,
     val modeCycle: Boolean = false,
+    val modelPicker: Boolean = false,
+    val model: Boolean = false,
     val accessCycle: Boolean = false,
     val navigate: Boolean = false,
     val reasoning: Boolean = false,
@@ -116,6 +119,7 @@ data class Desktop(
     val voice: Voice?,
     val mode: Selector,
     val access: Selector = Selector(false, ""),
+    val model: Model = Model.Unavailable,
     val reasoning: Reasoning,
     val question: Question? = null,
 )
@@ -172,10 +176,26 @@ data class Selector(
     val label: String,
 )
 
+data class Model(
+    val available: Boolean,
+    val id: String?,
+    val label: String,
+    val options: List<Option>,
+) {
+    data class Option(
+        val id: String,
+        val label: String,
+        val selected: Boolean,
+    )
+
+    companion object {
+        val Unavailable = Model(false, null, "", emptyList())
+    }
+}
+
 data class Reasoning(
     val available: Boolean,
     val label: String,
-    val modelLabel: String = "",
     val level: Level?,
     val canIncrease: Boolean,
     val canDecrease: Boolean,
@@ -186,6 +206,8 @@ data class Reasoning(
         MEDIUM("medium"),
         HIGH("high"),
         XHIGH("xhigh"),
+        MAX("max"),
+        ULTRA("ultra"),
         ;
 
         fun shifted(delta: Int?): Level? {
@@ -200,9 +222,11 @@ data class Reasoning(
                 MEDIUM -> "Medium"
                 HIGH -> "High"
                 XHIGH -> "Extra high"
+                MAX -> "Max"
+                ULTRA -> "Ultra"
             }
 
-        val canIncrease: Boolean get() = this != XHIGH
+        val canIncrease: Boolean get() = this != ULTRA
         val canDecrease: Boolean get() = this != MINIMAL
 
         companion object {
@@ -230,7 +254,6 @@ data class Reasoning(
         val Unavailable = Reasoning(
             available = false,
             label = "",
-            modelLabel = "",
             level = null,
             canIncrease = false,
             canDecrease = false,

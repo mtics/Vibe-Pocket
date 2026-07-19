@@ -25,10 +25,25 @@ internal class Commands(
         return deliver(current.commandFor(inputId, gesture), id)
     }
 
+    fun openModel(): Boolean {
+        val current = snapshot() ?: return false
+        val desktop = current.desktop ?: return false
+        if (!desktop.foreground || desktop.question != null || !current.capabilities.modelPicker) return false
+        return deliver(Command.ModelPicker, "model-picker")
+    }
+
     fun focusAgent(agentId: String): Boolean {
         val current = snapshot() ?: return false
         if (!current.agentFocusEnabled(agentId)) return false
         return deliver(Command.FocusAgent(agentId), "agent:$agentId")
+    }
+
+    fun selectModel(modelId: String): Boolean {
+        val current = snapshot() ?: return false
+        val model = current.desktop?.model ?: return false
+        if (!current.capabilities.model || !model.available || model.id == modelId) return false
+        if (model.options.none { it.id == modelId }) return false
+        return deliver(Command.SelectModel(modelId), "model:$modelId")
     }
 
     fun selectLayer(layerId: String): Boolean {

@@ -178,7 +178,7 @@ class SessionTest {
         )
         runCurrent()
 
-        viewModel.applyLocalHidAction(Action("reasoning_depth", delta = 1))
+        viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
         assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
 
         viewModel.refresh()
@@ -188,6 +188,61 @@ class SessionTest {
         viewModel.refresh()
         runCurrent()
         assertEquals("High", viewModel.state.value.snapshot?.desktop?.reasoning?.label)
+    }
+
+    @Test
+    fun deliveredReasoningStepSurvivesATransientMissingSelector() = runTest(dispatcher) {
+        val transient = REASONING_SNAPSHOT.copy(
+            revision = "r_transient",
+            capabilities = REASONING_SNAPSHOT.capabilities.copy(reasoning = false),
+            desktop = REASONING_SNAPSHOT.desktop?.copy(reasoning = Reasoning.Unavailable),
+        )
+        val client = SnapshotQueueClient(REASONING_SNAPSHOT, transient)
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { 1_000L },
+        )
+        runCurrent()
+
+        viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
+        viewModel.refresh()
+        runCurrent()
+
+        val visible = viewModel.state.value.snapshot
+        assertTrue(visible?.capabilities?.reasoning == true)
+        assertTrue(visible?.desktop?.reasoning?.available == true)
+        assertEquals(Reasoning.Level.HIGH, visible?.desktop?.reasoning?.level)
+    }
+
+    @Test
+    fun executingTaskKeepsAReasoningPredictionUntilDesktopConfirmation() = runTest(dispatcher) {
+        val executing = REASONING_SNAPSHOT.copy(
+            revision = "r_executing",
+            capabilities = REASONING_SNAPSHOT.capabilities.copy(reasoning = false),
+            desktop = REASONING_SNAPSHOT.desktop?.copy(
+                activity = Activity.EXECUTING,
+                reasoning = Reasoning.Unavailable,
+            ),
+        )
+        val client = SnapshotQueueClient(REASONING_SNAPSHOT, executing)
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { 1_000L },
+        )
+        runCurrent()
+
+        viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
+        viewModel.refresh()
+        runCurrent()
+
+        val visible = viewModel.state.value.snapshot
+        assertTrue(visible?.capabilities?.reasoning == true)
+        assertTrue(visible?.desktop?.reasoning?.available == true)
+        assertEquals(Reasoning.Level.HIGH, visible?.desktop?.reasoning?.level)
     }
 
     @Test
@@ -576,7 +631,6 @@ class SessionTest {
                 reasoning = Reasoning(
                     available = true,
                     label = "Medium",
-                    modelLabel = "Codex",
                     level = Reasoning.Level.MEDIUM,
                     canIncrease = true,
                     canDecrease = true,

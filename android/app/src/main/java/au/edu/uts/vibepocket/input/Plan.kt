@@ -29,6 +29,9 @@ private val HidTapActions = setOf(
     "reject",
     "stop",
     "mode_cycle",
+    "model_picker",
+    "delete_backward",
+    "clear_input",
     "navigate",
     "reasoning_depth",
 )
@@ -78,7 +81,7 @@ private fun resolve(
             "key_voice" -> Action("voice")
             "key_stop" -> Action("stop")
             "key_mode" -> Action("mode_cycle")
-            "key_clear" -> Action("clear_input")
+            "key_clear" -> Action("delete_backward")
             "key_up" -> Action("navigate", direction = "up")
             "key_down" -> Action("navigate", direction = "down")
             "key_left" -> Action("navigate", direction = "left")

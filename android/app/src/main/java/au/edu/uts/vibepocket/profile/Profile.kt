@@ -90,7 +90,7 @@ internal val FallbackInputs = listOf(
     Input("key_new_task", Input.Kind.KEY, "New task", "add"),
     Input("key_stop", Input.Kind.KEY, "Stop", "stop"),
     Input("key_mode", Input.Kind.KEY, "Mode", "cycle"),
-    Input("key_clear", Input.Kind.KEY, "Clear", "clear"),
+    Input("key_clear", Input.Kind.KEY, "Delete", "clear"),
     Input("key_focus", Input.Kind.KEY, "Next agent", "agent"),
     Input("key_up", Input.Kind.KEY, "Up", "up"),
     Input("key_down", Input.Kind.KEY, "Down", "down"),

@@ -16,6 +16,11 @@ sealed interface Command {
             require(AgentId.matches(agentId))
         }
     }
+    data class SelectModel(val modelId: String) : Command {
+        init {
+            require(modelId.matches(Regex("^[a-zA-Z0-9._-]{1,128}$")))
+        }
+    }
     data class UpdateBinding(
         val layerId: String,
         val inputId: String,
@@ -39,6 +44,7 @@ sealed interface Command {
     data object VoiceStop : Command
     data object Stop : Command
     data object NewTask : Command
+    data object ModelPicker : Command
     data object Approve : Command
     data object Reject : Command
 }

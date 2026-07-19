@@ -35,6 +35,10 @@ class JsonTest {
         assertEquals(Reasoning.Level.HIGH, snapshot.desktop?.reasoning?.level)
         assertTrue(snapshot.desktop?.reasoning?.canIncrease == true)
         assertTrue(snapshot.desktop?.reasoning?.canDecrease == true)
+        assertTrue(snapshot.capabilities.modelPicker)
+        assertTrue(snapshot.capabilities.model)
+        assertEquals("gpt-test", snapshot.desktop?.model?.id)
+        assertEquals(2, snapshot.desktop?.model?.options?.size)
         assertEquals("Scope", snapshot.desktop?.question?.header)
         assertEquals(2, snapshot.desktop?.question?.options?.size)
         assertEquals("Broad", snapshot.desktop?.question?.options?.get(1)?.label)
@@ -220,6 +224,7 @@ class JsonTest {
         val color = Command.UpdateLayerColor("layer-2", "#55D6A4").encode()
         val workflow = Command.UpdateWorkflowPrompt("debug", "Investigate from evidence.").encode()
         val reset = Command.ResetProfile.encode()
+        val model = Command.SelectModel("gpt-test").encode()
 
         assertEquals("binding", binding.getString("kind"))
         assertEquals("key_voice", binding.getString("inputId"))
@@ -243,6 +248,9 @@ class JsonTest {
         assertEquals(setOf("kind"), reset.keys().asSequence().toSet())
         assertEquals("voice_start", Command.VoiceStart.encode().getString("kind"))
         assertEquals("voice_stop", Command.VoiceStop.encode().getString("kind"))
+        assertEquals("model_picker", Command.ModelPicker.encode().getString("kind"))
+        assertEquals("select_model", model.getString("kind"))
+        assertEquals("gpt-test", model.getString("modelId"))
     }
 
     private companion object {
@@ -252,7 +260,7 @@ class JsonTest {
               "status":{"state":"ready","message":"Current desktop task"},
               "controls":{
                 "voice":true,"stop":false,"new-task":true,"approve":true,"reject":true,
-                "clear-input":true,"focus-agent":true,"mode-cycle":true,"navigate":true,
+                "clear-input":true,"focus-agent":true,"mode-cycle":true,"model-picker":true,"model":true,"navigate":true,
                 "access-cycle":true,"reasoning":true,"workflow":true
               },
               "controller":{
@@ -268,6 +276,13 @@ class JsonTest {
                 ],
                 "mode":{"available":true,"label":"Codex"},
                 "access":{"available":true,"label":"Workspace"},
+                "model":{
+                  "available":true,"id":"gpt-test","label":"GPT Test",
+                  "options":[
+                    {"id":"gpt-test","label":"GPT Test","selected":true},
+                    {"id":"gpt-next","label":"GPT Next","selected":false}
+                  ]
+                },
                 "reasoning":{
                   "available":true,"label":"High","level":"high",
                   "canIncrease":true,"canDecrease":true

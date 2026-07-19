@@ -95,7 +95,25 @@ class DispatchTest {
     }
 
     @Test
-    fun deliveredReasoningStepPublishesAnImmediateLocalAction() {
+    fun backgroundModeUsesTheBridgeInsteadOfBeingDisabled() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(
+            orchestrator.activate(
+                snapshot(Action("mode_cycle"), foreground = false),
+                INPUT_ID,
+                Gesture.Kind.TAP,
+            ),
+        )
+
+        assertTrue(hid.sent.isEmpty())
+        assertEquals(listOf(BridgeCall.Activate(INPUT_ID, Gesture.Kind.TAP)), bridge.calls)
+    }
+
+    @Test
+    fun reasoningUsesHidAndPredictsTheVisibleDesktopSetting() {
         val hid = FakeHid()
         val bridge = FakeBridge()
         val delivered = mutableListOf<Action>()
@@ -105,18 +123,48 @@ class DispatchTest {
         assertTrue(orchestrator.activate(snapshot(action), INPUT_ID, Gesture.Kind.TAP))
 
         assertEquals(listOf(action), delivered)
+        assertEquals(listOf(action), hid.sent)
         assertTrue(bridge.calls.isEmpty())
     }
 
     @Test
-    fun modelPickerUsesTheNativeHidShortcutWithoutBridgeFallback() {
+    fun modelPickerDoesNotDependOnReasoningAvailability() {
         val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(
+            orchestrator.openModel(
+                snapshot(Action("approve"), reasoning = Reasoning.Unavailable),
+            ),
+        )
+
+        assertEquals(listOf(Action("model_picker")), hid.sent)
+        assertTrue(bridge.calls.isEmpty())
+    }
+
+    @Test
+    fun modelPickerFallsBackToTheBridgeWhenHidIsUnavailable() {
+        val hid = FakeHid(sendResult = false)
         val bridge = FakeBridge()
         val orchestrator = Dispatch(hid, bridge)
 
         assertTrue(orchestrator.openModel(snapshot(Action("approve"))))
 
         assertEquals(listOf(Action("model_picker")), hid.sent)
+        assertEquals(listOf(BridgeCall.OpenModel), bridge.calls)
+    }
+
+    @Test
+    fun backwardDeleteUsesOneNativeBackspaceAction() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+        val action = Action("delete_backward")
+
+        assertTrue(orchestrator.activate(snapshot(action), INPUT_ID, Gesture.Kind.TAP))
+
+        assertEquals(listOf(action), hid.sent)
         assertTrue(bridge.calls.isEmpty())
     }
 
@@ -217,6 +265,7 @@ class DispatchTest {
         data class Activate(val inputId: String, val gesture: Gesture.Kind) : BridgeCall
         data class VoiceStart(val inputId: String) : BridgeCall
         data class VoiceStop(val inputId: String) : BridgeCall
+        data object OpenModel : BridgeCall
     }
 
     private class FakeBridge : Bridge {
@@ -234,6 +283,11 @@ class DispatchTest {
 
         override fun stopVoice(inputId: String): Boolean {
             calls += BridgeCall.VoiceStop(inputId)
+            return true
+        }
+
+        override fun openModel(): Boolean {
+            calls += BridgeCall.OpenModel
             return true
         }
     }
@@ -296,6 +350,7 @@ class DispatchTest {
             clearInput = true,
             focusAgent = true,
             modeCycle = true,
+            modelPicker = true,
             accessCycle = true,
             navigate = true,
             reasoning = true,

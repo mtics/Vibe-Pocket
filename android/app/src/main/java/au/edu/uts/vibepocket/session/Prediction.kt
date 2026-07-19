@@ -30,11 +30,20 @@ internal class Prediction(
 
     fun reconcile(remote: Snapshot, visible: Snapshot?): Snapshot {
         val expected = pending ?: return remote
-        val remoteReasoning = remote.desktop?.reasoning
-        if (
-            nowMillis() >= expected.expiresAtMillis ||
-            remoteReasoning?.available != true ||
+        val desktop = remote.desktop ?: run {
+            pending = null
+            return remote
+        }
+        val remoteReasoning = desktop.reasoning
+        val expired = nowMillis() >= expected.expiresAtMillis
+        val invalidContext = !desktop.foreground ||
+            desktop.question != null
+        val confirmed = remoteReasoning.available &&
             remoteReasoning.level == expected.status.level
+        if (
+            expired ||
+            invalidContext ||
+            confirmed
         ) {
             pending = null
             return remote
@@ -42,8 +51,10 @@ internal class Prediction(
         val optimistic = visible?.desktop?.reasoning
             ?.takeIf { it.level == expected.status.level }
             ?: expected.status
-        val desktop = requireNotNull(remote.desktop)
-        return remote.copy(desktop = desktop.copy(reasoning = optimistic))
+        return remote.copy(
+            capabilities = remote.capabilities.copy(reasoning = true),
+            desktop = desktop.copy(reasoning = optimistic.copy(available = true)),
+        )
     }
 
     fun clear() {

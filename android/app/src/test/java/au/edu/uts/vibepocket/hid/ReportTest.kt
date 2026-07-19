@@ -32,6 +32,10 @@ class ReportTest {
             Mapping.chords(Action("clear_input")),
         )
         assertEquals(
+            listOf(Chord(usage = Report.USAGE_BACKSPACE)),
+            Mapping.chords(Action("delete_backward")),
+        )
+        assertEquals(
             listOf(Chord(usage = Report.USAGE_LEFT)),
             Mapping.chords(Action("navigate", direction = "left")),
         )

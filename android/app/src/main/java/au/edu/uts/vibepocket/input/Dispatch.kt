@@ -16,6 +16,7 @@ internal interface Hid {
 
 internal interface Bridge {
     fun activate(inputId: String, gesture: Gesture.Kind): Boolean
+    fun openModel(): Boolean
     fun startVoice(inputId: String): Boolean
     fun stopVoice(inputId: String): Boolean
 }
@@ -23,6 +24,8 @@ internal interface Bridge {
 internal fun remote(session: Session): Bridge = object : Bridge {
     override fun activate(inputId: String, gesture: Gesture.Kind): Boolean =
         session.activateInput(inputId, gesture)
+
+    override fun openModel(): Boolean = session.openModel()
 
     override fun startVoice(inputId: String): Boolean = session.startVoice(inputId)
 
@@ -32,7 +35,7 @@ internal fun remote(session: Session): Bridge = object : Bridge {
 internal class Dispatch(
     private val hid: Hid,
     private val bridge: Bridge,
-    private val onHidAction: (Action) -> Unit = {},
+    private val onAction: (Action) -> Unit = {},
 ) {
     private data class Held(
         val inputId: String,
@@ -47,15 +50,15 @@ internal class Dispatch(
         gesture: Gesture.Kind,
     ): Boolean = when (val plan = activation(snapshot, inputId, gesture)) {
         Plan.Disabled -> false
-        is Plan.Bridge -> bridge.activate(plan.inputId, plan.gesture)
-        is Plan.HidTap -> deliver(plan.action) || bridge.activate(plan.fallback.inputId, plan.fallback.gesture)
+        is Plan.Bridge -> deliver(plan, snapshot?.actionFor(inputId, gesture))
+        is Plan.HidTap -> deliver(plan.action) || deliver(plan.fallback, plan.action)
         is Plan.HidHold -> false
     }
 
     fun openModel(snapshot: Snapshot?): Boolean {
         val desktop = snapshot?.desktop ?: return false
-        if (!desktop.foreground || desktop.question != null || !desktop.reasoning.available) return false
-        return deliver(Action("model_picker"))
+        if (!desktop.foreground || desktop.question != null || !snapshot.capabilities.modelPicker) return false
+        return deliver(Action("model_picker")) || bridge.openModel()
     }
 
     fun startRepeat(snapshot: Snapshot?, inputId: String): Boolean {
@@ -104,7 +107,12 @@ internal class Dispatch(
 
     private fun deliver(action: Action): Boolean {
         if (!hid.send(action)) return false
-        onHidAction(action)
+        onAction(action)
+        return true
+    }
+
+    private fun deliver(plan: Plan.Bridge, action: Action?): Boolean {
+        if (!bridge.activate(plan.inputId, plan.gesture)) return false
         return true
     }
 }

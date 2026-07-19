@@ -130,6 +130,8 @@ class Session(
         gesture: Gesture.Kind = Gesture.Kind.TAP,
     ): Boolean = commands.activate(inputId, gesture)
 
+    fun openModel(): Boolean = commands.openModel()
+
     fun startVoice(inputId: String): Boolean {
         val current = _state.value
         val config = current.config ?: return false
@@ -145,11 +147,13 @@ class Session(
         _feedback.tryEmit(Feedback.Error)
     }
 
-    fun applyLocalHidAction(action: Action) {
+    fun applyLocalAction(action: Action) {
         _state.update { prediction.apply(it, action) }
     }
 
     fun focusAgent(agentId: String): Boolean = commands.focusAgent(agentId)
+
+    fun selectModel(modelId: String): Boolean = commands.selectModel(modelId)
 
     fun selectLayer(layerId: String): Boolean = commands.selectLayer(layerId)
 
