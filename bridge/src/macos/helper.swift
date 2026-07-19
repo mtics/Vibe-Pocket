@@ -130,14 +130,16 @@ private func verifyDesktopSessionUnlocked() throws {
   }
 }
 
+private let chatGPTBundleIdentifier = "com.openai.codex"
+private let chatGPTApplicationPath = "/Applications/ChatGPT.app"
+
 private func findChatGPT() throws -> NSRunningApplication {
-  let applications = NSWorkspace.shared.runningApplications
-  if let app = applications.first(where: { $0.bundleURL?.path == "/Applications/ChatGPT.app" }) {
-    return app
+  let app = NSWorkspace.shared.runningApplications.first { application in
+    guard application.bundleIdentifier == chatGPTBundleIdentifier else { return false }
+    guard let bundleURL = application.bundleURL else { return true }
+    return bundleURL.standardizedFileURL.path == chatGPTApplicationPath
   }
-  if let app = applications.first(where: { $0.localizedName == "ChatGPT" }) {
-    return app
-  }
+  if let app { return app }
   throw HelperFailure.message("ChatGPT is not running on the M5.")
 }
 
@@ -754,6 +756,13 @@ private struct MutationDesktopSnapshot {
   let token: String
 }
 
+private struct FocusedDesktopTarget {
+  let application: NSRunningApplication
+  let window: AXUIElement
+  let area: AXUIElement
+  let mutationToken: String?
+}
+
 private func mutationToken(
   application: NSRunningApplication,
   window: AXUIElement,
@@ -771,22 +780,59 @@ private func mutationToken(
   return "desktop-\(hex)"
 }
 
-private func mutationDesktopSnapshot(
+private func focusedDesktopTarget(
   for application: NSRunningApplication,
-  requireForeground: Bool = true
-) throws -> MutationDesktopSnapshot {
+  requireForeground: Bool = false
+) throws -> FocusedDesktopTarget {
+  try verifyDesktopSessionUnlocked()
   if requireForeground { try verifyForeground(application) }
   let window = try focusedWindow(for: application)
   let area = try codexArea(in: window)
   let currentState = taskState(in: AreaIndex(area))
-  guard let agent = focusedAgentTarget(in: window, currentTaskState: currentState) else {
-    throw HelperFailure.message("ChatGPT did not expose one focused Codex task for this settings mutation.")
+  let token = focusedAgentTarget(in: window, currentTaskState: currentState).map {
+    mutationToken(application: application, window: window, agent: $0)
   }
-  let token = mutationToken(application: application, window: window, agent: agent)
   guard CFEqual(try focusedWindow(for: application), window) else {
     throw HelperFailure.message("ChatGPT changed its focused window while observing the Codex task.")
   }
-  return MutationDesktopSnapshot(application: application, area: area, token: token)
+  return FocusedDesktopTarget(
+    application: application,
+    window: window,
+    area: area,
+    mutationToken: token
+  )
+}
+
+@discardableResult
+private func revalidateFocusedDesktopTarget(
+  _ expected: FocusedDesktopTarget,
+  requireForeground: Bool = false
+) throws -> FocusedDesktopTarget {
+  let current = try focusedDesktopTarget(
+    for: expected.application,
+    requireForeground: requireForeground
+  )
+  guard CFEqual(current.window, expected.window) else {
+    throw HelperFailure.message("ChatGPT changed its focused window before desktop control.")
+  }
+  if let expectedToken = expected.mutationToken, current.mutationToken != expectedToken {
+    throw HelperFailure.message("The focused Codex task changed before desktop control.")
+  }
+  return current
+}
+
+private func mutationDesktopSnapshot(
+  for application: NSRunningApplication,
+  requireForeground: Bool = true
+) throws -> MutationDesktopSnapshot {
+  let target = try focusedDesktopTarget(
+    for: application,
+    requireForeground: requireForeground
+  )
+  guard let token = target.mutationToken else {
+    throw HelperFailure.message("ChatGPT did not expose one focused Codex task for this settings mutation.")
+  }
+  return MutationDesktopSnapshot(application: application, area: target.area, token: token)
 }
 
 private func expectedMutationToken(_ arguments: [String], at index: Int) throws -> String {
@@ -938,18 +984,25 @@ private func statusReply(application: NSRunningApplication, area: AXUIElement) t
   ]
 }
 
-private func press(_ control: DesktopControl, in area: AXUIElement) throws {
-  if let button = controlButton(control, in: area) {
+private func press(
+  _ control: DesktopControl,
+  in target: FocusedDesktopTarget,
+  requireForeground: Bool = false
+) throws {
+  if let button = controlButton(control, in: target.area) {
+    try revalidateFocusedDesktopTarget(target, requireForeground: requireForeground)
     try performPress(button)
     return
   }
   switch control {
   case .approve:
-    guard hasDraft(in: AreaIndex(area)) else {
+    guard hasDraft(in: AreaIndex(target.area)) else {
       throw HelperFailure.message("There is no visible Codex approval control or message draft to submit.")
     }
-    _ = try focusPrompt(in: area)
-    try postKey(36)
+    try revalidateFocusedDesktopTarget(target, requireForeground: true)
+    _ = try focusPrompt(in: target.area)
+    try revalidateFocusedDesktopTarget(target, requireForeground: true)
+    try postKey(36, to: target.application.processIdentifier)
   case .reject:
     throw HelperFailure.message(DesktopControl.reject.unavailableMessage)
   default:
@@ -957,25 +1010,20 @@ private func press(_ control: DesktopControl, in area: AXUIElement) throws {
   }
 }
 
-private func postKey(_ code: CGKeyCode, to processIdentifier: pid_t? = nil) throws {
+private func postKey(_ code: CGKeyCode, to processIdentifier: pid_t) throws {
   guard let source = CGEventSource(stateID: .hidSystemState),
         let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
         let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
     throw HelperFailure.message("macOS could not create the requested keyboard event.")
   }
-  if let processIdentifier {
-    down.postToPid(processIdentifier)
-    up.postToPid(processIdentifier)
-  } else {
-    down.post(tap: .cghidEventTap)
-    up.post(tap: .cghidEventTap)
-  }
+  down.postToPid(processIdentifier)
+  up.postToPid(processIdentifier)
 }
 
 private func postChord(
   _ code: CGKeyCode,
   flags: CGEventFlags,
-  to processIdentifier: pid_t? = nil
+  to processIdentifier: pid_t
 ) throws {
   guard let source = CGEventSource(stateID: .hidSystemState),
         let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
@@ -984,17 +1032,9 @@ private func postChord(
   }
   down.flags = flags
   up.flags = flags
-  if let processIdentifier {
-    down.postToPid(processIdentifier)
-  } else {
-    down.post(tap: .cghidEventTap)
-  }
+  down.postToPid(processIdentifier)
   usleep(60_000)
-  if let processIdentifier {
-    up.postToPid(processIdentifier)
-  } else {
-    up.post(tap: .cghidEventTap)
-  }
+  up.postToPid(processIdentifier)
 }
 
 private func focus(_ element: AXUIElement) throws {
@@ -1131,10 +1171,14 @@ private func keyCode(for direction: String) throws -> CGKeyCode {
 private func selectNextAccessMode(
   from button: AXUIElement,
   in application: NSRunningApplication,
-  currentLabel: String
+  currentLabel: String,
+  expectedMutationToken: String?
 ) throws {
   let buttonFrame = try elementFrame(button)
-  let interaction = try MenuInteraction(application: application)
+  let interaction = try MenuInteraction(
+    application: application,
+    expectedMutationToken: expectedMutationToken
+  )
   defer { interaction.cleanup() }
   try interaction.openMenu(button)
   guard let menu = try interaction.waitForValue(attempts: 8, intervalMicroseconds: 50_000, find: { window in
@@ -1378,21 +1422,25 @@ private func launchWorkflow(_ text: String) throws {
   guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 4_000 else {
     throw HelperFailure.message("The configured Vibe Pocket workflow is invalid.")
   }
-  let (application, area) = try desktop(activateDesktop: false)
-  try verifyForeground(application)
-  try press(.newTask, in: area)
+  let (application, _) = try desktop(activateDesktop: false)
+  let initialTarget = try focusedDesktopTarget(for: application, requireForeground: true)
+  try press(.newTask, in: initialTarget, requireForeground: true)
   usleep(500_000)
-  let nextArea = try codexArea(for: application)
-  guard let input = prompt(in: nextArea) else {
+  let nextTarget = try focusedDesktopTarget(for: application, requireForeground: true)
+  guard let input = prompt(in: nextTarget.area) else {
     throw HelperFailure.message("The new Codex task did not expose a message input.")
   }
-  guard AXUIElementSetAttributeValue(input, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
-        AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, text as CFTypeRef) == .success else {
+  try revalidateFocusedDesktopTarget(nextTarget, requireForeground: true)
+  guard AXUIElementSetAttributeValue(input, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
+    throw HelperFailure.message("ChatGPT did not focus the configured workflow input.")
+  }
+  try revalidateFocusedDesktopTarget(nextTarget, requireForeground: true)
+  guard AXUIElementSetAttributeValue(input, kAXValueAttribute as CFString, text as CFTypeRef) == .success else {
     throw HelperFailure.message("ChatGPT did not accept the configured workflow.")
   }
   usleep(150_000)
-  try verifyForeground(application)
-  try postKey(36)
+  try revalidateFocusedDesktopTarget(nextTarget, requireForeground: true)
+  try postKey(36, to: application.processIdentifier)
   for _ in 0..<8 {
     usleep(250_000)
     let submittedArea = try codexArea(for: application)
@@ -1425,40 +1473,41 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
     let (application, area) = try desktop(activateDesktop: false)
     return try statusReply(application: application, area: area)
   case "attach":
-    let (_, area) = try desktop(activateDesktop: true)
-    _ = try focusPrompt(in: area)
+    let (application, _) = try desktop(activateDesktop: true)
+    let target = try focusedDesktopTarget(for: application, requireForeground: true)
+    try revalidateFocusedDesktopTarget(target, requireForeground: true)
+    _ = try focusPrompt(in: target.area)
     return ["ok": true, "message": "Focused the visible ChatGPT Codex input line."]
   case "control":
     guard let rawControl = arguments.dropFirst().first,
           let control = DesktopControl(rawValue: rawControl) else {
       throw HelperFailure.message("Unsupported Vibe Pocket desktop control.")
     }
-    let (application, area) = try desktop(activateDesktop: false)
-    if control == .approve && controlButton(.approve, in: area) == nil {
-      try verifyForeground(application)
-    }
-    try press(control, in: area)
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application)
+    try press(control, in: target)
     usleep(120_000)
     return ["ok": true, "message": "Pressed the ChatGPT Codex \(control.rawValue) control."]
   case "voice-start", "voice-stop":
     let desiredActive = action == "voice-start"
-    let (application, area) = try desktop(activateDesktop: false)
-    guard controlButton(.voice, in: area) != nil else {
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application)
+    guard controlButton(.voice, in: target.area) != nil else {
       throw HelperFailure.message(DesktopControl.voice.unavailableMessage)
     }
     if desiredActive {
-      if !voiceIsActive(in: area) { try press(.voice, in: area) }
+      if !voiceIsActive(in: target.area) { try press(.voice, in: target) }
     } else {
       // A short press can release before ChatGPT has published the microphone
       // state. Re-read once so the release still closes the just-started PTT.
-      let currentArea: AXUIElement
-      if voiceIsActive(in: area) {
-        currentArea = area
+      let currentTarget: FocusedDesktopTarget
+      if voiceIsActive(in: target.area) {
+        currentTarget = target
       } else {
         usleep(100_000)
-        currentArea = try codexArea(for: application)
+        currentTarget = try focusedDesktopTarget(for: application)
       }
-      if voiceIsActive(in: currentArea) { try press(.voice, in: currentArea) }
+      if voiceIsActive(in: currentTarget.area) { try press(.voice, in: currentTarget) }
     }
     return [
       "ok": true,
@@ -1469,24 +1518,33 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       throw HelperFailure.message("A navigation direction is required.")
     }
     let (application, _) = try desktop(activateDesktop: false)
-    try verifyForeground(application)
-    try postKey(try keyCode(for: direction))
+    let target = try focusedDesktopTarget(for: application, requireForeground: true)
+    try revalidateFocusedDesktopTarget(target, requireForeground: true)
+    try postKey(try keyCode(for: direction), to: application.processIdentifier)
     return ["ok": true, "message": "Navigated \(direction) in ChatGPT Codex."]
   case "access-cycle":
-    let (application, area) = try desktop(activateDesktop: false)
-    guard controlButton(.stop, in: area) == nil,
-          let button = accessModeButton(in: area) else {
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application, requireForeground: true)
+    guard controlButton(.stop, in: target.area) == nil,
+          let button = accessModeButton(in: target.area) else {
       throw HelperFailure.message("The ChatGPT Codex access mode is not currently adjustable.")
     }
-    let before = accessModeLabel(in: area) ?? ""
-    try selectNextAccessMode(from: button, in: application, currentLabel: before)
+    let before = accessModeLabel(in: target.area) ?? ""
+    try selectNextAccessMode(
+      from: button,
+      in: application,
+      currentLabel: before,
+      expectedMutationToken: target.mutationToken
+    )
     return ["ok": true, "message": "Requested the next ChatGPT Codex access mode."]
   case "plan-mode":
-    let (application, area) = try desktop(activateDesktop: false)
-    guard controlButton(.stop, in: area) == nil else {
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application)
+    guard controlButton(.stop, in: target.area) == nil else {
       throw HelperFailure.message("Plan mode cannot be changed while the visible Codex task is running.")
     }
-    let wasActive = planModeIsActive(in: AreaIndex(area))
+    let wasActive = planModeIsActive(in: AreaIndex(target.area))
+    try revalidateFocusedDesktopTarget(target)
     try togglePlanMode(in: application)
     let confirmed: String? = waitForValue(attempts: 10, intervalMicroseconds: 100_000) {
       guard let currentArea = try? codexArea(for: application) else { return nil }
@@ -1502,13 +1560,16 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       "settings": ["mode": ["available": true, "label": confirmed]],
     ]
   case "model-picker":
-    let (application, area) = try desktop(activateDesktop: false)
-    try verifyForeground(application)
-    guard controlButton(.stop, in: area) == nil,
-          let control = reasoningControl(in: area) else {
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application, requireForeground: true)
+    guard controlButton(.stop, in: target.area) == nil,
+          let control = reasoningControl(in: target.area) else {
       throw HelperFailure.message("The ChatGPT Codex model is not currently adjustable.")
     }
-    let interaction = try MenuInteraction(application: application)
+    let interaction = try MenuInteraction(
+      application: application,
+      expectedMutationToken: target.mutationToken
+    )
     try interaction.openComposerMenu(control)
     interaction.leaveOpen()
     return ["ok": true, "message": "Opened the ChatGPT Codex model picker."]
@@ -1581,26 +1642,30 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
       "nativeConfirmationRequired": !confirmed,
     ]
   case "delete-backward":
-    let (application, area) = try desktop(activateDesktop: false)
-    try verifyForeground(application)
-    _ = try focusPrompt(in: area)
-    try postKey(51)
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application, requireForeground: true)
+    try revalidateFocusedDesktopTarget(target, requireForeground: true)
+    _ = try focusPrompt(in: target.area)
+    try revalidateFocusedDesktopTarget(target, requireForeground: true)
+    try postKey(51, to: application.processIdentifier)
     return ["ok": true, "message": "Deleted one character from the ChatGPT Codex input line."]
   case "clear-input":
-    let (_, area) = try desktop(activateDesktop: false)
-    try clearInput(in: area)
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application)
+    try revalidateFocusedDesktopTarget(target)
+    try clearInput(in: target.area)
     return ["ok": true, "message": "Cleared the ChatGPT Codex input line."]
   case "focus-agent":
     guard let agentID = arguments.dropFirst().first,
           agentID.hasPrefix("agent-"), agentID.count <= 80 else {
       throw HelperFailure.message("A valid Codex agent ID is required.")
     }
-    let (application, area) = try desktop(activateDesktop: false)
-    let scope = codexScope(for: application)
-    let selectedTaskTitle = focusedTaskTitle(in: scope)
+    let (application, _) = try desktop(activateDesktop: false)
+    let target = try focusedDesktopTarget(for: application)
+    let selectedTaskTitle = focusedTaskTitle(in: target.window)
     let agents = agentTargets(
-      in: scope,
-      currentTaskState: taskState(in: AreaIndex(area)),
+      in: target.window,
+      currentTaskState: taskState(in: AreaIndex(target.area)),
       focusedTaskTitle: selectedTaskTitle
     )
     guard let agent = agents.first(where: { $0.id == agentID }) else {
@@ -1625,6 +1690,7 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
         return false
       }
 
+      try revalidateFocusedDesktopTarget(target)
       let pressResult = AXUIElementPerformAction(agent.element, kAXPressAction as CFString)
       let semanticPressWorked: Bool
       if pressResult == .success {

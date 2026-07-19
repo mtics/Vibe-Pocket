@@ -12,6 +12,26 @@ const launchScriptUrl = new URL("../../bin/run-launchd.sh", import.meta.url);
 const cleanupScriptUrl = new URL("../../bin/cleanup-stale-listener.sh", import.meta.url);
 const execFileAsync = promisify(execFile);
 
+function callsNamed(source, name) {
+  const calls = [];
+  const pattern = new RegExp(`\\b${name}\\s*\\(`, "g");
+  for (const match of source.matchAll(pattern)) {
+    const lineStart = source.lastIndexOf("\n", match.index) + 1;
+    if (source.slice(lineStart, match.index).includes("func ")) continue;
+    const open = source.indexOf("(", match.index);
+    let depth = 0;
+    for (let index = open; index < source.length; index += 1) {
+      if (source[index] === "(") depth += 1;
+      if (source[index] === ")") depth -= 1;
+      if (depth === 0) {
+        calls.push(source.slice(match.index, index + 1));
+        break;
+      }
+    }
+  }
+  return calls;
+}
+
 test("never synthesizes pointer movement for Codex controls", async () => {
   const source = await readFile(helperUrl, "utf8");
 
@@ -24,6 +44,44 @@ test("only the explicit attach action may activate ChatGPT", async () => {
 
   assert.equal(activations.length, 1);
   assert.match(source, /case "attach":[\s\S]*?desktop\(activateDesktop: true\)/);
+});
+
+test("finds only the official ChatGPT bundle at its expected installed path", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const lookup = source.slice(
+    source.indexOf("private func findChatGPT"),
+    source.indexOf("private func codexArea", source.indexOf("private func findChatGPT")),
+  );
+
+  assert.match(source, /chatGPTBundleIdentifier = "com\.openai\.codex"/);
+  assert.match(source, /chatGPTApplicationPath = "\/Applications\/ChatGPT\.app"/);
+  assert.match(lookup, /application\.bundleIdentifier == chatGPTBundleIdentifier/);
+  assert.match(lookup, /bundleURL\.standardizedFileURL\.path == chatGPTApplicationPath/);
+  assert.doesNotMatch(lookup, /localizedName|localizedCaseInsensitiveContains/);
+});
+
+test("all synthetic key delivery is PID-scoped and target revalidated", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const calls = [...callsNamed(source, "postKey"), ...callsNamed(source, "postChord")];
+  const approval = source.slice(source.indexOf("private func press"), source.indexOf("private func postKey"));
+  const workflow = source.slice(source.indexOf("private func launchWorkflow"), source.indexOf("private func readStandardInput"));
+  const navigation = source.slice(source.indexOf('case "navigate"'), source.indexOf('case "access-cycle"'));
+  const deletion = source.slice(source.indexOf('case "delete-backward"'), source.indexOf('case "clear-input"'));
+  const targetValidation = source.slice(
+    source.indexOf("private func revalidateFocusedDesktopTarget"),
+    source.indexOf("private func mutationDesktopSnapshot"),
+  );
+
+  assert.ok(calls.length > 0);
+  for (const call of calls) assert.match(call, /,\s*to:/, `Unscoped synthetic key call: ${call}`);
+  assert.doesNotMatch(source, /to processIdentifier: pid_t\?/);
+  assert.doesNotMatch(source, /\.post\(tap:/);
+  assert.match(targetValidation, /CFEqual\(current\.window, expected\.window\)/);
+  assert.match(targetValidation, /expected\.mutationToken[\s\S]*?current\.mutationToken != expectedToken/);
+  assert.match(approval, /revalidateFocusedDesktopTarget[\s\S]*?focusPrompt[\s\S]*?revalidateFocusedDesktopTarget[\s\S]*?postKey\(36, to: target\.application\.processIdentifier\)/);
+  assert.match(workflow, /revalidateFocusedDesktopTarget\(nextTarget[\s\S]*?postKey\(36, to: application\.processIdentifier\)/);
+  assert.match(navigation, /revalidateFocusedDesktopTarget[\s\S]*?postKey\(try keyCode\(for: direction\), to: application\.processIdentifier\)/);
+  assert.match(deletion, /focusPrompt[\s\S]*?revalidateFocusedDesktopTarget[\s\S]*?postKey\(51, to: application\.processIdentifier\)/);
 });
 
 test("mode switching targets ChatGPT without taking the foreground", async () => {
@@ -122,7 +180,7 @@ test("menu selection revalidates foreground and window with deferred PID-scoped 
   assert.match(modelSelection, /modelMenuItem\(in: window\)[\s\S]*?modelOptions\(in: window/);
   assert.match(reasoningSelection, /reasoningMenuItem\(in: window\)[\s\S]*?reasoningOption\(in: window/);
   assert.match(accessSelection, /descendants\(of: window\)/);
-  assert.match(source, /case "delete-backward":[\s\S]*?focusPrompt[\s\S]*?postKey\(51\)/);
+  assert.match(source, /case "delete-backward":[\s\S]*?focusPrompt[\s\S]*?postKey\(51, to: application\.processIdentifier\)/);
 });
 
 test("both exact and delta reasoning entry points reject a running turn", async () => {
