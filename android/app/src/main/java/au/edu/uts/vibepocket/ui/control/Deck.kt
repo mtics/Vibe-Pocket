@@ -1,15 +1,16 @@
 package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Snapshot
-import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
@@ -29,24 +30,19 @@ internal fun Deck(
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
-    onVoiceStart: (String) -> Boolean,
-    onVoiceStop: (String) -> Unit,
-    shift: Boolean,
     blocked: Boolean,
-    onLayerChord: (String) -> Boolean,
+    modifier: Modifier = Modifier,
 ) {
     val byId = inputs.associateBy(Input::id)
-    val primaryIds = listOf("key_accept", "key_reject", "key_voice", "key_clear")
+    val primaryIds = listOf("key_accept", "key_reject", "key_clear")
     val directionIds = listOf("key_up", "key_down", "key_left", "key_right")
+    val secondaryIds = listOf("key_new_task", "key_stop", "key_mode")
     val primary = primaryIds.mapNotNull(byId::get)
-    val secondary = inputs
-        .filter { it.id !in primaryIds && it.id !in directionIds }
-        .distinctBy { snapshot.actionFor(it.id) ?: Action("physical:${it.id}") }
-        .take(5)
+    val secondary = secondaryIds.mapNotNull(byId::get)
 
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
-            modifier = Modifier.fillMaxWidth().height(168.dp),
+            modifier = Modifier.fillMaxWidth().height(180.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Dpad(
@@ -56,43 +52,34 @@ internal fun Deck(
                 inFlightIds = inFlightIds,
                 onInput = onInput,
                 onNavigationRepeat = onNavigationRepeat,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                shift = shift,
                 blocked = blocked,
-                onLayerChord = onLayerChord,
+                modifier = Modifier.weight(0.92f).fillMaxHeight(),
             )
             Faces(
                 inputs = primary,
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
                 onInput = onInput,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                shift = shift,
                 blocked = blocked,
-                onLayerChord = onLayerChord,
                 modifier = Modifier.weight(1f).fillMaxSize(),
             )
         }
         if (secondary.isNotEmpty()) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                secondary.forEach { input ->
-                    InputButton(
-                        input = input,
-                        snapshot = snapshot,
-                        inFlightIds = inFlightIds,
-                        onInput = onInput,
-                        navigationRepeatEnabled = snapshot.supportsHidNavigationRepeat(input.id, hidNavigationAvailable),
-                        onNavigationRepeat = onNavigationRepeat,
-                        onVoiceStart = onVoiceStart,
-                        onVoiceStop = onVoiceStop,
-                        shift = shift,
-                        blocked = blocked,
-                        onLayerChord = onLayerChord,
-                        iconOnly = true,
-                        modifier = Modifier.weight(1f).height(52.dp),
-                    )
+            secondary.chunked(3).forEach { rowInputs ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    rowInputs.forEach { input ->
+                        InputButton(
+                            input = input,
+                            snapshot = snapshot,
+                            inFlightIds = inFlightIds,
+                            onInput = onInput,
+                            navigationRepeatEnabled = snapshot.supportsHidNavigationRepeat(input.id, hidNavigationAvailable),
+                            onNavigationRepeat = onNavigationRepeat,
+                            blocked = blocked,
+                            labelPlacement = LabelPlacement.BESIDE,
+                            modifier = Modifier.weight(1f).height(52.dp),
+                        )
+                    }
                 }
             }
         }
@@ -105,88 +92,84 @@ private fun Faces(
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
-    onVoiceStart: (String) -> Boolean,
-    onVoiceStop: (String) -> Unit,
-    shift: Boolean,
     blocked: Boolean,
-    onLayerChord: (String) -> Boolean,
     modifier: Modifier,
 ) {
     val byId = inputs.associateBy(Input::id)
-    Box(modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(
-            "key_voice" to Alignment.TopCenter,
-            "key_reject" to Alignment.CenterStart,
-            "key_accept" to Alignment.CenterEnd,
-            "key_clear" to Alignment.BottomCenter,
-        ).forEach { (id, alignment) ->
-            val input = byId[id] ?: return@forEach
-            InputButton(
-                input = input,
-                snapshot = snapshot,
-                inFlightIds = inFlightIds,
-                onInput = onInput,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                shift = shift,
-                blocked = blocked,
-                onLayerChord = onLayerChord,
-                iconOnly = true,
-                shape = CircleShape,
-                modifier = Modifier.align(alignment).size(62.dp),
-            )
+            listOf("key_clear"),
+            listOf("key_reject", "key_accept"),
+        ).forEach { rowIds ->
+            Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rowIds.forEach { id ->
+                    val input = byId[id] ?: return@forEach
+                    InputButton(
+                        input = input,
+                        snapshot = snapshot,
+                        inFlightIds = inFlightIds,
+                        onInput = onInput,
+                        blocked = blocked,
+                        labelPlacement = LabelPlacement.BESIDE,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun Dpad(
+internal fun Dpad(
     inputs: List<Input>,
     snapshot: Snapshot,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
-    onVoiceStart: (String) -> Boolean,
-    onVoiceStop: (String) -> Unit,
-    shift: Boolean,
     blocked: Boolean,
-    onLayerChord: (String) -> Boolean,
+    modifier: Modifier,
 ) {
     val byId = inputs.associateBy(Input::id)
-    Box(modifier = Modifier.size(168.dp)) {
-        listOf(
-            "key_up" to Alignment.TopCenter,
-            "key_down" to Alignment.BottomCenter,
-            "key_left" to Alignment.CenterStart,
-            "key_right" to Alignment.CenterEnd,
-        ).forEach { (id, alignment) ->
-            val input = byId[id] ?: return@forEach
-            InputButton(
-                input = input,
-                snapshot = snapshot,
-                inFlightIds = inFlightIds,
-                onInput = onInput,
-                navigationRepeatEnabled = snapshot.supportsHidNavigationRepeat(input.id, hidNavigationAvailable),
-                onNavigationRepeat = onNavigationRepeat,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                shift = shift,
-                blocked = blocked,
-                onLayerChord = onLayerChord,
-                iconOnly = true,
-                modifier = Modifier.align(alignment).size(58.dp),
-            )
-        }
+    BoxWithConstraints(modifier) {
+        val side = minOf(maxWidth, maxHeight)
+        val button = (side * 0.34f).coerceIn(48.dp, 64.dp)
+        val center = (side * 0.27f).coerceIn(40.dp, 52.dp)
         Box(
             modifier = Modifier
                 .align(Alignment.Center)
-                .size(46.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surface),
-            contentAlignment = Alignment.Center,
+                .size(side),
         ) {
-            Box(Modifier.size(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            listOf(
+                "key_up" to Alignment.TopCenter,
+                "key_down" to Alignment.BottomCenter,
+                "key_left" to Alignment.CenterStart,
+                "key_right" to Alignment.CenterEnd,
+            ).forEach { (id, alignment) ->
+                val input = byId[id] ?: return@forEach
+                InputButton(
+                    input = input,
+                    snapshot = snapshot,
+                    inFlightIds = inFlightIds,
+                    onInput = onInput,
+                    navigationRepeatEnabled = snapshot.supportsHidNavigationRepeat(input.id, hidNavigationAvailable),
+                    onNavigationRepeat = onNavigationRepeat,
+                    blocked = blocked,
+                    labelPlacement = LabelPlacement.HIDDEN,
+                    shape = CircleShape,
+                    modifier = Modifier.align(alignment).size(button),
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(center)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.size(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            }
         }
     }
 }

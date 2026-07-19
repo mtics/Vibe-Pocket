@@ -41,7 +41,7 @@ import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -168,7 +168,7 @@ internal fun iconForInput(name: String): ImageVector = when (name) {
     "mic" -> Icons.Filled.Mic
     "add" -> Icons.Filled.Add
     "stop" -> Icons.Filled.Stop
-    "cycle" -> Icons.Filled.Sync
+    "cycle" -> Icons.Filled.SwapHoriz
     "clear" -> Icons.AutoMirrored.Filled.Backspace
     "agent" -> Icons.Filled.AccountCircle
     "up" -> Icons.Filled.ArrowUpward

@@ -77,4 +77,14 @@ class ReconnectTest {
             ),
         )
     }
+
+    @Test
+    fun newlyBondedComputerContinuesDirectlyIntoHidConnection() {
+        assertEquals(
+            "AA:BB:CC:DD:EE:FF",
+            newlyBondedComputer("AA:BB:CC:DD:EE:FF", bonded = true, computer = true),
+        )
+        assertNull(newlyBondedComputer("AA:BB:CC:DD:EE:FF", bonded = false, computer = true))
+        assertNull(newlyBondedComputer("AA:BB:CC:DD:EE:FF", bonded = true, computer = false))
+    }
 }

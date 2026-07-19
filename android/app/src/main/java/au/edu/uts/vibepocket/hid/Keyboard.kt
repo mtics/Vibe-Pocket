@@ -80,6 +80,9 @@ internal fun infer(
     registered && connectedAddress == null && connectingAddress == null && it in bondedAddresses
 }
 
+internal fun newlyBondedComputer(address: String?, bonded: Boolean, computer: Boolean): String? =
+    address?.takeIf { bonded && computer }
+
 class Keyboard(context: Context) : AutoCloseable, Hid {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -194,9 +197,35 @@ class Keyboard(context: Context) : AutoCloseable, Hid {
     }
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                BluetoothDevice.ACTION_BOND_STATE_CHANGED -> refreshHosts()
+                BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                    if (!hasPermissions()) return
+                    refreshHosts()
+                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    }
+                    val deviceAddress = runCatching { device?.address }.getOrNull()
+                    val isComputer = runCatching {
+                        device?.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER
+                    }.getOrDefault(false)
+                    val address = newlyBondedComputer(
+                        address = deviceAddress,
+                        bonded = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE) ==
+                            BluetoothDevice.BOND_BONDED,
+                        computer = isComputer,
+                    )
+                    if (address != null) {
+                        rememberPreferredHost(address)
+                        autoReconnectAttempted = false
+                        resetPreferredReconnect()
+                        reconnectPreferredHost()
+                    }
+                }
                 BluetoothAdapter.ACTION_STATE_CHANGED -> {
                     val enabled = adapter?.isEnabled == true
                     _state.value = _state.value.copy(

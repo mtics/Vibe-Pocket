@@ -1,31 +1,27 @@
 package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Snapshot
-import au.edu.uts.vibepocket.gesture.layer.GuardMillis
-import au.edu.uts.vibepocket.gesture.layer.Route
-import au.edu.uts.vibepocket.gesture.layer.route
 import au.edu.uts.vibepocket.profile.FallbackInputs
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
+import au.edu.uts.vibepocket.ui.control.actions.Actions
+import au.edu.uts.vibepocket.ui.control.stage.Stage
+import au.edu.uts.vibepocket.ui.control.state.State
+import au.edu.uts.vibepocket.ui.control.state.state
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 @Composable
 internal fun Screen(
@@ -37,7 +33,7 @@ internal fun Screen(
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     onAgent: (String) -> Unit,
-    onModel: () -> Unit,
+    onModel: (String) -> Boolean,
     onLayer: (String) -> Boolean,
 ) {
     val desktop = snapshot.desktop
@@ -46,94 +42,91 @@ internal fun Screen(
     val keys = (profileKeys + FallbackInputs.filter { fallback -> profileKeys.none { it.id == fallback.id } })
         .distinctBy(Input::id)
         .take(13)
-    val touch = inputs.firstOrNull { it.kind == Input.Kind.TOUCH }
     val workflows = inputs.filter { it.kind == Input.Kind.JOYSTICK }.take(4)
     val reasoning = inputs.filter { it.kind == Input.Kind.DIAL }
-    val scope = rememberCoroutineScope()
-    var shift by remember { mutableStateOf(false) }
-    var guarded by remember { mutableStateOf(false) }
-
-    fun routeInput(inputId: String, gesture: Gesture.Kind): Boolean = when (
-        val result = route(inputId, gesture, shift, guarded)
-    ) {
-        Route.Pass -> false
-        Route.Suppress -> true
-        is Route.Select -> {
-            if (onLayer(result.layerId)) {
-                guarded = true
-                scope.launch {
-                    delay(GuardMillis)
-                    guarded = false
-                }
-            }
-            true
-        }
-    }
-
-    val dispatch: (String, Gesture.Kind) -> Unit = { inputId, gesture ->
-        if (!routeInput(inputId, gesture)) onInput(inputId, gesture)
-    }
-    val voiceStart: (String) -> Boolean = { inputId ->
-        !routeInput(inputId, Gesture.Kind.TAP) && onVoiceStart(inputId)
-    }
-    val repeat: (String, Boolean) -> Unit = { inputId, initial ->
-        if (!initial || !routeInput(inputId, Gesture.Kind.TAP)) onNavigationRepeat(inputId, initial)
-    }
+    val mode = (inputs + keys).distinctBy(Input::id)
+        .firstOrNull { snapshot.actionFor(it.id)?.type == "mode_cycle" }
+    val surface = snapshot.state()
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val scroll = rememberScrollState()
+        val compact = maxHeight < 800.dp
+        val stageHeight = when (surface.kind) {
+            State.Kind.QUESTION -> 132.dp
+            State.Kind.ERROR -> 112.dp
+            State.Kind.DECISION, State.Kind.READY, State.Kind.RUNNING -> 88.dp
+        }
+        val actionHeight = when (surface.kind) {
+            State.Kind.ERROR -> 144.dp
+            State.Kind.QUESTION, State.Kind.DECISION, State.Kind.READY, State.Kind.RUNNING ->
+                if (compact) 264.dp else 272.dp
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .then(if (maxHeight < 720.dp) Modifier.verticalScroll(scroll) else Modifier)
+                .then(if (compact) Modifier.verticalScroll(scroll) else Modifier)
                 .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Agents(snapshot, inFlightIds, onAgent)
-            Context(snapshot)
-            desktop?.profile?.layers?.take(6)?.let { layers ->
-                Layers(
-                    layers = layers,
-                    active = desktop.activeLayerId,
-                    inFlightIds = inFlightIds,
-                    enabled = snapshot.status.state == "ready",
-                    onLayer = onLayer,
-                    shift = shift,
-                    onShift = { shift = it },
-                )
-            }
-            Deck(
-                inputs = keys + listOfNotNull(touch),
+            Stage(surface, Modifier.height(stageHeight))
+            Layers(
+                layers = desktop?.profile?.layers.orEmpty().take(6),
+                active = desktop?.activeLayerId,
+                inFlightIds = inFlightIds,
+                enabled = snapshot.status.state == "ready",
+                onLayer = onLayer,
+            )
+            Actions(
+                state = surface,
+                inputs = keys,
+                modeInput = mode,
                 snapshot = snapshot,
                 hidNavigationAvailable = hidNavigationAvailable,
                 inFlightIds = inFlightIds,
-                onInput = dispatch,
-                onNavigationRepeat = repeat,
-                onVoiceStart = voiceStart,
-                onVoiceStop = onVoiceStop,
-                shift = shift,
-                blocked = guarded,
-                onLayerChord = { inputId -> routeInput(inputId, Gesture.Kind.TAP) },
-            )
-            Reasoning(
-                inputs = reasoning,
-                state = desktop?.reasoning ?: au.edu.uts.vibepocket.control.Reasoning.Unavailable,
-                snapshot = snapshot,
-                inFlightIds = inFlightIds,
-                onInput = dispatch,
-                onModel = onModel,
-                blocked = guarded,
+                onInput = onInput,
+                onNavigationRepeat = onNavigationRepeat,
+                modifier = Modifier.height(actionHeight),
             )
             Workflows(
                 inputs = workflows,
                 snapshot = snapshot,
                 inFlightIds = inFlightIds,
-                onInput = dispatch,
-                onVoiceStart = voiceStart,
-                onVoiceStop = onVoiceStop,
-                blocked = guarded,
+                onInput = onInput,
+                blocked = false,
             )
-            Spacer(Modifier.height(12.dp))
+            if (!compact) Spacer(Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth().height(60.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Model(
+                    state = desktop?.model ?: au.edu.uts.vibepocket.control.Model.Unavailable,
+                    snapshot = snapshot,
+                    inFlightIds = inFlightIds,
+                    onModel = onModel,
+                    blocked = false,
+                    modifier = Modifier.weight(1f),
+                )
+                Reasoning(
+                    inputs = reasoning,
+                    state = desktop?.reasoning ?: au.edu.uts.vibepocket.control.Reasoning.Unavailable,
+                    snapshot = snapshot,
+                    inFlightIds = inFlightIds,
+                    onInput = onInput,
+                    blocked = false,
+                    modifier = Modifier.weight(1.25f),
+                )
+            }
+            Voice(
+                input = keys.firstOrNull { it.id == "key_voice" },
+                snapshot = snapshot,
+                inFlightIds = inFlightIds,
+                onInput = onInput,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
+                blocked = false,
+            )
         }
     }
 }

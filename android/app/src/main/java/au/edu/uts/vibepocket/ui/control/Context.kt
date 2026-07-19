@@ -19,8 +19,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.HourglassTop
-import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -42,7 +42,7 @@ internal fun Context(snapshot: Snapshot) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp)
+            .height(56.dp)
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
             .padding(horizontal = 11.dp),
@@ -67,15 +67,27 @@ internal fun Context(snapshot: Snapshot) {
                 )
             }
         } else {
-            Item(iconFor(activity), labelFor(activity), tint, Modifier.weight(0.8f))
-            Item(Icons.Default.Sync, desktop?.mode?.label.orEmpty().ifBlank { "Unavailable" }, null, Modifier.weight(1f))
-            Item(Icons.Default.LockOpen, desktop?.access?.label.orEmpty().ifBlank { "Unavailable" }, null, Modifier.weight(1f))
+            Item(iconFor(activity), "Task", labelFor(activity), tint, Modifier.weight(0.8f))
+            Item(
+                Icons.Default.Tune,
+                "Mode",
+                desktop?.mode?.label.orEmpty().ifBlank { "Unavailable" },
+                null,
+                Modifier.weight(1f),
+            )
+            Item(
+                Icons.Default.Shield,
+                "Access",
+                desktop?.access?.label.orEmpty().ifBlank { "Unavailable" },
+                null,
+                Modifier.weight(1f),
+            )
         }
     }
 }
 
 @Composable
-private fun Item(icon: ImageVector, value: String, tint: Color?, modifier: Modifier) {
+private fun Item(icon: ImageVector, caption: String, value: String, tint: Color?, modifier: Modifier) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(
             icon,
@@ -84,13 +96,16 @@ private fun Item(icon: ImageVector, value: String, tint: Color?, modifier: Modif
             modifier = Modifier.size(18.dp),
         )
         Spacer(Modifier.width(7.dp))
-        Text(
-            value,
-            color = tint ?: MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Medium,
-        )
+        Column {
+            Text(caption, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            Text(
+                value,
+                color = tint ?: MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+            )
+        }
     }
 }

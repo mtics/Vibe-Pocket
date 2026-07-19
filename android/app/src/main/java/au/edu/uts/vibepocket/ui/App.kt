@@ -76,7 +76,7 @@ internal fun App(viewModel: Session) {
         Dispatch(
             hid = hidController,
             bridge = remote(viewModel),
-            onHidAction = viewModel::applyLocalHidAction,
+            onAction = viewModel::applyLocalAction,
         )
     }
     val hidState by hidController.state.collectAsStateWithLifecycle()
@@ -218,9 +218,11 @@ internal fun App(viewModel: Session) {
     val onAgent: (String) -> Unit = { agentId ->
         if (viewModel.focusAgent(agentId)) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
     }
-    val onModelPicker: () -> Unit = {
-        if (inputOrchestrator.openModel(state.snapshot)) {
-            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+    val onModel: (String) -> Boolean = { modelId ->
+        viewModel.selectModel(modelId).also {
+            if (it) {
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            }
         }
     }
     val onLayer: (String) -> Boolean = { layerId ->
@@ -239,7 +241,12 @@ internal fun App(viewModel: Session) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbar,
+                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 104.dp),
+            )
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -283,7 +290,7 @@ internal fun App(viewModel: Session) {
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
-                    onModel = onModelPicker,
+                    onModel = onModel,
                     onLayer = onLayer,
                 )
             }

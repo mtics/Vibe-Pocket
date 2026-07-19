@@ -76,11 +76,15 @@ internal fun Agents(
                 val loading = "agent:${agent.id}" in inFlightIds
                 Row(
                     modifier = Modifier
-                        .width(148.dp)
+                        .width(if (slot.focused) 188.dp else 132.dp)
                         .height(48.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(if (slot.focused) color.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface)
-                        .border(1.dp, color.copy(alpha = if (slot.focused) 0.9f else 0.28f), RoundedCornerShape(8.dp))
+                        .background(if (slot.focused) color.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface)
+                        .border(
+                            width = if (slot.focused) 1.dp else 0.dp,
+                            color = color.copy(alpha = 0.82f),
+                            shape = RoundedCornerShape(8.dp),
+                        )
                         .semantics {
                             role = Role.Button
                             selected = slot.focused
