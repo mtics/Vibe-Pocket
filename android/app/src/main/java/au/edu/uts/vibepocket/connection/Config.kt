@@ -7,6 +7,7 @@ data class Config(
     val credential: String,
 ) {
     val normalizedUrl: String = normalizeOrigin(baseUrl)
+    val isDeviceCredential: Boolean = DeviceCredential.matches(credential)
 
     init {
         require(credential.length in 24..512 && credential.none(Char::isISOControl)) {
@@ -16,6 +17,8 @@ data class Config(
 
     override fun toString(): String = "Config(baseUrl=$normalizedUrl, credential=<redacted>)"
 }
+
+private val DeviceCredential = Regex("^vp1\\.[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{32,128}$")
 
 internal fun normalizeOrigin(value: String): String {
     val uri = runCatching { URI(value.trim()) }

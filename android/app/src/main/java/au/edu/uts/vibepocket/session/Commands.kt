@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal class Commands(
     private val snapshot: () -> Snapshot?,
-    private val deliver: (Command, String) -> Boolean,
+    private val deliver: (Command, String, String?) -> Boolean,
 ) {
     private val sequence = AtomicLong(0)
 
@@ -22,35 +22,37 @@ internal class Commands(
         } else {
             "input:$inputId:${gesture.wireValue}"
         }
-        return deliver(current.commandFor(inputId, gesture), id)
+        return deliver(current.commandFor(inputId, gesture), id, null)
     }
 
     fun openModel(): Boolean {
         val current = snapshot() ?: return false
         val desktop = current.desktop ?: return false
         if (!desktop.foreground || desktop.question != null || !current.capabilities.modelPicker) return false
-        return deliver(Command.ModelPicker, "model-picker")
+        return deliver(Command.ModelPicker, "model-picker", null)
     }
 
     fun focusAgent(agentId: String): Boolean {
         val current = snapshot() ?: return false
         if (!current.agentFocusEnabled(agentId)) return false
-        return deliver(Command.FocusAgent(agentId), "agent:$agentId")
+        return deliver(Command.FocusAgent(agentId), "agent:$agentId", "agent")
     }
 
     fun selectModel(modelId: String): Boolean {
         val current = snapshot() ?: return false
-        val model = current.desktop?.model ?: return false
+        val desktop = current.desktop ?: return false
+        val model = desktop.model
+        if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
         if (!current.capabilities.model || !model.available || model.id == modelId) return false
         if (model.options.none { it.id == modelId }) return false
-        return deliver(Command.SelectModel(modelId), "model:$modelId")
+        return deliver(Command.SelectModel(modelId), "model:$modelId", "model")
     }
 
     fun selectLayer(layerId: String): Boolean {
         val desktop = snapshot()?.desktop ?: return false
         if (desktop.profile?.layers?.none { it.id == layerId } != false) return false
         if (desktop.activeLayerId == layerId) return false
-        return deliver(Command.SelectLayer(layerId), "layer:$layerId")
+        return deliver(Command.SelectLayer(layerId), "layer:$layerId", "layer")
     }
 
     fun updateBinding(
@@ -66,6 +68,7 @@ internal class Commands(
         return deliver(
             Command.UpdateBinding(layerId, inputId, gesture, action),
             "mapping:$inputId:${gesture.wireValue}",
+            null,
         )
     }
 
@@ -76,6 +79,7 @@ internal class Commands(
         return deliver(
             Command.ClearBinding(layerId, inputId, gesture),
             "mapping:$inputId:${gesture.wireValue}",
+            null,
         )
     }
 
@@ -84,14 +88,14 @@ internal class Commands(
         if (trimmed.isEmpty() || trimmed.length > 40 || trimmed.any(Char::isISOControl)) return false
         val layer = snapshot()?.desktop?.profile?.layers?.firstOrNull { it.id == layerId } ?: return false
         if (layer.name == trimmed) return false
-        return deliver(Command.RenameLayer(layerId, trimmed), "rename:$layerId")
+        return deliver(Command.RenameLayer(layerId, trimmed), "rename:$layerId", null)
     }
 
     fun updateLayerColor(layerId: String, color: String): Boolean {
         if (!color.matches(Regex("#[0-9a-fA-F]{6}"))) return false
         val layer = snapshot()?.desktop?.profile?.layers?.firstOrNull { it.id == layerId } ?: return false
         if (layer.color.equals(color, ignoreCase = true)) return false
-        return deliver(Command.UpdateLayerColor(layerId, color.uppercase()), "color:$layerId")
+        return deliver(Command.UpdateLayerColor(layerId, color.uppercase()), "color:$layerId", null)
     }
 
     fun updateWorkflow(workflowId: String, prompt: String): Boolean {
@@ -100,11 +104,11 @@ internal class Commands(
         if (trimmed.isEmpty() || trimmed.length > 4_000 || invalidControl) return false
         val workflow = snapshot()?.desktop?.profile?.workflows?.firstOrNull { it.id == workflowId } ?: return false
         if (workflow.prompt == trimmed) return false
-        return deliver(Command.UpdateWorkflowPrompt(workflowId, trimmed), "workflow:$workflowId")
+        return deliver(Command.UpdateWorkflowPrompt(workflowId, trimmed), "workflow:$workflowId", null)
     }
 
     fun resetProfile(): Boolean {
         if (snapshot()?.desktop?.profile == null) return false
-        return deliver(Command.ResetProfile, "reset-profile")
+        return deliver(Command.ResetProfile, "reset-profile", null)
     }
 }

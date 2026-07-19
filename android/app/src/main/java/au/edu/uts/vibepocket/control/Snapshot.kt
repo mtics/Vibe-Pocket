@@ -11,6 +11,8 @@ data class Snapshot(
     val status: Status,
     val capabilities: Capabilities,
     val desktop: Desktop? = null,
+    /** Local transport metadata. It is not part of the Bridge snapshot payload. */
+    val transportFresh: Boolean = true,
 ) {
     val activeLayer: Layer?
         get() = desktop?.profile?.layers?.firstOrNull { it.id == desktop.activeLayerId }
@@ -31,7 +33,7 @@ data class Snapshot(
     }
 
     fun supportsHidNavigationRepeat(inputId: String, hidConnected: Boolean): Boolean {
-        if (!hidConnected || desktop?.question != null) return false
+        if (!transportFresh || !hidConnected || desktop?.question != null) return false
         val tapAction = actionFor(inputId, Gesture.Kind.TAP)
         return tapAction?.type == "navigate" &&
             inputEnabled(inputId, Gesture.Kind.TAP) &&
@@ -80,7 +82,8 @@ data class Snapshot(
 
 /** The control surface need not rebuild for a revision or status-message-only update. */
 internal fun Snapshot.sameSurface(other: Snapshot): Boolean =
-    status.state == other.status.state &&
+    transportFresh == other.transportFresh &&
+        status.state == other.status.state &&
         capabilities == other.capabilities &&
         desktop == other.desktop
 

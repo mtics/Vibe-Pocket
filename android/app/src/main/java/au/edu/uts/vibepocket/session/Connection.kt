@@ -1,14 +1,18 @@
 package au.edu.uts.vibepocket.session
 
 import au.edu.uts.vibepocket.bridge.Client
+import au.edu.uts.vibepocket.bridge.Failure
+import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.control.Snapshot
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.withTimeout
 import java.util.UUID
 
 internal class Connection(
@@ -24,10 +28,26 @@ internal class Connection(
     private val rejected: (Throwable) -> Unit,
     private val recover: (Config) -> Unit,
     private val nonce: () -> String = { UUID.randomUUID().toString().replace("-", "") },
+    private val retry: Retry = Retry(),
 ) {
-    private val generation = AtomicLong(0)
+    private data class Attempt(
+        val generation: Long,
+        val id: String,
+        val claim: Claim?,
+    )
+
     private val lock = Any()
-    private var retry: Pair<Invitation, String>? = null
+    private var generation = 0L
+    private var claim = store.loadClaim()
+    private var active: Attempt? = null
+    private var revoking = false
+
+    val pendingInvitation: Invitation?
+        get() = synchronized(lock) { claim?.invitation }
+
+    fun restore() {
+        retryRevocation()
+    }
 
     fun connect(baseUrl: String, credential: String): Boolean {
         val config = runCatching { Config(baseUrl.trim(), credential.trim()) }
@@ -40,72 +60,212 @@ internal class Connection(
         return start { config }
     }
 
-    fun pair(invitation: Invitation): Boolean {
-        val claimNonce = synchronized(lock) {
-            retry?.takeIf { it.first == invitation }?.second
-                ?: nonce().also { retry = invitation to it }
+    fun offer(invitation: Invitation): Boolean {
+        val superseded = runCatching {
+            synchronized(lock) {
+                val previous = claim ?: return@synchronized null
+                if (previous.invitation == invitation) return@synchronized null
+                store.clearClaim()
+                claim = null
+                active?.takeIf { it.claim != null }?.also {
+                    generation += 1
+                    active = null
+                }
+            }
+        }.getOrElse {
+            rejected(it)
+            return false
         }
-        return start(pairing = true) { client.claim(invitation, claimNonce) }
+        superseded?.let { pending.remove(it.id) }
+        if (superseded != null) publishPending()
+        return true
     }
 
-    private fun start(pairing: Boolean = false, resolve: suspend () -> Config): Boolean {
-        val attempt = synchronized(lock) {
-            if (pending.any { it.startsWith(InFlightPrefix) }) return false
-            generation.incrementAndGet()
+    fun dismiss(invitation: Invitation) {
+        val superseded = runCatching {
+            synchronized(lock) {
+                val previous = claim?.takeIf { it.invitation == invitation } ?: return@synchronized null
+                store.clearClaim()
+                claim = null
+                active?.takeIf { it.claim == previous }?.also {
+                    generation += 1
+                    active = null
+                }
+            }
+        }.getOrElse {
+            rejected(it)
+            return
         }
-        val id = "$InFlightPrefix$attempt"
-        if (!pending.add(id)) return false
+        superseded?.let { pending.remove(it.id) }
+        if (superseded != null) publishPending()
+    }
+
+    fun pair(invitation: Invitation): Boolean {
+        val pendingClaim = runCatching {
+            synchronized(lock) {
+                claim?.takeIf { it.invitation == invitation }
+                    ?: Claim(invitation, nonce()).also {
+                        store.saveClaim(it)
+                        claim = it
+                    }
+            }
+        }.getOrElse {
+            rejected(it)
+            return false
+        }
+        return start(pendingClaim) { client.claim(invitation, pendingClaim.nonce) }
+    }
+
+    private fun start(claim: Claim? = null, resolve: suspend () -> Config): Boolean {
+        if (store.loadRevocations().isNotEmpty()) {
+            rejected(IllegalStateException("Vibe Pocket is still revoking the previous device credential."))
+            retryRevocation()
+            return false
+        }
+        val attempt = synchronized(lock) {
+            if (active != null) return false
+            val next = ++generation
+            Attempt(next, "$InFlightPrefix$next", claim).also { active = it }
+        }
+        if (!pending.add(attempt.id)) {
+            synchronized(lock) { if (active === attempt) active = null }
+            return false
+        }
         publishPending()
         scope.launch(dispatcher) {
+            var issued: Config? = null
             val verified = runCatching {
-                val config = resolve()
+                val config = resolve().also { if (attempt.claim != null) issued = it }
                 config to client.snapshot(config)
             }
-            if (generation.get() != attempt) {
-                pending.remove(id)
+            if (!isCurrent(attempt)) {
+                pending.remove(attempt.id)
+                issued?.let(::retireIssued)
+                publishPending()
                 return@launch
             }
-            verified.onSuccess { (config, snapshot) ->
-                runCatching {
-                    synchronized(lock) {
-                        check(generation.get() == attempt) { "Connection change was superseded." }
-                        store.save(config)
-                        connected(config, snapshot)
-                        if (pairing) retry = null
-                    }
-                }.onFailure { error ->
-                    pending.remove(id)
-                    if (generation.get() == attempt) {
-                        publishPending()
-                        rejected(error)
-                    }
+            verified.onSuccess { (config, snapshot) -> commit(attempt, config, snapshot) }
+                .onFailure { error ->
+                    if (!isCurrent(attempt)) issued?.let(::retireIssued)
+                    fail(attempt, error)
                 }
-            }.onFailure { error ->
-                pending.remove(id)
-                if (generation.get() == attempt) {
-                    publishPending()
-                    rejected(error)
-                }
-            }
         }
         return true
     }
 
-    fun disconnect() {
-        val previous = current()
+    private fun commit(attempt: Attempt, config: Config, snapshot: Snapshot) {
         runCatching {
             synchronized(lock) {
-                generation.incrementAndGet()
-                store.clear()
-                retry = null
-                disconnected()
+                check(active === attempt && generation == attempt.generation) {
+                    "Connection change was superseded."
+                }
+                if (attempt.claim == null) store.save(config) else store.commit(config)
+                pending.remove(attempt.id)
+                connected(config, snapshot.copy(transportFresh = true))
+                if (attempt.claim != null) claim = null
+                active = null
             }
-            previous?.let { config ->
-                scope.launch(dispatcher) { runCatching { client.revoke(config) } }
+        }.onFailure { fail(attempt, it) }
+    }
+
+    private fun fail(attempt: Attempt, error: Throwable) {
+        pending.remove(attempt.id)
+        val currentAttempt = synchronized(lock) {
+            if (active !== attempt || generation != attempt.generation) {
+                false
+            } else {
+                active = null
+                true
             }
-        }.onFailure { error ->
+        }
+        if (currentAttempt) {
+            publishPending()
+            rejected(error)
+        }
+    }
+
+    private fun isCurrent(attempt: Attempt): Boolean = synchronized(lock) {
+        active === attempt && generation == attempt.generation
+    }
+
+    fun disconnect() {
+        var previous: Config? = null
+        val superseded = runCatching {
+            synchronized(lock) {
+                val existing = current().also { previous = it }
+                if (existing == null || !existing.isDeviceCredential) {
+                    store.clear()
+                    store.clearClaim()
+                } else {
+                    store.forget(existing)
+                }
+                generation += 1
+                claim = null
+                active.also {
+                    active = null
+                    disconnected()
+                }
+            }
+        }.getOrElse { error ->
             rejected(error)
             previous?.let(recover)
+            return
+        }
+        superseded?.let { pending.remove(it.id) }
+        retryRevocation()
+    }
+
+    private fun retireIssued(config: Config) {
+        runCatching { store.enqueueRevocation(config) }
+            .onFailure {
+                rejected(it)
+                return
+            }
+        retryRevocation()
+    }
+
+    private fun retryRevocation() {
+        val launch = synchronized(lock) {
+            if (revoking || store.loadRevocations().isEmpty()) false else true.also { revoking = it }
+        }
+        if (!launch) return
+        scope.launch(dispatcher) {
+            var retryDelay = retry.initialDelayMillis
+            try {
+                while (isActive) {
+                    val voiceStop = store.loadVoiceStop()
+                    val queued = store.loadRevocations()
+                    if (queued.isEmpty()) return@launch
+                    val config = queued.firstOrNull { candidate ->
+                        voiceStop == null || !voiceStop.config.matches(candidate)
+                    }
+                    if (config == null) {
+                        delay(retryDelay)
+                        retryDelay = (retryDelay * 2).coerceAtMost(retry.maxDelayMillis)
+                        continue
+                    }
+                    val result = runCatching {
+                        withTimeout(retry.timeoutMillis) { client.revoke(config) }
+                    }
+                    val revoked = result.isSuccess ||
+                        (result.exceptionOrNull() as? Failure)?.statusCode == 401
+                    if (revoked) {
+                        runCatching { store.removeRevocation(config) }
+                            .onSuccess {
+                                retryDelay = retry.initialDelayMillis
+                                continue
+                            }
+                    }
+                    delay(retryDelay)
+                    retryDelay = (retryDelay * 2).coerceAtMost(retry.maxDelayMillis)
+                }
+            } finally {
+                val relaunch = synchronized(lock) {
+                    revoking = false
+                    store.loadRevocations().isNotEmpty()
+                }
+                if (relaunch) retryRevocation()
+            }
         }
     }
 
@@ -113,3 +273,6 @@ internal class Connection(
         const val InFlightPrefix = "connection:"
     }
 }
+
+private fun Config.matches(other: Config): Boolean =
+    normalizedUrl == other.normalizedUrl && credential == other.credential

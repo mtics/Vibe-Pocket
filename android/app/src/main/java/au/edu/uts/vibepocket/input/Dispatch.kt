@@ -3,14 +3,14 @@ package au.edu.uts.vibepocket.input
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
-import au.edu.uts.vibepocket.session.Session
+import java.util.concurrent.atomic.AtomicLong
 
 internal interface Hid {
-    fun send(action: Action): Boolean
+    fun send(action: Action, completion: (Boolean) -> Unit): Boolean
     fun press(action: Action): Boolean
     fun release(action: Action): Boolean
     fun releaseAny(): Boolean
-    fun repeat(action: Action): Boolean
+    fun repeat(action: Action, completion: (Boolean) -> Unit): Boolean
     fun stopRepeat()
 }
 
@@ -19,17 +19,6 @@ internal interface Bridge {
     fun openModel(): Boolean
     fun startVoice(inputId: String): Boolean
     fun stopVoice(inputId: String): Boolean
-}
-
-internal fun remote(session: Session): Bridge = object : Bridge {
-    override fun activate(inputId: String, gesture: Gesture.Kind): Boolean =
-        session.activateInput(inputId, gesture)
-
-    override fun openModel(): Boolean = session.openModel()
-
-    override fun startVoice(inputId: String): Boolean = session.startVoice(inputId)
-
-    override fun stopVoice(inputId: String): Boolean = session.stopVoice(inputId)
 }
 
 internal class Dispatch(
@@ -43,6 +32,7 @@ internal class Dispatch(
     )
 
     private var held: Held? = null
+    private val generation = AtomicLong(0)
 
     fun activate(
         snapshot: Snapshot?,
@@ -50,15 +40,16 @@ internal class Dispatch(
         gesture: Gesture.Kind,
     ): Boolean = when (val plan = activation(snapshot, inputId, gesture)) {
         Plan.Disabled -> false
-        is Plan.Bridge -> deliver(plan, snapshot?.actionFor(inputId, gesture))
-        is Plan.HidTap -> deliver(plan.action) || deliver(plan.fallback, plan.action)
+        is Plan.Bridge -> deliver(plan)
+        is Plan.HidTap -> deliver(plan.action) { deliver(plan.fallback) }
         is Plan.HidHold -> false
     }
 
     fun openModel(snapshot: Snapshot?): Boolean {
         val desktop = snapshot?.desktop ?: return false
         if (!desktop.foreground || desktop.question != null || !snapshot.capabilities.modelPicker) return false
-        return deliver(Action("model_picker")) || bridge.openModel()
+        if (!snapshot.transportFresh) return bridge.openModel()
+        return deliver(Action("model_picker"), bridge::openModel)
     }
 
     fun startRepeat(snapshot: Snapshot?, inputId: String): Boolean {
@@ -67,7 +58,10 @@ internal class Dispatch(
             is Plan.Bridge -> bridge.activate(plan.inputId, plan.gesture)
             is Plan.HidTap -> {
                 if (plan.action.type != "navigate") return false
-                hid.repeat(plan.action) || bridge.activate(plan.fallback.inputId, plan.fallback.gesture)
+                val requestGeneration = generation.get()
+                hid.repeat(plan.action) { delivered ->
+                    if (!delivered && generation.get() == requestGeneration) deliver(plan.fallback)
+                } || deliver(plan.fallback)
             }
             is Plan.HidHold -> false
         }
@@ -95,24 +89,30 @@ internal class Dispatch(
     fun stopVoice(inputId: String): Boolean {
         val owner = held
         if (owner == null) return bridge.stopVoice(inputId)
-        if (owner.inputId != inputId) return false
         held = null
-        return hid.release(owner.action)
+        val released = hid.release(owner.action)
+        val stopped = bridge.stopVoice(owner.inputId)
+        return released || stopped
     }
 
     fun release() {
-        held = null
+        generation.incrementAndGet()
+        hid.stopRepeat()
+        held?.also { owner ->
+            held = null
+            hid.release(owner.action)
+            bridge.stopVoice(owner.inputId)
+        }
         hid.releaseAny()
     }
 
-    private fun deliver(action: Action): Boolean {
-        if (!hid.send(action)) return false
-        onAction(action)
-        return true
+    private fun deliver(action: Action, fallback: () -> Boolean): Boolean {
+        val requestGeneration = generation.get()
+        return hid.send(action) { delivered ->
+            if (generation.get() != requestGeneration) return@send
+            if (delivered) onAction(action) else fallback()
+        } || fallback()
     }
 
-    private fun deliver(plan: Plan.Bridge, action: Action?): Boolean {
-        if (!bridge.activate(plan.inputId, plan.gesture)) return false
-        return true
-    }
+    private fun deliver(plan: Plan.Bridge): Boolean = bridge.activate(plan.inputId, plan.gesture)
 }

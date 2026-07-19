@@ -8,6 +8,9 @@ internal class Prediction(
 ) {
     private data class Pending(
         val status: au.edu.uts.vibepocket.control.Reasoning,
+        val previous: au.edu.uts.vibepocket.control.Reasoning,
+        val focusedAgentId: String?,
+        val modelId: String?,
         val expiresAtMillis: Long,
     )
 
@@ -20,6 +23,9 @@ internal class Prediction(
         val shifted = desktop.reasoning.shifted(action.delta) ?: return state
         pending = Pending(
             status = shifted,
+            previous = desktop.reasoning,
+            focusedAgentId = desktop.focusedAgentId,
+            modelId = desktop.model.id,
             expiresAtMillis = nowMillis() + ConfirmationWindowMillis,
         )
         return state.copy(
@@ -37,7 +43,9 @@ internal class Prediction(
         val remoteReasoning = desktop.reasoning
         val expired = nowMillis() >= expected.expiresAtMillis
         val invalidContext = !desktop.foreground ||
-            desktop.question != null
+            desktop.question != null ||
+            desktop.focusedAgentId != expected.focusedAgentId ||
+            desktop.model.id != expected.modelId
         val confirmed = remoteReasoning.available &&
             remoteReasoning.level == expected.status.level
         if (
@@ -59,6 +67,23 @@ internal class Prediction(
 
     fun clear() {
         pending = null
+    }
+
+    fun deadlineMillis(): Long? = pending?.expiresAtMillis
+
+    fun isPending(): Boolean = pending != null
+
+    fun fail(state: State): State {
+        val expected = pending ?: return state
+        pending = null
+        val snapshot = state.snapshot ?: return state
+        val desktop = snapshot.desktop ?: return state
+        if (
+            desktop.focusedAgentId != expected.focusedAgentId ||
+            desktop.model.id != expected.modelId
+        ) return state
+        if (desktop.reasoning.level != expected.status.level) return state
+        return state.copy(snapshot = snapshot.copy(desktop = desktop.copy(reasoning = expected.previous)))
     }
 
     private companion object {

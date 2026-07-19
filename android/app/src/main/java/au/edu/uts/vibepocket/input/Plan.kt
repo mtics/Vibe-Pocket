@@ -43,6 +43,7 @@ internal fun activation(
 ): Plan {
     if (snapshot == null || !snapshot.inputEnabled(inputId, gesture)) return Plan.Disabled
     val fallback = Plan.Bridge(inputId, gesture)
+    if (!snapshot.transportFresh) return fallback
     val action = resolve(snapshot, inputId, gesture) ?: return fallback
     val desktop = snapshot.desktop
     val useHid = desktop?.foreground == true &&
@@ -55,6 +56,7 @@ internal fun activation(
 internal fun voicePress(snapshot: Snapshot?, inputId: String): Plan {
     if (snapshot == null || !snapshot.voiceTapEnabled(inputId)) return Plan.Disabled
     val fallback = Plan.Bridge(inputId, Gesture.Kind.TAP)
+    if (!snapshot.transportFresh) return fallback
     val action = resolve(snapshot, inputId, Gesture.Kind.TAP) ?: return fallback
     val desktop = snapshot.desktop
     return if (

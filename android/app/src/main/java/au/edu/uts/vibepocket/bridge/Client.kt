@@ -7,7 +7,9 @@ import au.edu.uts.vibepocket.control.Snapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.io.BufferedReader
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -21,11 +23,32 @@ interface Client {
     suspend fun claim(invitation: Invitation, nonce: String): Config =
         throw Failure("This build cannot claim pairing invitations.")
     suspend fun revoke(config: Config) = Unit
+    suspend fun stopVoice(config: Config, idempotencyKey: String) =
+        command(config, Command.VoiceStop)
 }
 
 class Http : Client {
     override suspend fun revoke(config: Config) = withContext(Dispatchers.IO) {
-        call(config.normalizedUrl, "/v1/pocket/devices/current", "DELETE", credential = config.credential)
+        call(
+            config.normalizedUrl,
+            "/v1/pocket/devices/current",
+            "DELETE",
+            credential = config.credential,
+            readTimeoutMillis = TransactionTimeoutMillis,
+        )
+        Unit
+    }
+
+    override suspend fun stopVoice(config: Config, idempotencyKey: String) = withContext(Dispatchers.IO) {
+        call(
+            config.normalizedUrl,
+            "/v1/pocket/commands",
+            "POST",
+            Command.VoiceStop.encode(),
+            config.credential,
+            idempotencyKey = idempotencyKey,
+            readTimeoutMillis = TransactionTimeoutMillis,
+        )
         Unit
     }
 
@@ -44,6 +67,7 @@ class Http : Client {
             .any { capabilities.optString(it) == "device_credentials" }
         if (!hasDeviceCredential) throw Failure("The Bridge cannot issue a device credential.")
         val claimed = Config(response.getString("baseUrl"), response.getString("token"))
+        if (!claimed.isDeviceCredential) throw Failure("The Bridge returned an invalid device credential.")
         if (claimed.normalizedUrl != invitation.origin) {
             throw Failure("The Bridge returned pairing credentials for a different address.")
         }
@@ -65,36 +89,88 @@ class Http : Client {
         method: String,
         body: JSONObject? = null,
         credential: String? = null,
+        idempotencyKey: String? = null,
+        readTimeoutMillis: Int = DefaultReadTimeoutMillis,
     ): JSONObject {
         val connection = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 20_000
-            readTimeout = 75_000
+            readTimeout = readTimeoutMillis
             setRequestProperty("Accept", "application/json")
             credential?.let { setRequestProperty("Authorization", "Bearer $it") }
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("Idempotency-Key", UUID.randomUUID().toString())
+                setRequestProperty("Idempotency-Key", idempotencyKey ?: UUID.randomUUID().toString())
                 OutputStreamWriter(outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
             }
         }
-        val status = connection.responseCode
-        val response = (if (status in 200..299) connection.inputStream else connection.errorStream)
-            ?.bufferedReader()
-            ?.use(BufferedReader::readText)
-            .orEmpty()
-        connection.disconnect()
-        if (status !in 200..299) {
-            val detail = runCatching {
-                JSONObject(response).getJSONObject("error").getString("message")
-            }.getOrDefault("The Vibe Pocket bridge rejected this action.")
-            throw Failure(detail)
-        }
-        return runCatching { JSONObject(response) }.getOrElse {
-            throw Failure("The Vibe Pocket bridge returned an invalid response.")
+        try {
+            val status = connection.responseCode
+            val response = readResponse(
+                stream = if (status in 200..299) connection.inputStream else connection.errorStream,
+                contentLength = connection.contentLengthLong,
+            ).toString(Charsets.UTF_8)
+            if (status !in 200..299) {
+                val detail = runCatching {
+                    JSONObject(response).getJSONObject("error").getString("message")
+                }.getOrDefault("The Vibe Pocket bridge rejected this action.")
+                throw Failure(detail, status)
+            }
+            return runCatching { JSONObject(response) }.getOrElse {
+                throw Failure("The Vibe Pocket bridge returned an invalid response.")
+            }
+        } finally {
+            connection.disconnect()
         }
     }
+}
+
+internal fun readResponse(
+    stream: InputStream?,
+    contentLength: Long,
+    limit: Int = MaxResponseBytes,
+): ByteArray {
+    if (contentLength > limit) throw Failure("The Vibe Pocket bridge response is too large.")
+    if (stream == null) return ByteArray(0)
+    val output = ByteArrayOutputStream(contentLength.coerceIn(0, limit.toLong()).toInt())
+    val buffer = ByteArray(8_192)
+    while (true) {
+        val count = stream.read(buffer)
+        if (count < 0) break
+        if (output.size() > limit - count) {
+            throw Failure("The Vibe Pocket bridge response is too large.")
+        }
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
+}
+
+internal interface EventStream {
+    fun start()
+    fun stop()
+}
+
+internal data class EventCallbacks(
+    val connected: () -> Unit,
+    val snapshotChanged: () -> Unit,
+    val eventId: (String) -> Unit,
+    val disconnected: (String) -> Unit,
+)
+
+internal fun interface EventFactory {
+    fun create(config: Config, lastEventId: String?, callbacks: EventCallbacks): EventStream
+}
+
+internal val NetworkEvents = EventFactory { config, lastEventId, callbacks ->
+    Events(
+        config = config,
+        lastEventId = lastEventId,
+        onConnected = callbacks.connected,
+        onSnapshotChanged = callbacks.snapshotChanged,
+        onEventId = callbacks.eventId,
+        onDisconnected = callbacks.disconnected,
+    )
 }
 
 class Events(
@@ -104,13 +180,13 @@ class Events(
     private val onSnapshotChanged: () -> Unit,
     private val onEventId: (String) -> Unit,
     private val onDisconnected: (String) -> Unit,
-) {
+) : EventStream {
     @Volatile private var running = false
     @Volatile private var connection: HttpURLConnection? = null
     @Volatile private var currentLastEventId = lastEventId
     private val executor = Executors.newSingleThreadExecutor()
 
-    fun start() {
+    override fun start() {
         if (running) return
         running = true
         executor.execute {
@@ -129,7 +205,7 @@ class Events(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         running = false
         connection?.disconnect()
         connection = null
@@ -146,36 +222,82 @@ class Events(
             currentLastEventId?.takeIf(String::isNotBlank)?.let { setRequestProperty("Last-Event-ID", it) }
         }
         connection = stream
-        if (stream.responseCode != HttpURLConnection.HTTP_OK) {
-            stream.disconnect()
-            throw Failure("The controller event connection was rejected.")
-        }
-        onConnected()
-        var event = ""
-        var eventId = ""
-        stream.inputStream.bufferedReader().useLines { lines ->
-            lines.forEach { line ->
-                if (!running) return@forEach
-                when {
-                    line.startsWith("event:") -> event = line.removePrefix("event:").trim()
-                    line.startsWith("id:") -> eventId = line.removePrefix("id:").trim()
-                    line.isBlank() -> {
-                        eventId.takeIf(String::isNotBlank)?.let {
-                            currentLastEventId = it
-                            onEventId(it)
-                        }
-                        if (event == "snapshot_changed") onSnapshotChanged()
-                        event = ""
-                        eventId = ""
-                    }
-                }
+        try {
+            if (stream.responseCode != HttpURLConnection.HTTP_OK) {
+                readResponse(stream.errorStream, stream.contentLengthLong)
+                throw Failure("The controller event connection was rejected.")
             }
+            if (stream.contentLengthLong > MaxResponseBytes) {
+                throw Failure("The controller event response is too large.")
+            }
+            onConnected()
+            consumeEvents(
+                input = BufferedInputStream(stream.inputStream),
+                active = { running },
+                onEventId = {
+                    currentLastEventId = it
+                    onEventId(it)
+                },
+                onSnapshotChanged = onSnapshotChanged,
+            )
+            if (running) throw Failure("The controller event connection ended.")
+        } finally {
+            stream.disconnect()
+            connection = null
         }
-        stream.disconnect()
-        connection = null
     }
 }
 
-class Failure(message: String) : IllegalStateException(message)
+internal fun consumeEvents(
+    input: InputStream,
+    active: () -> Boolean = { true },
+    onEventId: (String) -> Unit,
+    onSnapshotChanged: () -> Unit,
+) {
+    var event = ""
+    var eventId = ""
+    while (active()) {
+        val line = readEventLine(input) ?: return
+        when {
+            line.startsWith("event:") -> {
+                event = line.removePrefix("event:").trim().also {
+                    if (it.length > MaxEventFieldChars) throw Failure("The controller event type is too large.")
+                }
+            }
+            line.startsWith("id:") -> {
+                eventId = line.removePrefix("id:").trim().also {
+                    if (it.length > MaxEventIdChars) throw Failure("The controller event ID is too large.")
+                }
+            }
+            line.isBlank() -> {
+                eventId.takeIf(String::isNotBlank)?.let(onEventId)
+                if (event == "snapshot_changed") onSnapshotChanged()
+                event = ""
+                eventId = ""
+            }
+        }
+    }
+}
+
+private fun readEventLine(input: InputStream): String? {
+    val output = ByteArrayOutputStream()
+    while (true) {
+        val byte = input.read()
+        if (byte < 0) return if (output.size() == 0) null else output.toByteArray().toString(Charsets.UTF_8)
+        if (byte == '\n'.code) return output.toByteArray().toString(Charsets.UTF_8).removeSuffix("\r")
+        if (output.size() >= MaxEventLineBytes) {
+            throw Failure("The controller event line is too large.")
+        }
+        output.write(byte)
+    }
+}
+
+class Failure(message: String, val statusCode: Int? = null) : IllegalStateException(message)
 
 private const val ProtocolVersion = 6
+internal const val MaxResponseBytes = 1_048_576
+internal const val MaxEventLineBytes = 8_192
+private const val MaxEventFieldChars = 128
+private const val MaxEventIdChars = 1_024
+private const val DefaultReadTimeoutMillis = 75_000
+private const val TransactionTimeoutMillis = 3_000

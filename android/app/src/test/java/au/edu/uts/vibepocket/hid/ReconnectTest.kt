@@ -15,6 +15,7 @@ class ReconnectTest {
                 connectingAddress = null,
                 preferredAddress = "AA:BB:CC:DD:EE:FF",
                 bondedAddresses = setOf("AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"),
+                computerAddresses = setOf("AA:BB:CC:DD:EE:FF"),
             ),
         )
     }
@@ -28,6 +29,7 @@ class ReconnectTest {
                 connectingAddress = null,
                 preferredAddress = "AA:BB:CC:DD:EE:FF",
                 bondedAddresses = setOf("AA:BB:CC:DD:EE:FF"),
+                computerAddresses = setOf("AA:BB:CC:DD:EE:FF"),
             ),
         )
         assertNull(
@@ -37,6 +39,7 @@ class ReconnectTest {
                 connectingAddress = "AA:BB:CC:DD:EE:FF",
                 preferredAddress = "AA:BB:CC:DD:EE:FF",
                 bondedAddresses = setOf("AA:BB:CC:DD:EE:FF"),
+                computerAddresses = setOf("AA:BB:CC:DD:EE:FF"),
             ),
         )
     }
@@ -86,5 +89,21 @@ class ReconnectTest {
         )
         assertNull(newlyBondedComputer("AA:BB:CC:DD:EE:FF", bonded = false, computer = true))
         assertNull(newlyBondedComputer("AA:BB:CC:DD:EE:FF", bonded = true, computer = false))
+    }
+
+    @Test
+    fun rememberedNonComputerIsNotEligibleForReconnect() {
+        assertNull(
+            preferred(
+                registered = true,
+                connectedAddress = null,
+                connectingAddress = null,
+                preferredAddress = "11:22:33:44:55:66",
+                bondedAddresses = setOf("11:22:33:44:55:66"),
+                computerAddresses = emptySet(),
+            ),
+        )
+        assertEquals(true, eligibleComputer(256, 256))
+        assertEquals(false, eligibleComputer(512, 256))
     }
 }

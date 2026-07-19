@@ -2,14 +2,20 @@ package au.edu.uts.vibepocket.session
 
 import androidx.lifecycle.ViewModelStore
 import au.edu.uts.vibepocket.bridge.Client
+import au.edu.uts.vibepocket.bridge.EventCallbacks
+import au.edu.uts.vibepocket.bridge.EventFactory
+import au.edu.uts.vibepocket.bridge.EventStream
 import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.connection.Config
+import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.connection.Store
+import au.edu.uts.vibepocket.connection.VoiceStop
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Capabilities
 import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.Desktop
+import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
@@ -22,10 +28,13 @@ import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
+import au.edu.uts.vibepocket.input.Plan
+import au.edu.uts.vibepocket.input.activation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -68,10 +77,7 @@ class SessionTest {
         assertTrue(viewModel.activateInput("key_voice", Gesture.Kind.TAP))
         runCurrent()
         assertEquals(
-            listOf(
-                Command.Binding("key_accept", Gesture.Kind.TAP),
-                Command.Binding("key_voice", Gesture.Kind.TAP),
-            ),
+            listOf(Command.Binding("key_accept", Gesture.Kind.TAP)),
             client.commands,
         )
         assertEquals(
@@ -100,10 +106,7 @@ class SessionTest {
         runCurrent()
 
         assertEquals(
-            listOf(
-                Command.Binding("key_mode", Gesture.Kind.TAP),
-                Command.Binding("key_mode", Gesture.Kind.TAP),
-            ),
+            listOf(Command.Binding("key_mode", Gesture.Kind.TAP)),
             client.commands,
         )
         assertEquals(2, viewModel.state.value.inFlightIds.size)
@@ -420,19 +423,50 @@ class SessionTest {
     }
 
     @Test
-    fun onClearedDrainsVoiceStopOutsideViewModelScope() = runTest(dispatcher) {
-        val (viewModel, client) = voiceViewModel()
-        val store = ViewModelStore().apply { put("voice", viewModel) }
+    fun onClearedCancelsWorkerAndNextSessionRestoresVoiceStop() = runTest(dispatcher) {
+        val disk = FakeStore(DEVICE_CONFIG)
+        val client = BlockingVoiceClient()
+        val viewModel = Session(store = disk, client = client, dispatcher = dispatcher)
+        val owner = ViewModelStore().apply { put("voice", viewModel) }
         runCurrent()
 
         assertTrue(viewModel.startVoice("key_voice"))
-        store.clear()
+        owner.clear()
         runCurrent()
-        assertEquals(listOf(Command.VoiceStart), client.commands)
+        assertTrue(client.commands.isEmpty())
+        val saved = requireNotNull(disk.voiceStop)
 
         client.startRelease.complete(Unit)
         runCurrent()
-        assertEquals(listOf(Command.VoiceStart, Command.VoiceStop), client.commands)
+        assertTrue(client.commands.isEmpty())
+
+        val recovery = RecreatedVoiceClient()
+        Session(store = disk, client = recovery, dispatcher = dispatcher)
+        runCurrent()
+        assertEquals(listOf(saved), recovery.stops)
+        assertEquals(null, disk.voiceStop)
+    }
+
+    @Test
+    fun closedVoiceWorkerDoesNotRetryAfterViewModelRecreation() = runTest(dispatcher) {
+        val disk = FakeStore(DEVICE_CONFIG)
+        val client = RecreatedVoiceClient(stopFailures = 10)
+        val viewModel = Session(store = disk, client = client, dispatcher = dispatcher)
+        val owner = ViewModelStore().apply { put("voice", viewModel) }
+        runCurrent()
+
+        assertTrue(viewModel.startVoice("key_voice"))
+        runCurrent()
+        assertTrue(viewModel.stopVoice("key_voice"))
+        runCurrent()
+        assertEquals(1, client.stops.size)
+
+        owner.clear()
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertEquals(1, client.stops.size)
+        assertTrue(disk.voiceStop != null)
     }
 
     @Test
@@ -457,6 +491,411 @@ class SessionTest {
         assertEquals(null, viewModel.state.value.invitation)
     }
 
+    @Test
+    fun sseFailureKeepsDisplayContentButForcesBridgeFallback() = runTest(dispatcher) {
+        val events = FakeEvents()
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = StaticClient(),
+            dispatcher = dispatcher,
+            eventFactory = events,
+        )
+        runCurrent()
+        viewModel.setForeground(true)
+
+        events.callbacks.disconnected("Event stream lost.")
+
+        val stale = requireNotNull(viewModel.state.value.snapshot)
+        assertFalse(stale.transportFresh)
+        assertEquals("Default", stale.desktop?.profile?.layers?.first()?.name)
+        assertTrue(activation(stale, "key_accept", Gesture.Kind.TAP) is Plan.Bridge)
+
+        events.callbacks.connected()
+        val connected = requireNotNull(viewModel.state.value.snapshot)
+        assertFalse(connected.transportFresh)
+        assertTrue(activation(connected, "key_accept", Gesture.Kind.TAP) is Plan.Bridge)
+
+        runCurrent()
+        val fresh = requireNotNull(viewModel.state.value.snapshot)
+        assertTrue(fresh.transportFresh)
+        assertTrue(activation(fresh, "key_accept", Gesture.Kind.TAP) is Plan.HidTap)
+    }
+
+    @Test
+    fun predictionExpiryRefreshesWithoutAnSseEvent() = runTest(dispatcher) {
+        val client = CountingSnapshotClient(REASONING_SNAPSHOT, REASONING_SNAPSHOT)
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        runCurrent()
+
+        viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
+        advanceTimeBy(2_999)
+        runCurrent()
+        assertEquals(1, client.snapshotCalls)
+
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, client.snapshotCalls)
+        assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+    }
+
+    @Test
+    fun confirmedPredictionCancelsItsExpiryRefresh() = runTest(dispatcher) {
+        val confirmed = REASONING_SNAPSHOT.copy(
+            desktop = REASONING_SNAPSHOT.desktop?.copy(
+                reasoning = REASONING_SNAPSHOT.desktop.reasoning.copy(level = Reasoning.Level.HIGH),
+            ),
+        )
+        val client = CountingSnapshotClient(REASONING_SNAPSHOT, confirmed)
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        runCurrent()
+
+        viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
+        viewModel.refresh()
+        runCurrent()
+        advanceTimeBy(3_000)
+        runCurrent()
+
+        assertEquals(2, client.snapshotCalls)
+    }
+
+    @Test
+    fun localDeliveryFailureClearsPredictionImmediately() = runTest(dispatcher) {
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = StaticClient(REASONING_SNAPSHOT),
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        runCurrent()
+
+        viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+
+        viewModel.reportLocalDeliveryFailure("Bluetooth delivery failed.")
+
+        assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+    }
+
+    @Test
+    fun reasoningPredictionDoesNotCrossAgentOrModelIdentity() = runTest(dispatcher) {
+        val first = reasoningSnapshot("agent-a", "model-a")
+        val second = reasoningSnapshot("agent-b", "model-b")
+        val client = SnapshotQueueClient(first, second)
+        val viewModel = Session(
+            store = FakeStore(DEVICE_CONFIG),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        runCurrent()
+
+        viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+
+        viewModel.refresh()
+        runCurrent()
+
+        val visible = requireNotNull(viewModel.state.value.snapshot)
+        assertEquals("agent-b", visible.desktop?.focusedAgentId)
+        assertEquals("model-b", visible.desktop?.model?.id)
+        assertEquals(Reasoning.Level.MEDIUM, visible.desktop?.reasoning?.level)
+    }
+
+    @Test
+    fun newerInvitationSupersedesAnInFlightClaim() = runTest(dispatcher) {
+        val store = FakeStore(null)
+        val client = SupersedingPairClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        val firstCode = "a".repeat(43)
+        val secondCode = "b".repeat(43)
+
+        assertTrue(viewModel.offer(invitation(firstCode)))
+        assertTrue(viewModel.pair())
+        runCurrent()
+        assertTrue(viewModel.offer(invitation(secondCode)))
+        assertTrue(viewModel.pair())
+        runCurrent()
+
+        assertEquals(client.secondConfig, store.config)
+        client.firstRelease.complete(Unit)
+        runCurrent()
+
+        assertEquals(client.secondConfig, store.config)
+        assertEquals(null, store.claim)
+        assertEquals(listOf(client.firstConfig), client.revocations)
+    }
+
+    @Test
+    fun dismissedInFlightClaimRevokesALateIssuedCredential() = runTest(dispatcher) {
+        val store = FakeStore(null)
+        val client = SupersedingPairClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        val code = "a".repeat(43)
+
+        assertTrue(viewModel.offer(invitation(code)))
+        assertTrue(viewModel.pair())
+        runCurrent()
+        viewModel.dismissPairing()
+
+        client.firstRelease.complete(Unit)
+        runCurrent()
+
+        assertEquals(null, store.config)
+        assertEquals(null, store.claim)
+        assertEquals(listOf(client.firstConfig), client.revocations)
+    }
+
+    @Test
+    fun recreatedSessionRetriesPersistedClaimNonce() = runTest(dispatcher) {
+        val store = FakeStore(null)
+        val client = RecreatedPairClient()
+        val code = "c".repeat(43)
+        val first = Session(store = store, client = client, dispatcher = dispatcher)
+
+        assertTrue(first.offer(invitation(code)))
+        assertTrue(first.pair())
+        runCurrent()
+        val savedNonce = requireNotNull(store.claim).nonce
+
+        val recreated = Session(store = store, client = client, dispatcher = dispatcher)
+        assertEquals(code, recreated.state.value.invitation?.code)
+        assertTrue(recreated.pair())
+        runCurrent()
+
+        assertEquals(listOf(savedNonce, savedNonce), client.nonces)
+        assertEquals(null, store.claim)
+        assertEquals(client.config, store.config)
+    }
+
+    @Test
+    fun revocationTombstoneSurvivesSlowDeleteAndRetriesOnStartup() = runTest(dispatcher) {
+        val config = DEVICE_CONFIG
+        val store = FakeStore(config)
+        val client = RestartRevocationClient()
+        val first = Session(store = store, client = client, dispatcher = dispatcher)
+        val owner = ViewModelStore().apply { put("first", first) }
+        runCurrent()
+
+        first.disconnect()
+        runCurrent()
+        assertEquals(config, store.revocation)
+        assertEquals(null, store.config)
+        assertEquals(1, client.revokeCalls)
+
+        owner.clear()
+        val recreated = Session(store = store, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        assertEquals(2, client.revokeCalls)
+        assertEquals(null, store.revocation)
+        assertEquals(null, recreated.state.value.config)
+    }
+
+    @Test
+    fun slowRevocationTimesOutAndRetriesWithoutDroppingTombstone() = runTest(dispatcher) {
+        val config = DEVICE_CONFIG
+        val store = FakeStore(config)
+        val client = RestartRevocationClient()
+        val viewModel = Session(
+            store = store,
+            client = client,
+            dispatcher = dispatcher,
+            retry = Retry(timeoutMillis = 100, initialDelayMillis = 10, maxDelayMillis = 10),
+        )
+        runCurrent()
+
+        viewModel.disconnect()
+        runCurrent()
+        assertEquals(config, store.revocation)
+        assertEquals(1, client.revokeCalls)
+        assertFalse(viewModel.connect("https://other.example.test", "zyxwvutsrqponmlkjihgfedc"))
+        assertEquals(config, store.revocation)
+
+        advanceTimeBy(100)
+        runCurrent()
+        assertEquals(config, store.revocation)
+
+        advanceTimeBy(10)
+        runCurrent()
+        assertEquals(2, client.revokeCalls)
+        assertEquals(null, store.revocation)
+    }
+
+    @Test
+    fun unauthorizedRevocationResponseClearsAnAlreadyFulfilledTombstone() = runTest(dispatcher) {
+        val store = FakeStore(DEVICE_CONFIG)
+        val client = AlreadyRevokedClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        viewModel.disconnect()
+        runCurrent()
+
+        assertEquals(1, client.revokeCalls)
+        assertEquals(null, store.revocation)
+    }
+
+    @Test
+    fun lostStartResponseStillStopsOnlyAfterStartCompletes() = runTest(dispatcher) {
+        val client = LostVoiceClient()
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.startVoice("key_voice"))
+        assertTrue(viewModel.stopVoice("key_voice"))
+        runCurrent()
+        assertEquals(0, client.stopKeys.size)
+
+        client.startLost.complete(Unit)
+        runCurrent()
+
+        assertEquals(1, client.stopKeys.size)
+        assertEquals(1, client.stopKeys.toSet().size)
+    }
+
+    @Test
+    fun activeVoiceCanBeStoppedThroughARemappedInput() = runTest(dispatcher) {
+        val (viewModel, client) = voiceViewModel()
+        runCurrent()
+
+        assertTrue(viewModel.startVoice("key_voice"))
+        assertTrue(viewModel.stopVoice("key_remapped_voice"))
+        runCurrent()
+        assertEquals(listOf(Command.VoiceStart), client.commands)
+
+        client.startRelease.complete(Unit)
+        runCurrent()
+        assertEquals(listOf(Command.VoiceStart, Command.VoiceStop), client.commands)
+    }
+
+    @Test
+    fun externalHidVoiceStopCreatesADurableSemanticFallback() = runTest(dispatcher) {
+        val disk = FakeStore(DEVICE_CONFIG)
+        val client = RecreatedVoiceClient()
+        val viewModel = Session(store = disk, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(viewModel.stopVoice("key_voice"))
+        runCurrent()
+
+        assertEquals(1, client.stops.size)
+        assertEquals(null, disk.voiceStop)
+    }
+
+    @Test
+    fun recreatedSessionStopsVoiceAfterAcceptedStart() = runTest(dispatcher) {
+        val disk = FakeStore(DEVICE_CONFIG)
+        val firstClient = RecreatedVoiceClient()
+        val first = Session(store = disk, client = firstClient, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(first.startVoice("key_voice"))
+        runCurrent()
+        val saved = requireNotNull(disk.voiceStop)
+        assertEquals(DEVICE_CONFIG, saved.config)
+
+        val recreatedDisk = disk.recreated()
+        val recreatedClient = RecreatedVoiceClient()
+        Session(store = recreatedDisk, client = recreatedClient, dispatcher = dispatcher)
+        runCurrent()
+
+        assertEquals(listOf(saved), recreatedClient.stops)
+        assertEquals(null, recreatedDisk.voiceStop)
+    }
+
+    @Test
+    fun recreatedSessionStopsVoiceAfterLostStartResponse() = runTest(dispatcher) {
+        val disk = FakeStore(DEVICE_CONFIG)
+        val firstClient = RecreatedVoiceClient(startRelease = CompletableDeferred())
+        val first = Session(store = disk, client = firstClient, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(first.startVoice("key_voice"))
+        runCurrent()
+        val saved = requireNotNull(disk.voiceStop)
+        assertEquals(listOf(DEVICE_CONFIG), firstClient.starts)
+
+        val recreatedDisk = disk.recreated()
+        val recreatedClient = RecreatedVoiceClient()
+        Session(store = recreatedDisk, client = recreatedClient, dispatcher = dispatcher)
+        runCurrent()
+
+        assertEquals(listOf(saved), recreatedClient.stops)
+        assertEquals(null, recreatedDisk.voiceStop)
+    }
+
+    @Test
+    fun replacementKeepsFailedStopBoundToOriginalCredentialAfterRecreation() = runTest(dispatcher) {
+        val replacement = Config(
+            "https://replacement.example.test",
+            "vp1.phone456.abcdefghijklmnopqrstuvwxyzABCDEF",
+        )
+        val disk = FakeStore(DEVICE_CONFIG)
+        val firstClient = RecreatedVoiceClient(stopFailures = 1)
+        val first = Session(store = disk, client = firstClient, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(first.startVoice("key_voice"))
+        runCurrent()
+        assertTrue(first.connect(replacement.baseUrl, replacement.credential))
+        runCurrent()
+
+        val saved = requireNotNull(disk.voiceStop)
+        assertEquals(DEVICE_CONFIG, saved.config)
+        assertEquals(replacement, disk.config)
+        assertEquals(listOf(saved), firstClient.stops)
+
+        val recreatedDisk = disk.recreated()
+        val recreatedClient = RecreatedVoiceClient()
+        Session(store = recreatedDisk, client = recreatedClient, dispatcher = dispatcher)
+        runCurrent()
+
+        assertEquals(replacement, recreatedDisk.config)
+        assertEquals(listOf(saved), recreatedClient.stops)
+        assertEquals(null, recreatedDisk.voiceStop)
+    }
+
+    @Test
+    fun revocationWaitsForPersistedVoiceStopAcknowledgement() = runTest(dispatcher) {
+        val disk = FakeStore(DEVICE_CONFIG)
+        val stopRelease = CompletableDeferred<Unit>()
+        val client = RecreatedVoiceClient(stopRelease = stopRelease)
+        val viewModel = Session(store = disk, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(viewModel.startVoice("key_voice"))
+        runCurrent()
+        viewModel.disconnect()
+        runCurrent()
+
+        assertEquals(0, client.revocations.size)
+        assertEquals(DEVICE_CONFIG, disk.revocation)
+        assertTrue(disk.voiceStop != null)
+
+        stopRelease.complete(Unit)
+        runCurrent()
+        assertEquals(null, disk.voiceStop)
+        advanceTimeBy(250)
+        runCurrent()
+
+        assertEquals(listOf(DEVICE_CONFIG), client.revocations)
+        assertEquals(null, disk.revocation)
+    }
+
     private fun voiceViewModel(): Pair<Session, BlockingVoiceClient> {
         val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
         val client = BlockingVoiceClient()
@@ -474,6 +913,9 @@ class SessionTest {
             private set
         var clearCalls = 0
             private set
+        var claim: Claim? = null
+        var revocation: Config? = null
+        var voiceStop: VoiceStop? = null
 
         override fun save(config: Config) {
             this.config = config
@@ -485,6 +927,45 @@ class SessionTest {
         override fun clear() {
             config = null
             clearCalls += 1
+        }
+
+        override fun saveClaim(claim: Claim) {
+            this.claim = claim
+        }
+
+        override fun loadClaim(): Claim? = claim
+
+        override fun clearClaim() {
+            claim = null
+        }
+
+        override fun saveRevocation(config: Config) {
+            revocation = config
+        }
+
+        override fun loadRevocation(): Config? = revocation
+
+        override fun clearRevocation() {
+            revocation = null
+        }
+
+        override fun saveVoiceStop(stop: VoiceStop) {
+            voiceStop = stop
+        }
+
+        override fun loadVoiceStop(): VoiceStop? = voiceStop
+
+        override fun clearVoiceStop(idempotencyKey: String): Boolean {
+            val current = voiceStop ?: return true
+            if (current.idempotencyKey != idempotencyKey) return false
+            voiceStop = null
+            return true
+        }
+
+        fun recreated(): FakeStore = FakeStore(config).also {
+            it.claim = claim
+            it.revocation = revocation
+            it.voiceStop = voiceStop
         }
     }
 
@@ -574,7 +1055,159 @@ class SessionTest {
         override suspend fun command(config: Config, command: Command) = Unit
     }
 
+    private class StaticClient(
+        private val value: Snapshot = VOICE_SNAPSHOT,
+    ) : Client {
+        override suspend fun snapshot(config: Config): Snapshot = value
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class CountingSnapshotClient(
+        vararg snapshots: Snapshot,
+    ) : Client {
+        private val values = ArrayDeque(snapshots.toList())
+        var snapshotCalls = 0
+            private set
+
+        override suspend fun snapshot(config: Config): Snapshot {
+            snapshotCalls += 1
+            return values.removeFirst()
+        }
+
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class FakeEvents : EventFactory {
+        lateinit var callbacks: EventCallbacks
+
+        override fun create(
+            config: Config,
+            lastEventId: String?,
+            callbacks: EventCallbacks,
+        ): EventStream {
+            this.callbacks = callbacks
+            return object : EventStream {
+                override fun start() = Unit
+                override fun stop() = Unit
+            }
+        }
+    }
+
+    private class SupersedingPairClient : Client {
+        val firstRelease = CompletableDeferred<Unit>()
+        val firstConfig = Config("https://m5.example.test", "vp1.first.abcdefghijklmnopqrstuvwxyzABCDEFG")
+        val secondConfig = Config("https://m5.example.test", "vp1.second.abcdefghijklmnopqrstuvwxyzABCDEF")
+        val revocations = mutableListOf<Config>()
+
+        override suspend fun claim(invitation: Invitation, nonce: String): Config {
+            if (invitation.code.first() == 'a') {
+                firstRelease.await()
+                return firstConfig
+            }
+            return secondConfig
+        }
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+        override suspend fun revoke(config: Config) {
+            revocations += config
+        }
+    }
+
+    private class RecreatedPairClient : Client {
+        val nonces = mutableListOf<String>()
+        val config = Config("https://m5.example.test", "vp1.recreated.abcdefghijklmnopqrstuvwxyzABCD")
+
+        override suspend fun claim(invitation: Invitation, nonce: String): Config {
+            nonces += nonce
+            if (nonces.size == 1) throw Failure("The first response was lost.")
+            return config
+        }
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class RestartRevocationClient : Client {
+        var revokeCalls = 0
+            private set
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+
+        override suspend fun revoke(config: Config) {
+            revokeCalls += 1
+            if (revokeCalls == 1) kotlinx.coroutines.awaitCancellation()
+        }
+    }
+
+    private class AlreadyRevokedClient : Client {
+        var revokeCalls = 0
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+        override suspend fun command(config: Config, command: Command) = Unit
+
+        override suspend fun revoke(config: Config) {
+            revokeCalls += 1
+            throw Failure("This device credential has already been revoked.", 401)
+        }
+    }
+
+    private class LostVoiceClient : Client {
+        val startLost = CompletableDeferred<Unit>()
+        val stopKeys = mutableListOf<String>()
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+
+        override suspend fun command(config: Config, command: Command) {
+            if (command == Command.VoiceStart) {
+                startLost.await()
+                throw Failure("The start response was lost.")
+            }
+        }
+
+        override suspend fun stopVoice(config: Config, idempotencyKey: String) {
+            stopKeys += idempotencyKey
+        }
+    }
+
+    private class RecreatedVoiceClient(
+        private val startRelease: CompletableDeferred<Unit>? = null,
+        private var stopFailures: Int = 0,
+        private val stopRelease: CompletableDeferred<Unit>? = null,
+    ) : Client {
+        val starts = mutableListOf<Config>()
+        val stops = mutableListOf<VoiceStop>()
+        val revocations = mutableListOf<Config>()
+
+        override suspend fun snapshot(config: Config): Snapshot = VOICE_SNAPSHOT
+
+        override suspend fun command(config: Config, command: Command) {
+            if (command != Command.VoiceStart) return
+            starts += config
+            startRelease?.await()
+        }
+
+        override suspend fun stopVoice(config: Config, idempotencyKey: String) {
+            stops += VoiceStop(config, idempotencyKey)
+            if (stopFailures > 0) {
+                stopFailures -= 1
+                throw Failure("The stop response was lost.")
+            }
+            stopRelease?.await()
+        }
+
+        override suspend fun revoke(config: Config) {
+            revocations += config
+        }
+    }
+
     private companion object {
+        val DEVICE_CONFIG = Config(
+            "https://m5.example.test",
+            "vp1.phone123.abcdefghijklmnopqrstuvwxyzABCDEF",
+        )
+
         val VOICE_SNAPSHOT = Snapshot(
             revision = "r_test",
             status = Status("ready", null),
@@ -637,5 +1270,20 @@ class SessionTest {
                 ),
             ),
         )
+
+        fun reasoningSnapshot(agentId: String, modelId: String): Snapshot = REASONING_SNAPSHOT.copy(
+            desktop = REASONING_SNAPSHOT.desktop?.copy(
+                focusedAgentId = agentId,
+                model = Model(
+                    available = true,
+                    id = modelId,
+                    label = modelId,
+                    options = listOf(Model.Option(modelId, modelId, true)),
+                ),
+            ),
+        )
+
+        fun invitation(code: String): String =
+            "vibepocket://pair?origin=https%3A%2F%2Fm5.example.test&code=$code"
     }
 }

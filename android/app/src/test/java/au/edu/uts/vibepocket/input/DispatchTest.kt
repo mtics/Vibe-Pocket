@@ -128,6 +128,52 @@ class DispatchTest {
     }
 
     @Test
+    fun predictionWaitsForTheCompleteReportTransaction() {
+        val hid = FakeHid(deferSend = true)
+        val delivered = mutableListOf<Action>()
+        val action = Action("reasoning_depth", delta = 1)
+        val orchestrator = Dispatch(hid, FakeBridge(), delivered::add)
+
+        assertTrue(orchestrator.activate(snapshot(action), INPUT_ID, Gesture.Kind.TAP))
+        assertTrue(delivered.isEmpty())
+
+        hid.completeSend(true)
+
+        assertEquals(listOf(action), delivered)
+    }
+
+    @Test
+    fun queuedTransportFailureFallsBackOnlyAfterCompletion() {
+        val hid = FakeHid(deferSend = true)
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(orchestrator.activate(snapshot(Action("mode_cycle")), INPUT_ID, Gesture.Kind.TAP))
+        assertTrue(bridge.calls.isEmpty())
+
+        hid.completeSend(false)
+
+        assertEquals(listOf(BridgeCall.Activate(INPUT_ID, Gesture.Kind.TAP)), bridge.calls)
+    }
+
+    @Test
+    fun lifecycleReleaseInvalidatesLateCompletionAndStopsRepeat() {
+        val hid = FakeHid(deferSend = true)
+        val bridge = FakeBridge()
+        val delivered = mutableListOf<Action>()
+        val orchestrator = Dispatch(hid, bridge, delivered::add)
+
+        assertTrue(orchestrator.activate(snapshot(Action("mode_cycle")), INPUT_ID, Gesture.Kind.TAP))
+        orchestrator.release()
+        hid.completeSend(false)
+
+        assertTrue(delivered.isEmpty())
+        assertTrue(bridge.calls.isEmpty())
+        assertEquals(1, hid.stopRepeatCount)
+        assertEquals(1, hid.releaseAllCount)
+    }
+
+    @Test
     fun modelPickerDoesNotDependOnReasoningAvailability() {
         val hid = FakeHid()
         val bridge = FakeBridge()
@@ -152,6 +198,18 @@ class DispatchTest {
         assertTrue(orchestrator.openModel(snapshot(Action("approve"))))
 
         assertEquals(listOf(Action("model_picker")), hid.sent)
+        assertEquals(listOf(BridgeCall.OpenModel), bridge.calls)
+    }
+
+    @Test
+    fun staleTransportNeverSendsTheModelPickerThroughHid() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(orchestrator.openModel(snapshot(Action("approve"), transportFresh = false)))
+
+        assertTrue(hid.sent.isEmpty())
         assertEquals(listOf(BridgeCall.OpenModel), bridge.calls)
     }
 
@@ -212,7 +270,21 @@ class DispatchTest {
         assertTrue(orchestrator.stopVoice(INPUT_ID))
         assertEquals(listOf(voice), hid.held)
         assertEquals(listOf(voice), hid.released)
-        assertTrue(bridge.calls.isEmpty())
+        assertEquals(listOf(BridgeCall.VoiceStop(INPUT_ID)), bridge.calls)
+    }
+
+    @Test
+    fun remappedStopReleasesTheRecordedHidOwnerAndSemanticFallback() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+        val voice = Action("voice")
+
+        assertTrue(orchestrator.startVoice(snapshot(voice), INPUT_ID))
+        assertTrue(orchestrator.stopVoice("key_voice_on_another_layer"))
+
+        assertEquals(listOf(voice), hid.released)
+        assertEquals(listOf(BridgeCall.VoiceStop(INPUT_ID)), bridge.calls)
     }
 
     @Test
@@ -229,16 +301,22 @@ class DispatchTest {
 
     private class FakeHid(
         private val sendResult: Boolean = true,
+        private val deliveryResult: Boolean = true,
+        private val deferSend: Boolean = false,
         private val holdResult: Boolean = true,
     ) : Hid {
         val sent = mutableListOf<Action>()
         val held = mutableListOf<Action>()
         val released = mutableListOf<Action>()
         var releaseAllCount = 0
+        var stopRepeatCount = 0
+        private val sendCompletions = ArrayDeque<(Boolean) -> Unit>()
 
-        override fun send(action: Action): Boolean {
+        override fun send(action: Action, completion: (Boolean) -> Unit): Boolean {
             sent += action
-            return sendResult
+            if (!sendResult) return false
+            if (deferSend) sendCompletions += completion else completion(deliveryResult)
+            return true
         }
 
         override fun press(action: Action): Boolean {
@@ -256,9 +334,15 @@ class DispatchTest {
             return true
         }
 
-        override fun repeat(action: Action): Boolean = send(action)
+        override fun repeat(action: Action, completion: (Boolean) -> Unit): Boolean = send(action, completion)
 
-        override fun stopRepeat() = Unit
+        override fun stopRepeat() {
+            stopRepeatCount += 1
+        }
+
+        fun completeSend(delivered: Boolean) {
+            sendCompletions.removeFirst()(delivered)
+        }
     }
 
     private sealed interface BridgeCall {
@@ -304,6 +388,7 @@ class DispatchTest {
             canDecrease = true,
         ),
         question: Question? = null,
+        transportFresh: Boolean = true,
     ): Snapshot = Snapshot(
         revision = "r_test",
         status = Status("ready", null),
@@ -337,6 +422,7 @@ class DispatchTest {
             reasoning = reasoning,
             question = question,
         ),
+        transportFresh = transportFresh,
     )
 
     private companion object {
