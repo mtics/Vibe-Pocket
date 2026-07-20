@@ -21,4 +21,4 @@ internal fun progressVisible(pending: Boolean): Boolean {
     return pending && visible
 }
 
-private const val ProgressDelayMillis = 250L
+internal const val ProgressDelayMillis = 700L

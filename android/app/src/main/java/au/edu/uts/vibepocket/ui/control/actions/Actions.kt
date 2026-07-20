@@ -26,13 +26,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 
 @Composable
 internal fun Actions(
@@ -221,17 +224,20 @@ private fun ControlPair(
     pad: @Composable RowScope.() -> Unit,
     actions: @Composable RowScope.() -> Unit,
 ) {
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(gap),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (padFirst(hand)) {
-            pad()
-            actions()
-        } else {
-            actions()
-            pad()
+    val contentDirection = LocalLayoutDirection.current
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Row(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(gap),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (padFirst(hand)) {
+                pad()
+                CompositionLocalProvider(LocalLayoutDirection provides contentDirection) { actions() }
+            } else {
+                CompositionLocalProvider(LocalLayoutDirection provides contentDirection) { actions() }
+                pad()
+            }
         }
     }
 }
@@ -253,41 +259,43 @@ private fun Pad(
     centerSize: androidx.compose.ui.unit.Dp,
     modifier: Modifier,
 ) {
-    Box(modifier) {
-        listOf(
-            "up" to Alignment.TopCenter,
-            "down" to Alignment.BottomCenter,
-            "left" to Alignment.CenterStart,
-            "right" to Alignment.CenterEnd,
-        ).forEach { (direction, alignment) ->
-            val control = directions[direction]
-            if (control == null) {
-                Empty(direction, Modifier.align(alignment).size(directionSize))
-            } else {
-                InputButton(
-                    input = control.input,
-                    gesture = control.gesture,
-                    snapshot = snapshot,
-                    inFlightIds = inFlightIds,
-                    onInput = onInput,
-                    navigationRepeatEnabled = control.gesture == Gesture.Kind.TAP &&
-                        snapshot.supportsHidNavigationRepeat(control.input.id, hidNavigationAvailable),
-                    onNavigationRepeat = onNavigationRepeat,
-                    onVoiceStart = onVoiceStart,
-                    onVoiceStop = onVoiceStop,
-                    blocked = blocked,
-                    labelPlacement = LabelPlacement.HIDDEN,
-                    shape = CircleShape,
-                    modifier = Modifier.align(alignment).size(directionSize),
-                )
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Box(modifier) {
+            listOf(
+                "up" to Alignment.TopCenter,
+                "down" to Alignment.BottomCenter,
+                "left" to Alignment.CenterStart,
+                "right" to Alignment.CenterEnd,
+            ).forEach { (direction, alignment) ->
+                val control = directions[direction]
+                if (control == null) {
+                    Empty(direction, Modifier.align(alignment).size(directionSize))
+                } else {
+                    InputButton(
+                        input = control.input,
+                        gesture = control.gesture,
+                        snapshot = snapshot,
+                        inFlightIds = inFlightIds,
+                        onInput = onInput,
+                        navigationRepeatEnabled = control.gesture == Gesture.Kind.TAP &&
+                            snapshot.supportsHidNavigationRepeat(control.input.id, hidNavigationAvailable),
+                        onNavigationRepeat = onNavigationRepeat,
+                        onVoiceStart = onVoiceStart,
+                        onVoiceStop = onVoiceStop,
+                        blocked = blocked,
+                        labelPlacement = LabelPlacement.HIDDEN,
+                        shape = CircleShape,
+                        modifier = Modifier.align(alignment).size(directionSize),
+                    )
+                }
             }
-        }
-        Box(
-            Modifier.align(Alignment.Center).size(centerSize).clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surface),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(Modifier.size(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            Box(
+                Modifier.align(Alignment.Center).size(centerSize).clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.size(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            }
         }
     }
 }
