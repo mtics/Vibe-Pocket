@@ -257,19 +257,17 @@ private final class CodexControlServer {
 
   private func acquireOwnership() throws {
     let lockPath = socketPath + ".lock"
-    let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-    guard descriptor >= 0 else { throw posixError("open the Codex control ownership lock") }
-    guard Darwin.flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-      let code = errno
-      Darwin.close(descriptor)
-      throw posixError("acquire the Codex control ownership lock", code: code)
-    }
+    let descriptor = Darwin.open(
+      lockPath,
+      O_CREAT | O_RDWR | O_EXLOCK | O_NONBLOCK,
+      S_IRUSR | S_IWUSR
+    )
+    guard descriptor >= 0 else { throw posixError("acquire the Codex control ownership lock") }
     ownershipDescriptor = descriptor
   }
 
   private func releaseOwnership() {
     guard ownershipDescriptor >= 0 else { return }
-    Darwin.flock(ownershipDescriptor, LOCK_UN)
     Darwin.close(ownershipDescriptor)
     ownershipDescriptor = -1
   }

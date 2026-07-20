@@ -7,10 +7,20 @@ import test from "node:test";
 
 const helperUrl = new URL("../../src/macos/helper.swift", import.meta.url);
 const hostUrl = new URL("../../src/macos/host.swift", import.meta.url);
+const pairingUrl = new URL("../../src/macos/pairing.swift", import.meta.url);
 const installerUrl = new URL("../../bin/install-launch-agent.sh", import.meta.url);
 const launchScriptUrl = new URL("../../bin/run-launchd.sh", import.meta.url);
 const cleanupScriptUrl = new URL("../../bin/cleanup-stale-listener.sh", import.meta.url);
 const execFileAsync = promisify(execFile);
+
+test("signed host sources type-check together", async () => {
+  await execFileAsync("/usr/bin/swiftc", [
+    "-typecheck",
+    fileURLToPath(hostUrl),
+    fileURLToPath(helperUrl),
+    fileURLToPath(pairingUrl),
+  ]);
+});
 
 function callsNamed(source, name) {
   const calls = [];
@@ -64,6 +74,10 @@ test("all synthetic key delivery is PID-scoped and target revalidated", async ()
   const source = await readFile(helperUrl, "utf8");
   const calls = [...callsNamed(source, "postKey"), ...callsNamed(source, "postChord")];
   const approval = source.slice(source.indexOf("private func press"), source.indexOf("private func postKey"));
+  const availability = source.slice(
+    source.indexOf("private func controlAvailability"),
+    source.indexOf("private func accessModeLabel", source.indexOf("private func controlAvailability")),
+  );
   const workflow = source.slice(source.indexOf("private func launchWorkflow"), source.indexOf("private func readStandardInput"));
   const navigation = source.slice(source.indexOf('case "navigate"'), source.indexOf('case "access-cycle"'));
   const deletion = source.slice(source.indexOf('case "delete-backward"'), source.indexOf('case "clear-input"'));
@@ -78,7 +92,9 @@ test("all synthetic key delivery is PID-scoped and target revalidated", async ()
   assert.doesNotMatch(source, /\.post\(tap:/);
   assert.match(targetValidation, /CFEqual\(current\.window, expected\.window\)/);
   assert.match(targetValidation, /expected\.mutationToken[\s\S]*?current\.mutationToken != expectedToken/);
-  assert.match(approval, /revalidateFocusedDesktopTarget[\s\S]*?focusPrompt[\s\S]*?revalidateFocusedDesktopTarget[\s\S]*?postKey\(36, to: target\.application\.processIdentifier\)/);
+  assert.match(approval, /controlButton\(control, in: target\.area\)[\s\S]*?revalidateFocusedDesktopTarget[\s\S]*?performPress\(button\)/);
+  assert.doesNotMatch(approval, /hasDraft|focusPrompt|postKey/);
+  assert.match(availability, /"approve": direct\["approve"\] == true/);
   assert.match(workflow, /revalidateFocusedDesktopTarget\(nextTarget[\s\S]*?postKey\(36, to: application\.processIdentifier\)/);
   assert.match(navigation, /revalidateFocusedDesktopTarget[\s\S]*?postKey\(try keyCode\(for: direction\), to: application\.processIdentifier\)/);
   assert.match(deletion, /focusPrompt[\s\S]*?revalidateFocusedDesktopTarget[\s\S]*?postKey\(51, to: application\.processIdentifier\)/);

@@ -883,7 +883,7 @@ private func controlAvailability(in index: AreaIndex, hasAgents: Bool) -> [Strin
   let hasMessageInput = prompt(in: index) != nil
   let isExecuting = controlButton(.stop, in: index) != nil
   return direct.merging([
-    "approve": direct["approve"] == true || hasMessageDraft,
+    "approve": direct["approve"] == true,
     // Escape is not a reliable Codex rejection primitive. Only enable Reject
     // when ChatGPT exposes an explicit semantic rejection button.
     "reject": direct["reject"] == true,
@@ -989,25 +989,11 @@ private func press(
   in target: FocusedDesktopTarget,
   requireForeground: Bool = false
 ) throws {
-  if let button = controlButton(control, in: target.area) {
-    try revalidateFocusedDesktopTarget(target, requireForeground: requireForeground)
-    try performPress(button)
-    return
-  }
-  switch control {
-  case .approve:
-    guard hasDraft(in: AreaIndex(target.area)) else {
-      throw HelperFailure.message("There is no visible Codex approval control or message draft to submit.")
-    }
-    try revalidateFocusedDesktopTarget(target, requireForeground: true)
-    _ = try focusPrompt(in: target.area)
-    try revalidateFocusedDesktopTarget(target, requireForeground: true)
-    try postKey(36, to: target.application.processIdentifier)
-  case .reject:
-    throw HelperFailure.message(DesktopControl.reject.unavailableMessage)
-  default:
+  guard let button = controlButton(control, in: target.area) else {
     throw HelperFailure.message(control.unavailableMessage)
   }
+  try revalidateFocusedDesktopTarget(target, requireForeground: requireForeground)
+  try performPress(button)
 }
 
 private func postKey(_ code: CGKeyCode, to processIdentifier: pid_t) throws {
