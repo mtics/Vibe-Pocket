@@ -6,7 +6,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -35,6 +37,15 @@ class BoardAccessibilityTest {
     fun readyBoardPassesAutomatedChecks() {
         rule.setContent { BoardPreview(Fixtures.snapshot()) }
         rule.onRoot().tryPerformAccessibilityChecks()
+    }
+
+    @Test
+    fun repeatingDirectionRemainsActionableForAccessibility() {
+        rule.setContent { BoardPreview(Fixtures.snapshot()) }
+
+        rule.onNodeWithContentDescription("Up", substring = true)
+            .assertIsEnabled()
+            .assertHasClickAction()
     }
 
     @Test

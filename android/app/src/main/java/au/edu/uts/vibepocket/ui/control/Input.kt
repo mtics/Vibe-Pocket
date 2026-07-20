@@ -203,7 +203,14 @@ internal fun InputButton(
                     }
                 } else {
                     if (gestureActions.isNotEmpty()) customActions = gestureActions
-                    if (!interactive) disabled()
+                    if (repeat && interactive) {
+                        onClick(label = "Activate $label") {
+                            currentInput(input.id, Gesture.Kind.TAP)
+                            true
+                        }
+                    } else if (!interactive) {
+                        disabled()
+                    }
                 }
             }
             .pointerInput(voiceMapping) {
@@ -246,7 +253,7 @@ internal fun InputButton(
                         enabled = true,
                         onClick = { toggleVoice() },
                     )
-                } else if (voiceMapping != null) {
+                } else if (voiceMapping != null || repeat) {
                     Modifier
                 } else {
                     Modifier.combinedClickable(
