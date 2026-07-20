@@ -147,6 +147,8 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
 
   const snapshot = await service.snapshot();
   assert.equal(snapshot.protocolVersion, PROTOCOL_VERSION);
+  assert.equal(snapshot.observation.fresh, true);
+  assert.ok(Number.isSafeInteger(snapshot.observation.observedAt));
   assert.equal(snapshot.focusSessionId, "vibe-pocket-codex");
   assert.equal(snapshot.controller.profile.layers.length, 6);
   assert.equal(snapshot.controller.profile.inputs.length, 20);
@@ -1214,6 +1216,7 @@ test("keeps the last good desktop snapshot across one transient polling failure"
   const service = makeService(desktop, events, { pollIntervalMs: 50 });
   await service.start();
   const publishedAfterStart = events.published.length;
+  const observedAt = (await service.snapshot()).observation.observedAt;
   desktop.failuresRemaining = 1;
 
   await desktop.failed.promise;
@@ -1222,7 +1225,13 @@ test("keeps the last good desktop snapshot across one transient polling failure"
 
   assert.equal(snapshot.status.state, "ready");
   assert.equal(snapshot.controller.agents.length, 2);
-  assert.equal(events.published.length, publishedAfterStart);
+  assert.equal(snapshot.observation.fresh, false);
+  assert.equal(snapshot.observation.observedAt, observedAt);
+  assert.equal(events.published.length, publishedAfterStart + 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal((await service.snapshot()).observation.fresh, true);
+  assert.equal(events.published.length, publishedAfterStart + 2);
   await service.dispose();
 });
 

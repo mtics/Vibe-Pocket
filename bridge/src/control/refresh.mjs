@@ -61,8 +61,11 @@ export class Refresh {
         const before = this.#state.fingerprint();
         if (error) {
           this.#failures += 1;
-          if (this.#successful && this.#failures < FAILURE_THRESHOLD) return;
-          this.#state.degrade(error);
+          if (this.#successful && this.#failures < FAILURE_THRESHOLD) {
+            this.#state.retain();
+          } else {
+            this.#state.degrade(error);
+          }
         } else {
           this.#state.apply(value);
           this.#successful = true;

@@ -17,6 +17,8 @@ export class State {
   #revision = 0;
   #status = { state: "starting", message: null, controls: emptyControls() };
   #desktop = emptyDesktop();
+  #observedAt = null;
+  #observationFresh = false;
   #task;
 
   constructor({ events, workspaces, taskId }) {
@@ -57,6 +59,10 @@ export class State {
     return {
       protocolVersion: PROTOCOL_VERSION,
       revision: this.revision,
+      observation: {
+        fresh: this.#observationFresh,
+        observedAt: this.#observedAt,
+      },
       status: this.#status,
       focusSessionId: this.#task.state === "error" ? null : taskId,
       workspaces: Object.keys(this.#workspaces),
@@ -73,6 +79,8 @@ export class State {
   }
 
   apply(result) {
+    this.#observedAt = Date.now();
+    this.#observationFresh = true;
     this.#status = {
       state: "ready",
       message: result.message ?? null,
@@ -85,7 +93,12 @@ export class State {
     this.#task.updatedAt = new Date().toISOString();
   }
 
+  retain() {
+    this.#observationFresh = false;
+  }
+
   degrade(error) {
+    this.#observationFresh = false;
     this.#status = {
       state: "degraded",
       message: error.message || "Desktop Codex is unavailable.",
@@ -145,6 +158,7 @@ export class State {
   fingerprint() {
     return JSON.stringify([
       { state: this.#status.state, controls: this.#status.controls },
+      this.#observationFresh,
       this.#desktop,
       this.#task.state,
       this.#task.canInterrupt,

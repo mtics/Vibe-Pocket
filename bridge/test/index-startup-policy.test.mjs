@@ -32,7 +32,7 @@ test("does not become ready until service startup completes", async () => {
   const service = { start: () => startup };
   const readiness = new Readiness({
     runtimeIdentity: `sha256:${"b".repeat(64)}`,
-    protocolVersion: 9,
+    protocolVersion: 10,
   });
 
   const starting = startService(service, readiness);
@@ -50,7 +50,7 @@ test("returns to NOT_READY before startup and stays there when startup fails", a
   const service = { start: async () => { throw failure; } };
   const readiness = new Readiness({
     runtimeIdentity: `sha256:${"c".repeat(64)}`,
-    protocolVersion: 9,
+    protocolVersion: 10,
   });
   readiness.markReady();
 
@@ -69,7 +69,7 @@ test("creates deterministic readiness for an unmanifested source checkout", asyn
 
   assert.match(first.response().body.runtimeIdentity, /^sha256:[0-9a-f]{64}$/);
   assert.equal(second.response().body.runtimeIdentity, first.response().body.runtimeIdentity);
-  assert.equal(first.response().body.protocolVersion, 9);
+  assert.equal(first.response().body.protocolVersion, 10);
 });
 
 test("delegates signals to the ordered shutdown coordinator", async () => {
