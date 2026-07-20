@@ -13,7 +13,7 @@ class LayoutTest {
         assertEquals(244.dp, layout.pad)
         assertEquals(72.dp, layout.workflows)
         assertEquals(64.dp, layout.selectors)
-        assertEquals(81.33.dp, layout.direction)
+        assertEquals(81.dp, layout.direction)
         assertEquals(643.dp, layout.content)
         assertTrue(layout.content <= 650.dp)
     }

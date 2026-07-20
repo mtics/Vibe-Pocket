@@ -15,6 +15,7 @@ import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -143,8 +144,10 @@ class PresentationTest {
     }
 
     @Test
-    fun agentChipWidthDoesNotDependOnFocus() {
-        assertEquals(160, AgentChipWidthDp)
+    fun agentRailShowsOnlyCompleteTargetsAtRest() {
+        assertEquals(145.dp, agentChipWidth(298.dp))
+        assertEquals(175.dp, agentChipWidth(358.dp))
+        assertEquals(240.dp, agentChipWidth(240.dp))
     }
 
     @Test

@@ -46,7 +46,7 @@ internal data class Layout(
                 layers = 60.dp,
                 workflows = 72.dp,
                 pad = 244.dp,
-                direction = 81.33.dp,
+                direction = 81.dp,
                 center = 56.dp,
                 actionGap = 12.dp,
                 safety = 56.dp,

@@ -7,8 +7,6 @@ import au.edu.uts.vibepocket.profile.FallbackInputs
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 
-internal const val AgentChipWidthDp = 160
-
 internal data class VoiceMappingIdentity(
     val layerId: String?,
     val inputId: String,
