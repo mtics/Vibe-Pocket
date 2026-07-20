@@ -78,11 +78,15 @@ class FakeDesktop {
   async cycleMode() { this.calls.push(["cycleMode"]); }
   async cycleAccess() { this.calls.push(["cycleAccess"]); }
   async openModel() { this.calls.push(["openModel"]); }
-  async selectModel(modelId) { this.calls.push(["selectModel", modelId]); }
+  async selectModel(modelId, effects) {
+    return effects.commit(() => { this.calls.push(["selectModel", modelId]); });
+  }
   async deleteBackward() { this.calls.push(["deleteBackward"]); }
   async clearInput() { this.calls.push(["clearInput"]); }
   async focusAgent(index) { this.calls.push(["focusAgent", index]); }
-  async adjustReasoning(delta) { this.calls.push(["adjustReasoning", delta]); }
+  async adjustReasoning(delta, effects) {
+    return effects.commit(() => { this.calls.push(["adjustReasoning", delta]); });
+  }
   async workflow(prompt) { this.calls.push(["workflow", prompt]); }
   async applyLifecycleHook(event, payload) {
     this.calls.push(["applyLifecycleHook", event, payload]);
@@ -412,7 +416,7 @@ test("does not publish or arm polling when stopped during initial discovery", as
   await service.dispose();
 });
 
-test("publishes native model and reasoning confirmations without a desktop rescan", async () => {
+test("publishes model and reasoning only after a fresh desktop scan", async () => {
   class NativeSettingsDesktop extends FakeDesktop {
     statusCalls = 0;
 
@@ -441,26 +445,30 @@ test("publishes native model and reasoning confirmations without a desktop resca
       return super.status();
     }
 
-    async selectModel(modelId) {
-      this.calls.push(["selectModel", modelId]);
-      this.model = {
-        ...this.model,
-        id: modelId,
-        label: "New",
-        options: this.model.options.map((option) => ({ ...option, selected: option.id === modelId })),
-      };
+    async selectModel(modelId, effects) {
+      await effects.commit(() => {
+        this.calls.push(["selectModel", modelId]);
+        this.model = {
+          ...this.model,
+          id: modelId,
+          label: "New",
+          options: this.model.options.map((option) => ({ ...option, selected: option.id === modelId })),
+        };
+      });
       return { message: "Selected New.", settings: { model: this.model, reasoning: this.reasoning } };
     }
 
-    async adjustReasoning(delta) {
-      this.calls.push(["adjustReasoning", delta]);
-      this.reasoning = {
-        available: true,
-        label: "Low",
-        level: "low",
-        canIncrease: true,
-        canDecrease: true,
-      };
+    async adjustReasoning(delta, effects) {
+      await effects.commit(() => {
+        this.calls.push(["adjustReasoning", delta]);
+        this.reasoning = {
+          available: true,
+          label: "Low",
+          level: "low",
+          canIncrease: true,
+          canDecrease: true,
+        };
+      });
       return { message: "Selected Low reasoning.", settings: { model: this.model, reasoning: this.reasoning } };
     }
   }
@@ -472,11 +480,15 @@ test("publishes native model and reasoning confirmations without a desktop resca
   const initialEvents = events.published.length;
 
   await service.command({ kind: "select_model", modelId: "gpt-new" }, "native-model");
+  assert.equal((await service.snapshot()).controller.model.id, "gpt-old");
+  await new Promise((resolve) => setTimeout(resolve, 220));
   assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
   await service.command(bindingCommand("dial_cw"), "native-reasoning");
+  assert.equal((await service.snapshot()).controller.reasoning.level, "minimal");
+  await new Promise((resolve) => setTimeout(resolve, 220));
   assert.equal((await service.snapshot()).controller.reasoning.level, "low");
 
-  assert.equal(desktop.statusCalls, 1);
+  assert.equal(desktop.statusCalls, 3);
   assert.deepEqual(desktop.calls, [
     ["selectModel", "gpt-new"],
     ["adjustReasoning", 1],
@@ -484,17 +496,20 @@ test("publishes native model and reasoning confirmations without a desktop resca
   assert.equal(events.published.length, initialEvents + 2);
 });
 
-test("publishes a confirmed mode change without waiting for a desktop rescan", async () => {
+test("ignores returned mode settings until a fresh desktop scan", async () => {
   class NativeModeDesktop extends FakeDesktop {
     statusCalls = 0;
+    modeLabel = "Codex";
 
     async status() {
       this.statusCalls += 1;
-      return super.status();
+      const status = await super.status();
+      return { ...status, mode: { available: true, label: this.modeLabel } };
     }
 
     async cycleMode() {
       this.calls.push(["cycleMode"]);
+      this.modeLabel = "Plan";
       return {
         message: "Selected the next Codex collaboration mode.",
         settings: { mode: { available: true, label: "Plan" } },
@@ -510,8 +525,10 @@ test("publishes a confirmed mode change without waiting for a desktop rescan", a
 
   await service.command(bindingCommand("key_mode"), "native-mode");
 
+  assert.deepEqual((await service.snapshot()).controller.mode, { available: true, label: "Codex" });
+  await new Promise((resolve) => setTimeout(resolve, 220));
   assert.deepEqual((await service.snapshot()).controller.mode, { available: true, label: "Plan" });
-  assert.equal(desktop.statusCalls, 1);
+  assert.equal(desktop.statusCalls, 2);
   assert.deepEqual(desktop.calls, [["cycleMode"]]);
   assert.equal(events.published.length, initialEvents + 1);
 });
@@ -562,6 +579,103 @@ test("reports a desktop action failure before a slow state scan completes", asyn
   assert.equal(operation.error.code, "command_outcome_indeterminate");
 
   desktop.releaseStatus.resolve();
+  await service.dispose();
+});
+
+test("records a stale-model preflight rejection as failed and accepts the next command", async () => {
+  class StaleModelDesktop extends FakeDesktop {
+    async selectModel(modelId) {
+      this.calls.push(["selectModelPreflight", modelId]);
+      throw new Error("The requested Codex model is unavailable or stale.");
+    }
+  }
+
+  const desktop = new StaleModelDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    () => service.command({ kind: "select_model", modelId: "gpt-stale" }, "stale-model-preflight"),
+    (error) => error.code === "desktop_action_failed" && /stale/i.test(error.message),
+  );
+  const failed = await service.commandResult("stale-model-preflight");
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error.code, "desktop_action_failed");
+
+  const next = await service.command({ kind: "approve" }, "after-stale-model");
+  assert.equal(next.status, "succeeded");
+  assert.deepEqual(desktop.calls, [
+    ["selectModelPreflight", "gpt-stale"],
+    ["press", "approve"],
+  ]);
+  await service.dispose();
+});
+
+test("records a running-task settings preflight as a definite failure", async () => {
+  class RunningSettingsDesktop extends FakeDesktop {
+    async adjustReasoning(delta) {
+      this.calls.push(["reasoningPreflight", delta]);
+      throw new Error("Codex reasoning cannot be changed while the visible task is running.");
+    }
+  }
+
+  const desktop = new RunningSettingsDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    () => service.command(bindingCommand("dial_cw"), "running-settings-preflight"),
+    (error) => error.code === "desktop_action_failed" && /running/i.test(error.message),
+  );
+  assert.equal((await service.commandResult("running-settings-preflight")).status, "failed");
+  assert.deepEqual(desktop.calls, [["reasoningPreflight", 1]]);
+  await service.dispose();
+});
+
+test("records an app-server settings timeout after dispatch as unknown", async () => {
+  class TimeoutSettingsDesktop extends FakeDesktop {
+    async selectModel(modelId, effects) {
+      this.calls.push(["selectModel", modelId]);
+      return effects.commit(() => {
+        throw new Error("Codex app-server timed out during thread/settings/update.");
+      });
+    }
+  }
+
+  const desktop = new TimeoutSettingsDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    () => service.command({ kind: "select_model", modelId: "gpt-test" }, "settings-update-timeout"),
+    (error) => error.code === "command_outcome_indeterminate",
+  );
+  const operation = await service.commandResult("settings-update-timeout");
+  assert.equal(operation.status, "unknown");
+  assert.equal(operation.error.code, "command_outcome_indeterminate");
+  assert.deepEqual(desktop.calls, [["selectModel", "gpt-test"]]);
+  await service.dispose();
+});
+
+test("records a post-update settings observation mismatch as unknown", async () => {
+  class MismatchSettingsDesktop extends FakeDesktop {
+    async adjustReasoning(delta, effects) {
+      this.calls.push(["adjustReasoning", delta]);
+      await effects.commit(async () => {});
+      throw new Error("Codex did not confirm the requested settings for the bound task.");
+    }
+  }
+
+  const desktop = new MismatchSettingsDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    () => service.command(bindingCommand("dial_cw"), "settings-observation-mismatch"),
+    (error) => error.code === "command_outcome_indeterminate",
+  );
+  assert.equal((await service.commandResult("settings-observation-mismatch")).status, "unknown");
+  assert.deepEqual(desktop.calls, [["adjustReasoning", 1]]);
   await service.dispose();
 });
 
@@ -1007,14 +1121,16 @@ test("discards an old poll that completes after a newer native action", async ()
       return snapshot;
     }
 
-    async selectModel(modelId) {
-      this.calls.push(["selectModel", modelId]);
-      this.model = {
-        ...this.model,
-        id: modelId,
-        label: "New",
-        options: this.model.options.map((option) => ({ ...option, selected: option.id === modelId })),
-      };
+    async selectModel(modelId, effects) {
+      await effects.commit(() => {
+        this.calls.push(["selectModel", modelId]);
+        this.model = {
+          ...this.model,
+          id: modelId,
+          label: "New",
+          options: this.model.options.map((option) => ({ ...option, selected: option.id === modelId })),
+        };
+      });
       return { message: "Selected New.", settings: { model: this.model, reasoning: this.reasoning } };
     }
   }
@@ -1026,7 +1142,7 @@ test("discards an old poll that completes after a newer native action", async ()
 
   await service.command({ kind: "select_model", modelId: "gpt-new" }, "newer-action");
   desktop.releasePoll.resolve();
-  await new Promise(setImmediate);
+  await new Promise((resolve) => setTimeout(resolve, 220));
 
   assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
   await service.dispose();

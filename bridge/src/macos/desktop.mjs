@@ -137,8 +137,9 @@ export class Desktop {
     return this.#invoke("model-picker");
   }
 
-  async selectModel(modelId) {
+  async selectModel(modelId, effects) {
     if (!this.#threadCatalog) throw new Error("Native Codex model selection is unavailable.");
+    requireEffects(effects);
     return this.#enqueue(async () => {
       const current = await this.#statusNow();
       const binding = this.#requireSettingsAvailable(current, "model");
@@ -146,36 +147,48 @@ export class Desktop {
         id: modelId,
         threadId: binding.threadId,
       });
-      await this.#invokeNow("select-model", [selected.id, binding.desktopToken], "");
+      if (!selected?.id) throw new Error("The requested Codex model is unavailable or stale.");
+      await this.#confirmSettingsBinding(binding, "model");
       const settings = await this.#threadCatalog.selectModel({
         id: selected.id,
         threadId: binding.threadId,
+        effects,
       });
       return { ok: true, message: `Selected ${settings.model.label}.`, settings };
     });
   }
 
-  async adjustReasoning(delta) {
+  async adjustReasoning(delta, effects) {
     if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
     if (delta !== -1 && delta !== 1) throw new Error("Reasoning adjustment must be one step.");
+    requireEffects(effects);
     return this.#enqueue(async () => {
       const current = await this.#statusNow();
       const binding = this.#requireSettingsAvailable(current, "reasoning");
+      if (!this.#threadCatalog.reasoningTarget(delta)) {
+        throw new Error("Codex reasoning cannot move farther in that direction.");
+      }
+      await this.#confirmSettingsBinding(binding, "reasoning");
       const target = this.#threadCatalog.reasoningTarget(delta);
-      if (!target) throw new Error("Codex reasoning cannot move farther in that direction.");
-      return this.#selectReasoningNow(target, binding);
+      if (!target) throw new Error("Codex reasoning changed before its settings mutation.");
+      return this.#selectReasoningNow(target, binding, effects);
     });
   }
 
-  async selectReasoning(level) {
+  async selectReasoning(level, effects) {
     if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
+    requireEffects(effects);
     return this.#enqueue(async () => {
       const current = await this.#statusNow();
       const binding = this.#requireSettingsAvailable(current, "reasoning");
       if (!this.#threadCatalog.hasReasoningLevel(level)) {
         throw new Error("The requested Codex reasoning level is unavailable or stale.");
       }
-      return this.#selectReasoningNow(level, binding);
+      await this.#confirmSettingsBinding(binding, "reasoning");
+      if (!this.#threadCatalog.hasReasoningLevel(level)) {
+        throw new Error("The requested Codex reasoning level changed before its settings mutation.");
+      }
+      return this.#selectReasoningNow(level, binding, effects);
     });
   }
 
@@ -256,13 +269,21 @@ export class Desktop {
     );
   }
 
-  async #selectReasoningNow(level, binding) {
-    await this.#invokeNow("select-reasoning", [level, binding.desktopToken], "");
+  async #selectReasoningNow(level, binding, effects) {
     const settings = await this.#threadCatalog.selectReasoning({
       level,
       threadId: binding.threadId,
+      effects,
     });
     return { ok: true, message: `Selected ${settings.reasoning.label} reasoning.`, settings };
+  }
+
+  async #confirmSettingsBinding(expected, kind) {
+    const current = await this.#statusNow();
+    const actual = this.#requireSettingsAvailable(current, kind);
+    if (actual.threadId !== expected.threadId || actual.desktopToken !== expected.desktopToken) {
+      throw new Error(`The visible Codex ${kind} task changed before its settings mutation.`);
+    }
   }
 
   #requireSettingsAvailable(status, kind) {
@@ -288,6 +309,12 @@ function mutationBinding(result, settings, agents) {
   if (typeof desktopToken !== "string" || !/^desktop-[a-f0-9]{24,64}$/.test(desktopToken)) return null;
   if (typeof threadId !== "string" || !threadId || focusedAgents.length !== 1) return null;
   return Object.freeze({ desktopToken, threadId });
+}
+
+function requireEffects(value) {
+  if (!value || typeof value.commit !== "function") {
+    throw new TypeError("A settings effect boundary is required.");
+  }
 }
 
 function runSocketRequest(socketPath, action, args, input = "", timeoutMs = 10_000) {

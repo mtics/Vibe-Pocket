@@ -3,6 +3,19 @@ import test from "node:test";
 
 import { Desktop } from "../../src/macos/desktop.mjs";
 
+function effectBoundary(calls = []) {
+  let crossed = false;
+  return {
+    get crossed() { return crossed; },
+    async commit(operation) {
+      assert.equal(crossed, false);
+      crossed = true;
+      calls.push(["effect", "commit"]);
+      return operation();
+    },
+  };
+}
+
 function controllerFixture() {
   const calls = [];
   const run = async (socketPath, action, args, input = "") => {
@@ -48,7 +61,7 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
   ]);
 });
 
-test("changes model and reasoning in the visible desktop before confirming state", async () => {
+test("writes model and reasoning only through the bound app-server catalog", async () => {
   const calls = [];
   const settings = {
     binding: { threadId: "thread-1" },
@@ -74,24 +87,30 @@ test("changes model and reasoning in the visible desktop before confirming state
       },
       async settings() { return settings; },
       async validateModel({ id }) { return settings.model.options.find((option) => option.id === id); },
-      async selectModel({ id }) {
-        settings.model = {
-          ...settings.model,
-          id,
-          options: settings.model.options.map((option) => ({ ...option, selected: option.id === id })),
-        };
-        return settings;
+      async selectModel({ id, effects }) {
+        return effects.commit(() => {
+          calls.push(["catalog", "selectModel", id]);
+          settings.model = {
+            ...settings.model,
+            id,
+            options: settings.model.options.map((option) => ({ ...option, selected: option.id === id })),
+          };
+          return settings;
+        });
       },
       reasoningTarget() { return "low"; },
-      async selectReasoning({ level }) {
-        settings.reasoning = {
-          available: true,
-          label: "Low",
-          level,
-          canIncrease: true,
-          canDecrease: true,
-        };
-        return settings;
+      async selectReasoning({ level, effects }) {
+        return effects.commit(() => {
+          calls.push(["catalog", "selectReasoning", level]);
+          settings.reasoning = {
+            available: true,
+            label: "Low",
+            level,
+            canIncrease: true,
+            canDecrease: true,
+          };
+          return settings;
+        });
       },
     },
     run: async (_socketPath, action, args) => {
@@ -110,15 +129,19 @@ test("changes model and reasoning in the visible desktop before confirming state
   const status = await controller.status();
   assert.equal(status.controls.model, true);
   assert.equal(status.controls.reasoning, true);
-  await controller.selectModel("gpt-sol");
-  await controller.adjustReasoning(1);
+  await controller.selectModel("gpt-sol", effectBoundary(calls));
+  await controller.adjustReasoning(1, effectBoundary(calls));
 
   assert.deepEqual(calls, [
     ["helper", "status", []],
     ["helper", "status", []],
-    ["helper", "select-model", ["gpt-sol", "desktop-0123456789abcdef01234567"]],
     ["helper", "status", []],
-    ["helper", "select-reasoning", ["low", "desktop-0123456789abcdef01234567"]],
+    ["effect", "commit"],
+    ["catalog", "selectModel", "gpt-sol"],
+    ["helper", "status", []],
+    ["helper", "status", []],
+    ["effect", "commit"],
+    ["catalog", "selectReasoning", "low"],
   ]);
 });
 
@@ -157,8 +180,10 @@ test("rejects stale model IDs before any prefix-colliding desktop option can be 
     },
   });
 
-  await assert.rejects(() => controller.selectModel("gpt-sol"), /unavailable or stale/i);
+  const effects = effectBoundary(calls);
+  await assert.rejects(() => controller.selectModel("gpt-sol", effects), /unavailable or stale/i);
   assert.deepEqual(calls, [["status", []]]);
+  assert.equal(effects.crossed, false);
 });
 
 test("rejects both delta and exact reasoning changes while Stop is visible", async () => {
@@ -194,9 +219,64 @@ test("rejects both delta and exact reasoning changes while Stop is visible", asy
     },
   });
 
-  await assert.rejects(() => controller.adjustReasoning(1), /while .* running/i);
-  await assert.rejects(() => controller.selectReasoning("xhigh"), /while .* running/i);
+  const deltaEffects = effectBoundary(calls);
+  const exactEffects = effectBoundary(calls);
+  await assert.rejects(() => controller.adjustReasoning(1, deltaEffects), /while .* running/i);
+  await assert.rejects(() => controller.selectReasoning("xhigh", exactEffects), /while .* running/i);
   assert.deepEqual(calls, [["status", []], ["status", []]]);
+  assert.equal(deltaEffects.crossed, false);
+  assert.equal(exactEffects.crossed, false);
+});
+
+test("rejects a changed desktop identity before crossing the settings boundary", async () => {
+  const calls = [];
+  let scans = 0;
+  const settings = {
+    binding: { threadId: "thread-1" },
+    model: {
+      available: true,
+      id: "gpt-sol",
+      label: "Sol",
+      options: [{ id: "gpt-sol", label: "Sol", selected: true }],
+    },
+    reasoning: { available: true, label: "High", level: "high" },
+  };
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() {
+        return [{ id: "agent-focused", label: "Focused task", focused: true }];
+      },
+      async settings() { return settings; },
+      async validateModel({ id }) { return settings.model.options.find((option) => option.id === id); },
+      async selectModel() { calls.push(["catalog", "selectModel"]); return settings; },
+    },
+    run: async () => {
+      scans += 1;
+      return {
+        ok: true,
+        taskState: "idle",
+        controls: { "model-picker": true, reasoning: true },
+        identity: {
+          mutationToken: scans === 1
+            ? "desktop-0123456789abcdef01234567"
+            : "desktop-89abcdef0123456701234567",
+        },
+        agents: [{ id: "agent-focused", label: "Focused task", focused: true }],
+        reasoning: { modelLabel: "Sol", level: "high" },
+      };
+    },
+  });
+  const effects = effectBoundary(calls);
+
+  await assert.rejects(
+    () => controller.selectModel("gpt-sol", effects),
+    /task changed before/i,
+  );
+
+  assert.equal(scans, 2);
+  assert.equal(effects.crossed, false);
+  assert.deepEqual(calls, []);
 });
 
 test("does not advertise companion settings while visible desktop controls are unavailable", async () => {

@@ -117,10 +117,14 @@ export class Session {
   async bindDesktopThread(threadId) {
     await this.#ready;
     return this.#queue.run(async () => {
+      const authority = new Authority(
+        (operation) => this.#dispatch(operation),
+        new EffectBoundary(),
+      );
       await this.#perform(
         () => this.#desktop.bindThread(threadId),
         "Attached the current Codex desktop task.",
-        (operation) => this.#dispatch(operation),
+        authority,
       );
       return { attached: true, revision: this.#state.revision };
     });
@@ -207,15 +211,12 @@ export class Session {
   async #runCommand(command, operationId, principal, admission) {
     const execution = this.#queue.run(async () => {
       this.#operations.markRunning(operationId, principal.id);
-      let dispatched = false;
-      const authority = (operation) => {
-        dispatched = true;
-        return this.#dispatch(operation);
-      };
+      const effects = new EffectBoundary();
+      const authority = new Authority((operation) => this.#dispatch(operation), effects);
       try {
         await this.#execute(command, authority);
       } catch (error) {
-        if (dispatched) {
+        if (effects.crossed) {
           this.#operations.markUnknown(operationId, principal.id);
           throw indeterminateFailure();
         }
@@ -368,7 +369,11 @@ export class Session {
         if (action.delta !== 1 && action.delta !== -1) {
           throw new Failure(400, "invalid_reasoning_delta", "Reasoning adjustment must be one step clockwise or counter-clockwise.");
         }
-        await this.#perform(() => this.#desktop.adjustReasoning(action.delta), "Adjusted Codex reasoning depth.", authority);
+        await this.#performDeferred(
+          (effects) => this.#desktop.adjustReasoning(action.delta, effects),
+          "Adjusted Codex reasoning depth.",
+          authority,
+        );
         return;
       case "workflow":
         await this.#perform(
@@ -386,7 +391,7 @@ export class Session {
     let persisted = normalize(nextProfile);
     if (this.#profileStore) {
       try {
-        persisted = await authority(() => this.#profileStore.save(persisted));
+        persisted = await authority.immediate(() => this.#profileStore.save(persisted));
       } catch {
         throw new Failure(500, "profile_persistence_failed", "The controller profile could not be saved.");
       }
@@ -401,12 +406,16 @@ export class Session {
   }
 
   async #perform(operation, fallbackMessage, authority) {
-    const result = await authority(operation);
-    if (result?.settings) {
-      this.#state.setSettings(result.settings);
-      this.#state.record(result.message ?? fallbackMessage);
-      return;
-    }
+    const result = await authority.immediate(operation);
+    this.#completeAction(result, fallbackMessage);
+  }
+
+  async #performDeferred(operation, fallbackMessage, authority) {
+    const result = await authority.deferred(operation);
+    this.#completeAction(result, fallbackMessage);
+  }
+
+  #completeAction(result, fallbackMessage) {
     // The scheduled capability scan verifies desktop actions. Avoid publishing
     // a transient success message before that scan changes the controller UI.
     this.#state.record(result?.message ?? fallbackMessage, { publish: false });
@@ -421,7 +430,7 @@ export class Session {
     if (active && !this.#state.voice.available) {
       throw new Failure(409, "voice_unavailable", "The visible ChatGPT Codex dictation control is unavailable.");
     }
-    const result = await authority(() => this.#desktop.setVoice(active));
+    const result = await authority.immediate(() => this.#desktop.setVoice(active));
     this.#state.setVoice(active);
     // A press-to-talk release can enqueue the matching stop immediately after
     // start. Let the common delayed scan publish the stable final state once.
@@ -443,8 +452,8 @@ export class Session {
   }
 
   async #selectModel(modelId, authority) {
-    await this.#perform(
-      () => this.#desktop.selectModel(modelId),
+    await this.#performDeferred(
+      (effects) => this.#desktop.selectModel(modelId, effects),
       "Selected the Codex model.",
       authority,
     );
@@ -453,6 +462,42 @@ export class Session {
   #dispatch(operation) {
     this.#refresh.invalidate();
     return operation();
+  }
+}
+
+class EffectBoundary {
+  #crossed = false;
+
+  get crossed() {
+    return this.#crossed;
+  }
+
+  async commit(operation) {
+    if (this.#crossed) throw new Error("A controller command may cross its effect boundary only once.");
+    this.#crossed = true;
+    return operation();
+  }
+}
+
+class Authority {
+  #dispatch;
+  #effects;
+
+  constructor(dispatch, effects) {
+    this.#dispatch = dispatch;
+    this.#effects = effects;
+  }
+
+  immediate(operation) {
+    return this.#dispatch(() => this.#effects.commit(operation));
+  }
+
+  async deferred(operation) {
+    const result = await this.#dispatch(() => operation(this.#effects));
+    if (!this.#effects.crossed) {
+      throw new Error("The controller mutation completed without crossing its effect boundary.");
+    }
+    return result;
   }
 }
 

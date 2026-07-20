@@ -7,7 +7,6 @@ export class Settings {
   #started = false;
   #starting = null;
   #current = null;
-  #confirmed = new Map();
   #threads = new Map();
   #loading = new Map();
 
@@ -44,17 +43,14 @@ export class Settings {
       model: native?.model ?? rollout?.model ?? null,
       reasoningEffort: native?.reasoningEffort ?? rollout?.reasoningEffort ?? null,
     };
-    const confirmed = thread?.id ? this.#confirmed.get(thread.id) : null;
-    this.#settle(thread?.id, confirmed, observed);
     const visibleMatches = this.#matches(visible.modelLabel);
     const visibleModel = visibleMatches.length === 1 ? visibleMatches[0] : null;
-    const selected = visibleModel
-      ?? this.#models.get(confirmed?.model ?? observed?.model);
+    const selected = this.#models.get(observed.model) ?? visibleModel;
     const efforts = selected?.efforts ?? [];
     const visibleLevel = visible.ambiguous === true
       ? null
       : typeof visible.level === "string" ? visible.level : null;
-    const level = [visibleLevel, confirmed?.reasoningEffort, observed?.reasoningEffort]
+    const level = [observed.reasoningEffort, visibleLevel]
       .find((effort) => efforts.includes(effort)) ?? null;
     return this.#view(thread?.id, selected, level, {
       ...visible,
@@ -63,9 +59,8 @@ export class Settings {
   }
 
   async selectModel(selection) {
-    const { value: modelId, threadId, bound } = mutationSelection(selection, "id");
-    const current = this.#requireCurrent(bound ? threadId : null);
-    await this.#resume(current.threadId);
+    const { value: modelId, threadId, effects } = mutationSelection(selection, "id");
+    const current = this.#requireCurrent(threadId);
     const selected = this.#models.get(modelId);
     if (!selected) throw new Error("The requested Codex model is unavailable.");
     if (!this.#modelIdentityIsUnique(selected)) {
@@ -74,18 +69,17 @@ export class Settings {
     const level = selected.efforts.includes(current.level)
       ? current.level
       : selected.defaultEffort ?? selected.efforts[0] ?? null;
-    await this.#appServer.request("thread/settings/update", {
+    const observed = await this.#update(threadId, {
       threadId: current.threadId,
       model: modelId,
       ...(level ? { effort: level } : {}),
-    });
-    this.#capture(current.threadId, { model: modelId, effort: level });
-    this.#confirmed.set(current.threadId, { model: modelId, reasoningEffort: level });
-    return this.#view(current.threadId, selected, level);
+    }, effects);
+    this.#requireObserved(observed, { model: modelId, reasoningEffort: level });
+    return this.#view(threadId, selected, observed.reasoningEffort);
   }
 
   async modelOption(selection, { refresh = false } = {}) {
-    const { value: modelId, threadId, bound } = mutationSelection(selection, "id");
+    const { value: modelId, threadId, bound } = optionSelection(selection, "id");
     await this.start({ refresh });
     if (bound) this.#requireCurrent(threadId);
     const selected = this.#models.get(modelId);
@@ -100,33 +94,28 @@ export class Settings {
     };
   }
 
-  async adjustReasoning(delta) {
+  async adjustReasoning(delta, effects) {
     const current = this.#requireCurrent();
     if (delta !== -1 && delta !== 1) throw new Error("Reasoning adjustment must be one step.");
     const index = current.efforts.indexOf(current.level);
     if (index < 0) throw new Error("The current Codex reasoning level is unresolved.");
     const level = current.efforts[index + delta];
     if (!level) throw new Error("Codex reasoning cannot move farther in that direction.");
-    return this.selectReasoning(level);
+    return this.selectReasoning({ level, threadId: current.threadId, effects });
   }
 
   async selectReasoning(selection) {
-    const { value: level, threadId, bound } = mutationSelection(selection, "level");
-    const current = this.#requireCurrent(bound ? threadId : null);
-    await this.#resume(current.threadId);
+    const { value: level, threadId, effects } = mutationSelection(selection, "level");
+    const current = this.#requireCurrent(threadId);
     if (!current.efforts.includes(level)) {
       throw new Error("The requested Codex reasoning level is unavailable or stale.");
     }
-    await this.#appServer.request("thread/settings/update", {
+    const observed = await this.#update(threadId, {
       threadId: current.threadId,
       effort: level,
-    });
-    this.#capture(current.threadId, { model: current.model, effort: level });
-    this.#confirmed.set(current.threadId, {
-      ...this.#confirmed.get(current.threadId),
-      reasoningEffort: level,
-    });
-    return this.#view(current.threadId, this.#models.get(current.model), level);
+    }, effects);
+    this.#requireObserved(observed, { model: current.model, reasoningEffort: level });
+    return this.#view(threadId, this.#models.get(observed.model), observed.reasoningEffort);
   }
 
   reasoningTarget(delta) {
@@ -190,9 +179,44 @@ export class Settings {
     return pending;
   }
 
+  async #update(threadId, params, effects) {
+    try {
+      await effects.commit(() => this.#appServer.request("thread/settings/update", params));
+    } finally {
+      this.#dropThread(threadId);
+    }
+    return this.#readFresh(threadId);
+  }
+
+  async #readFresh(threadId) {
+    const pending = this.#appServer.request("thread/resume", { threadId });
+    this.#loading.set(threadId, pending);
+    try {
+      const observed = observedSettings(await pending);
+      this.#threads.set(threadId, observed);
+      return observed;
+    } finally {
+      if (this.#loading.get(threadId) === pending) this.#loading.delete(threadId);
+    }
+  }
+
+  #dropThread(threadId) {
+    this.#threads.delete(threadId);
+    this.#loading.delete(threadId);
+    if (this.#current?.threadId === threadId) this.#current = null;
+  }
+
+  #requireObserved(actual, expected) {
+    if (
+      actual.model !== expected.model
+      || (expected.reasoningEffort && actual.reasoningEffort !== expected.reasoningEffort)
+    ) {
+      throw new Error("Codex did not confirm the requested settings for the bound task.");
+    }
+  }
+
   #invalidateThreadState() {
     this.#current = null;
-    this.#confirmed.clear();
     this.#threads.clear();
     this.#loading.clear();
   }
@@ -230,13 +254,6 @@ export class Settings {
     return next;
   }
 
-  #settle(threadId, confirmed, observed) {
-    if (!threadId || !confirmed || !observed) return;
-    if (confirmed.model === observed.model) delete confirmed.model;
-    if (confirmed.reasoningEffort === observed.reasoningEffort) delete confirmed.reasoningEffort;
-    if (!confirmed.model && !confirmed.reasoningEffort) this.#confirmed.delete(threadId);
-  }
-
   #matches(label) {
     const candidate = canonical(label);
     if (!candidate) return [];
@@ -254,16 +271,38 @@ export class Settings {
   }
 }
 
-function mutationSelection(selection, property) {
+function optionSelection(selection, property) {
   if (typeof selection === "string") {
     return { value: selection, threadId: null, bound: false };
   }
+  const bound = boundSelection(selection, property);
+  return { ...bound, bound: true };
+}
+
+function mutationSelection(selection, property) {
+  const bound = boundSelection(selection, property);
+  if (!selection.effects || typeof selection.effects.commit !== "function") {
+    throw new Error("A settings effect boundary is required.");
+  }
+  return { ...bound, effects: selection.effects };
+}
+
+function boundSelection(selection, property) {
   const value = selection?.[property];
   const threadId = selection?.threadId;
   if (typeof value !== "string" || !value || typeof threadId !== "string" || !threadId) {
     throw new Error("A bound Codex settings mutation is required.");
   }
-  return { value, threadId, bound: true };
+  return { value, threadId };
+}
+
+function observedSettings(value) {
+  return {
+    model: typeof value?.model === "string" ? value.model : null,
+    reasoningEffort: typeof value?.effort === "string"
+      ? value.effort
+      : typeof value?.reasoningEffort === "string" ? value.reasoningEffort : null,
+  };
 }
 
 function reasoningLabel(value) {

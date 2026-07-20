@@ -4,8 +4,22 @@ import test from "node:test";
 
 import { Settings } from "../../src/task/settings.mjs";
 
+function effectBoundary() {
+  let crossed = false;
+  return {
+    get crossed() { return crossed; },
+    async commit(operation) {
+      assert.equal(crossed, false);
+      crossed = true;
+      return operation();
+    },
+  };
+}
+
 class FakeAppServer extends EventEmitter {
   calls = [];
+  applyUpdates = true;
+  updateError = null;
 
   constructor(resumed = null) {
     super();
@@ -25,7 +39,17 @@ class FakeAppServer extends EventEmitter {
       };
     }
     if (method === "thread/resume" && this.resumed) return this.resumed;
-    if (method === "thread/settings/update") return {};
+    if (method === "thread/settings/update") {
+      if (this.updateError) throw this.updateError;
+      if (this.applyUpdates) {
+        this.resumed = {
+          ...this.resumed,
+          ...(params.model ? { model: params.model } : {}),
+          ...(params.effort ? { reasoningEffort: params.effort } : {}),
+        };
+      }
+      return {};
+    }
     throw new Error(`Unexpected method ${method}`);
   }
 }
@@ -50,7 +74,7 @@ function model(id, displayName, efforts) {
   };
 }
 
-test("uses the visible desktop setting ahead of the companion app-server state", async () => {
+test("uses the exact thread observation ahead of a stale visible selector", async () => {
   const appServer = new FakeAppServer({ model: "gpt-sol", reasoningEffort: "ultra" });
   const settings = new Settings({
     appServer,
@@ -66,9 +90,9 @@ test("uses the visible desktop setting ahead of the companion app-server state",
   assert.deepEqual(status.model.options.map(({ id }) => id), ["gpt-sol", "gpt-luna"]);
   assert.deepEqual(status.reasoning, {
     available: true,
-    label: "Extra high",
-    level: "xhigh",
-    canIncrease: true,
+    label: "Ultra",
+    level: "ultra",
+    canIncrease: false,
     canDecrease: true,
   });
   assert.deepEqual(appServer.calls.map(([method]) => method), ["model/list", "thread/resume"]);
@@ -97,22 +121,74 @@ test("writes model and every advertised reasoning level through app-server", asy
   await settings.projection(thread, { modelLabel: "Sol" });
 
   assert.equal(settings.reasoningTarget(1), "max");
-  const reasoning = await settings.adjustReasoning(1);
+  const reasoning = await settings.adjustReasoning(1, effectBoundary());
   assert.equal(reasoning.reasoning.level, "max");
   assert.equal((await settings.projection(thread, { modelLabel: "Sol" })).reasoning.level, "max");
   assert.equal(settings.reasoningTarget(1), "ultra");
-  const ultra = await settings.adjustReasoning(1);
+  const ultra = await settings.adjustReasoning(1, effectBoundary());
   assert.equal(ultra.reasoning.level, "ultra");
 
-  const selected = await settings.selectModel("gpt-luna");
+  const selected = await settings.selectModel({
+    id: "gpt-luna",
+    threadId: "thread-a",
+    effects: effectBoundary(),
+  });
   assert.equal(selected.model.id, "gpt-luna");
   assert.equal(selected.reasoning.level, "low");
 
   assert.deepEqual(appServer.calls.slice(2), [
     ["thread/settings/update", { threadId: "thread-a", effort: "max" }],
+    ["thread/resume", { threadId: "thread-a" }],
     ["thread/settings/update", { threadId: "thread-a", effort: "ultra" }],
+    ["thread/resume", { threadId: "thread-a" }],
     ["thread/settings/update", { threadId: "thread-a", model: "gpt-luna", effort: "low" }],
+    ["thread/resume", { threadId: "thread-a" }],
   ]);
+});
+
+test("invalidates cached settings when an app-server update times out", async () => {
+  const appServer = new FakeAppServer({ model: "gpt-sol", reasoningEffort: "xhigh" });
+  const settings = new Settings({ appServer, context: new FakeContext() });
+  await settings.start();
+  const thread = { id: "thread-a", path: "/rollout.jsonl" };
+  await settings.projection(thread, { modelLabel: "Sol" });
+  appServer.updateError = new Error("thread/settings/update timed out");
+
+  await assert.rejects(
+    () => settings.selectReasoning({
+      level: "max",
+      threadId: "thread-a",
+      effects: effectBoundary(),
+    }),
+    /timed out/i,
+  );
+
+  appServer.updateError = null;
+  const observed = await settings.projection(thread, { modelLabel: "Sol", ambiguous: true });
+  assert.equal(observed.reasoning.level, "xhigh");
+  assert.equal(appServer.calls.filter(([method]) => method === "thread/resume").length, 2);
+});
+
+test("rejects an observation mismatch without exposing the requested model", async () => {
+  const appServer = new FakeAppServer({ model: "gpt-sol", reasoningEffort: "xhigh" });
+  appServer.applyUpdates = false;
+  const settings = new Settings({ appServer, context: new FakeContext() });
+  await settings.start();
+  const thread = { id: "thread-a", path: "/rollout.jsonl" };
+  await settings.projection(thread, { modelLabel: "Sol" });
+
+  await assert.rejects(
+    () => settings.selectModel({
+      id: "gpt-luna",
+      threadId: "thread-a",
+      effects: effectBoundary(),
+    }),
+    /did not confirm/i,
+  );
+
+  const observed = await settings.projection(thread, { modelLabel: "Sol", ambiguous: true });
+  assert.equal(observed.model.id, "gpt-sol");
+  assert.equal(observed.reasoning.level, "xhigh");
 });
 
 test("uses native task state to disambiguate a closed xhigh-like selector", async () => {
