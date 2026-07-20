@@ -7,6 +7,7 @@ import au.edu.uts.vibepocket.ui.control.Catalog
 import au.edu.uts.vibepocket.ui.control.Control
 import au.edu.uts.vibepocket.ui.control.InputButton
 import au.edu.uts.vibepocket.ui.control.LabelPlacement
+import au.edu.uts.vibepocket.ui.control.Layout
 import au.edu.uts.vibepocket.ui.control.Mode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -42,14 +43,15 @@ internal fun Actions(
     onVoiceStop: (String) -> Unit,
     onMode: (String) -> Boolean,
     blocked: Boolean,
+    layout: Layout,
     modifier: Modifier = Modifier,
 ) {
     val directions = listOf("up", "down", "left", "right")
         .associateWith { catalog.find("navigate", direction = it) }
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(layout.gap)) {
         Row(
-            Modifier.fillMaxWidth().height(228.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier.fillMaxWidth().height(layout.pad),
+            horizontalArrangement = Arrangement.spacedBy(layout.actionGap),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Pad(
@@ -62,11 +64,13 @@ internal fun Actions(
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
                 blocked = blocked,
-                modifier = Modifier.size(228.dp),
+                directionSize = layout.direction,
+                centerSize = layout.center,
+                modifier = Modifier.size(layout.pad),
             )
             Column(
                 modifier = Modifier.weight(1f).fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(layout.gap),
             ) {
                 Mode(
                     state = mode,
@@ -90,7 +94,10 @@ internal fun Actions(
                 )
             }
         }
-        Row(Modifier.fillMaxWidth().height(52.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            Modifier.fillMaxWidth().height(layout.safety),
+            horizontalArrangement = Arrangement.spacedBy(layout.gap),
+        ) {
             listOf(
                 catalog.find("clear_input") to "Clear",
                 catalog.find("reject") to "Reject",
@@ -116,6 +123,8 @@ private fun Pad(
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     blocked: Boolean,
+    directionSize: androidx.compose.ui.unit.Dp,
+    centerSize: androidx.compose.ui.unit.Dp,
     modifier: Modifier,
 ) {
     Box(modifier) {
@@ -127,7 +136,7 @@ private fun Pad(
         ).forEach { (direction, alignment) ->
             val control = directions[direction]
             if (control == null) {
-                Empty(direction, Modifier.align(alignment).size(68.dp))
+                Empty(direction, Modifier.align(alignment).size(directionSize))
             } else {
                 InputButton(
                     input = control.input,
@@ -143,12 +152,12 @@ private fun Pad(
                     blocked = blocked,
                     labelPlacement = LabelPlacement.HIDDEN,
                     shape = CircleShape,
-                    modifier = Modifier.align(alignment).size(68.dp),
+                    modifier = Modifier.align(alignment).size(directionSize),
                 )
             }
         }
         Box(
-            Modifier.align(Alignment.Center).size(54.dp).clip(CircleShape)
+            Modifier.align(Alignment.Center).size(centerSize).clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surface),
             contentAlignment = Alignment.Center,
         ) {

@@ -4,7 +4,7 @@ import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -31,6 +31,6 @@ internal fun Voice(
         blocked = blocked,
         dedicatedVoiceControl = true,
         labelPlacement = LabelPlacement.BESIDE,
-        modifier = modifier.fillMaxWidth().heightIn(min = 72.dp),
+        modifier = modifier.fillMaxWidth().height(84.dp),
     )
 }

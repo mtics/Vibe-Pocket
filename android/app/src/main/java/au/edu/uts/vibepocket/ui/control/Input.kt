@@ -24,11 +24,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.SmartToy
@@ -43,7 +45,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -135,6 +136,8 @@ internal fun InputButton(
         voiceAvailable = voiceAvailable,
         hasGestures = gestures.isNotEmpty(),
     )
+    val visualAccent = if (interactive || pending) accent else MaterialTheme.colorScheme.outline
+    val visualContainer = if (interactive || pending) container else MaterialTheme.colorScheme.surface
     val voicePressEnabled = voiceAvailable && !voiceActive && !pending && !blocked
     val repeat = navigationRepeatEnabled && gesture in setOf(null, Gesture.Kind.TAP) && !pending && !blocked
     val currentInput by rememberUpdatedState(onInput)
@@ -174,8 +177,8 @@ internal fun InputButton(
     Column(
         modifier = modifier
             .clip(shape)
-            .background(container)
-            .border(1.dp, accent.copy(alpha = if (interactive) 0.42f else 0.16f), shape)
+            .background(visualContainer)
+            .border(1.dp, visualAccent.copy(alpha = if (interactive || pending) 0.42f else 0.52f), shape)
             .semantics {
                 role = Role.Button
                 val description = supportingLabel?.let { "$it, $label" } ?: label
@@ -255,7 +258,6 @@ internal fun InputButton(
                     )
                 },
             )
-            .alpha(if (interactive) 1f else 0.62f)
             .padding(
                 horizontal = when (labelPlacement) {
                     LabelPlacement.HIDDEN -> 0.dp
@@ -270,16 +272,16 @@ internal fun InputButton(
         if (pending) {
             CircularProgressIndicator(
                 Modifier.size(if (labelPlacement == LabelPlacement.HIDDEN) 22.dp else 20.dp),
-                color = accent,
+                color = visualAccent,
                 strokeWidth = 2.dp,
             )
         } else {
             when (labelPlacement) {
                 LabelPlacement.HIDDEN -> {
-                    Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(27.dp))
+                    Icon(icon, contentDescription = null, tint = visualAccent, modifier = Modifier.size(27.dp))
                 }
                 LabelPlacement.BELOW -> {
-                    Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(23.dp))
+                    Icon(icon, contentDescription = null, tint = visualAccent, modifier = Modifier.size(23.dp))
                     Spacer(Modifier.height(5.dp))
                     Label(label, modifier = Modifier.fillMaxWidth())
                 }
@@ -289,7 +291,7 @@ internal fun InputButton(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
                     ) {
-                        Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(21.dp))
+                        Icon(icon, contentDescription = null, tint = visualAccent, modifier = Modifier.size(21.dp))
                         Spacer(Modifier.width(7.dp))
                         Label(label, modifier = Modifier.weight(1f))
                     }
@@ -355,13 +357,7 @@ private fun container(action: Action?, active: Boolean): Color = when {
         "reject", "stop" -> MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
         "voice" -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.11f)
         "new_task" -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.09f)
-        "workflow" -> when (action.workflowId) {
-            "review-pr" -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-            "debug" -> MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
-            "refactor" -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.09f)
-            "test" -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.09f)
-            else -> MaterialTheme.colorScheme.surface
-        }
+        "workflow" -> MaterialTheme.colorScheme.surface
         else -> MaterialTheme.colorScheme.surface
     }
 }
@@ -376,7 +372,8 @@ private fun icon(action: Action?, input: Input): ImageVector = when (action?.typ
     "model_picker" -> Icons.Default.SmartToy
     "access_cycle" -> Icons.Default.AdminPanelSettings
     "select_layer" -> Icons.Default.Layers
-    "delete_backward", "clear_input" -> iconForInput("clear")
+    "delete_backward" -> Icons.AutoMirrored.Filled.Backspace
+    "clear_input" -> Icons.Default.DeleteSweep
     "focus_next" -> Icons.Default.SwitchAccount
     "focus_agent" -> Icons.Default.AccountCircle
     "attach" -> iconForInput("focus")

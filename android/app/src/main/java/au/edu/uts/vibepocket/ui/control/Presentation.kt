@@ -30,11 +30,7 @@ internal fun dedicatedVoiceInput(snapshot: Snapshot, activeOwnerInputId: String?
         candidates.firstOrNull { it.id == activeOwnerInputId }?.let { return it }
     }
     candidates.firstOrNull { snapshot.voiceMappingIdentity(it.id) != null }?.let { return it }
-    return if (snapshot.desktop?.voice?.active == true) {
-        candidates.firstOrNull { it.id == "key_voice" }
-    } else {
-        null
-    }
+    return candidates.firstOrNull { it.id == "key_voice" }
 }
 
 internal fun unrepresentedInputs(inputs: List<Input>, representedIds: Set<String>): List<Input> =

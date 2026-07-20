@@ -93,6 +93,30 @@ class PresentationTest {
     }
 
     @Test
+    fun dedicatedVoiceSlotRemainsPresentWhenTheActiveLayerHasNoVoiceMapping() {
+        val snapshot = snapshot(
+            inputs = emptyList(),
+            actions = emptyMap(),
+            voice = Voice(available = false, active = false),
+            capabilities = Capabilities(voice = false),
+        )
+
+        assertEquals("key_voice", dedicatedVoiceInput(snapshot)?.id)
+    }
+
+    @Test
+    fun reasoningStepsNameTheExactTargetForTalkBack() {
+        assertEquals(
+            "Increase reasoning to High",
+            reasoningStepDescription("Increase reasoning", Reasoning.Level.HIGH),
+        )
+        assertEquals(
+            "Decrease reasoning unavailable",
+            reasoningStepDescription("Decrease reasoning", null),
+        )
+    }
+
+    @Test
     fun contextTransitionPendingIsStructuredSessionState() {
         assertTrue(au.edu.uts.vibepocket.session.State(contextTransitionPending = true).contextTransitionPending)
         assertFalse(

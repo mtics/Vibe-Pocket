@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -36,11 +37,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Restore
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
@@ -51,8 +50,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -62,6 +59,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -84,6 +82,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 internal data class MappingTarget(
     val layerId: String,
@@ -183,53 +183,70 @@ internal fun Settings(
         connectionError?.takeIf { it.isNotBlank() }?.let { errorHost.showSnackbar(it) }
     }
 
-    ModalBottomSheet(
+    Dialog(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.background,
-        dragHandle = { BottomSheetDefaults.DragHandle() },
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = true,
+        ),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .imePadding(),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 720.dp)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 72.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                FilledTonalButton(
-                    onClick = {
-                        validConfig?.let { candidateConfig ->
-                            if (onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.credential)) {
-                                saveTarget = candidateConfig
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Scaffold(
+                containerColor = MaterialTheme.colorScheme.background,
+                topBar = {
+                    TopAppBar(
+                        title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
+                        navigationIcon = {
+                            IconButton(onClick = onDismiss) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
-                        }
-                    },
-                    enabled = connectionDirty && inFlightIds.isEmpty(),
-                    modifier = Modifier.widthIn(min = 96.dp).heightIn(min = 44.dp),
-                    shape = RoundedCornerShape(6.dp),
-                    contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                        },
+                        actions = {
+                            IconButton(onClick = onResetProfile, enabled = !busy) {
+                                Icon(Icons.Default.Restore, contentDescription = "Reset controller profile")
+                            }
+                            FilledTonalButton(
+                                onClick = {
+                                    validConfig?.let { candidateConfig ->
+                                        if (onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.credential)) {
+                                            saveTarget = candidateConfig
+                                        }
+                                    }
+                                },
+                                enabled = connectionDirty && inFlightIds.isEmpty(),
+                                modifier = Modifier.padding(end = 8.dp).heightIn(min = 40.dp),
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+                            ) {
+                                if (savingConnection) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(5.dp))
+                                    Text("Save")
+                                }
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                        ),
+                    )
+                },
+                snackbarHost = { SnackbarHost(errorHost) },
+            ) { contentPadding ->
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(contentPadding).imePadding(),
+                    contentAlignment = Alignment.TopCenter,
                 ) {
-                    if (savingConnection) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(5.dp))
-                        Text("Save")
-                    }
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close settings")
-                }
-            }
+                    Column(
+                        modifier = Modifier
+                            .widthIn(max = 720.dp)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
             SectionHeader(Icons.Default.Link, "Bridge & pairing")
             Row(
                 modifier = Modifier
@@ -317,7 +334,7 @@ internal fun Settings(
                 }
                 Text("Layer color", style = MaterialTheme.typography.labelLarge)
                 LayerColors.chunked(4).forEach { colors ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
                         colors.forEach { color ->
                             val parsed = profileColor(color)
                             val selected = layer.color.equals(color, ignoreCase = true)
@@ -337,14 +354,7 @@ internal fun Settings(
                             )
                             Box(
                                 modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(parsed)
-                                    .border(
-                                        if (selected) 3.dp else 1.dp,
-                                        if (selected) ring else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                                        CircleShape,
-                                    )
+                                    .size(48.dp)
                                     .semantics {
                                         role = Role.Button
                                         this.selected = selected
@@ -352,7 +362,17 @@ internal fun Settings(
                                         if (!selectable && !selected) disabled()
                                     }
                                     .clickable(enabled = selectable, onClick = { onColor(layer.id, color) }),
-                            )
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Box(
+                                    Modifier.size(32.dp).clip(CircleShape).background(parsed)
+                                        .border(
+                                            if (selected) 3.dp else 1.dp,
+                                            if (selected) ring else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                                            CircleShape,
+                                        ),
+                                )
+                            }
                         }
                     }
                 }
@@ -382,16 +402,6 @@ internal fun Settings(
                         )
                     }
                 }
-                OutlinedButton(
-                    onClick = onResetProfile,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    enabled = !busy,
-                    shape = RoundedCornerShape(6.dp),
-                ) {
-                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Reset controller profile")
-                }
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
@@ -406,14 +416,10 @@ internal fun Settings(
                 Spacer(Modifier.width(8.dp))
                 Text("Disconnect and forget pairing")
             }
-                Spacer(Modifier.height(24.dp))
+                        Spacer(Modifier.height(24.dp))
+                    }
+                }
             }
-            SnackbarHost(
-                hostState = errorHost,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            )
         }
     }
 

@@ -294,7 +294,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.background)
                         .windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Bottom))
-                        .padding(start = 12.dp, top = 6.dp, end = 12.dp, bottom = 4.dp),
+                        .padding(start = 16.dp, top = 6.dp, end = 16.dp, bottom = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Voice(
@@ -305,7 +305,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                         onVoiceStart = onVoiceStart,
                         onVoiceStop = onVoiceStop,
                         blocked = transitionPending || !current.transportFresh,
-                        modifier = Modifier.widthIn(max = 720.dp),
+                        modifier = Modifier.widthIn(max = 361.dp),
                     )
                 }
             }

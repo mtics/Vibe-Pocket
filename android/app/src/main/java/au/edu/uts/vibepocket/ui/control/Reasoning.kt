@@ -38,6 +38,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,7 +73,7 @@ internal fun Reasoning(
             .alpha(if (enabled || pending) 1f else 0.58f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Step(state.decreaseTo, Icons.Default.Remove, enabled, pending, onReasoning)
+        Step(state.decreaseTo, "Decrease reasoning", Icons.Default.Remove, enabled, pending, onReasoning)
         Column(
             Modifier.weight(1f).clickable(enabled = enabled) { showOptions = true },
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -83,7 +88,7 @@ internal fun Reasoning(
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        Step(state.increaseTo, Icons.Default.Add, enabled, pending, onReasoning)
+        Step(state.increaseTo, "Increase reasoning", Icons.Default.Add, enabled, pending, onReasoning)
     }
 
     if (showOptions) {
@@ -119,16 +124,26 @@ internal fun Reasoning(
 @Composable
 private fun Step(
     target: State.Level?,
+    action: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     enabled: Boolean,
     pending: Boolean,
     onReasoning: (State.Level) -> Boolean,
 ) {
     Box(
-        Modifier.size(48.dp).clickable(enabled = enabled && target != null) { target?.let(onReasoning) },
+        Modifier.size(48.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = reasoningStepDescription(action, target)
+                if (!enabled || target == null) disabled()
+            }
+            .clickable(enabled = enabled && target != null) { target?.let(onReasoning) },
         contentAlignment = Alignment.Center,
     ) {
         if (pending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         else Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp))
     }
 }
+
+internal fun reasoningStepDescription(action: String, target: State.Level?): String =
+    target?.let { "$action to ${it.displayLabel}" } ?: "$action unavailable"
