@@ -4,6 +4,7 @@ export class Settings {
   #appServer;
   #context;
   #models = new Map();
+  #generation = 0;
   #started = false;
   #starting = null;
   #current = null;
@@ -17,45 +18,63 @@ export class Settings {
       if (message?.method !== "thread/settings/updated") return;
       this.#capture(message.params?.threadId, message.params?.threadSettings);
     });
-    this.#appServer.on?.("transportReset", () => this.#invalidateThreadState());
+    this.#appServer.on?.("transportReset", () => this.#invalidateState());
   }
 
   async start({ refresh = false } = {}) {
-    if (this.#started && !refresh) return;
-    if (!this.#starting) {
-      this.#starting = this.#loadModels()
-        .finally(() => { this.#starting = null; });
+    while (true) {
+      if (this.#started && !refresh) return;
+      const generation = this.#generation;
+      let pending = this.#starting;
+      if (!pending) {
+        pending = this.#loadModels(generation)
+          .finally(() => {
+            if (this.#starting === pending) this.#starting = null;
+          });
+        this.#starting = pending;
+      }
+      try {
+        await pending;
+      } catch (error) {
+        if (generation === this.#generation) throw error;
+      }
+      if (generation === this.#generation) return;
+      refresh = false;
     }
-    await this.#starting;
   }
 
   async projection(thread, visible = {}) {
-    const rollout = await this.#context.read(thread);
-    let native = null;
-    if (thread?.id) {
-      try {
-        native = await this.#resume(thread.id);
-      } catch {
-        native = null;
+    while (true) {
+      await this.start();
+      const generation = this.#generation;
+      const rollout = await this.#context.read(thread);
+      let native = null;
+      if (thread?.id) {
+        try {
+          native = await this.#resume(thread.id);
+        } catch {
+          native = null;
+        }
       }
+      if (generation !== this.#generation) continue;
+      const observed = {
+        model: native?.model ?? rollout?.model ?? null,
+        reasoningEffort: native?.reasoningEffort ?? rollout?.reasoningEffort ?? null,
+      };
+      const visibleMatches = this.#matches(visible.modelLabel);
+      const visibleModel = visibleMatches.length === 1 ? visibleMatches[0] : null;
+      const selected = this.#models.get(observed.model) ?? visibleModel;
+      const efforts = selected?.efforts ?? [];
+      const visibleLevel = visible.ambiguous === true
+        ? null
+        : typeof visible.level === "string" ? visible.level : null;
+      const level = [observed.reasoningEffort, visibleLevel]
+        .find((effort) => efforts.includes(effort)) ?? null;
+      return this.#view(thread?.id, selected, level, {
+        ...visible,
+        modelAmbiguous: visibleMatches.length > 1,
+      });
     }
-    const observed = {
-      model: native?.model ?? rollout?.model ?? null,
-      reasoningEffort: native?.reasoningEffort ?? rollout?.reasoningEffort ?? null,
-    };
-    const visibleMatches = this.#matches(visible.modelLabel);
-    const visibleModel = visibleMatches.length === 1 ? visibleMatches[0] : null;
-    const selected = this.#models.get(observed.model) ?? visibleModel;
-    const efforts = selected?.efforts ?? [];
-    const visibleLevel = visible.ambiguous === true
-      ? null
-      : typeof visible.level === "string" ? visible.level : null;
-    const level = [observed.reasoningEffort, visibleLevel]
-      .find((effort) => efforts.includes(effort)) ?? null;
-    return this.#view(thread?.id, selected, level, {
-      ...visible,
-      modelAmbiguous: visibleMatches.length > 1,
-    });
   }
 
   async selectModel(selection) {
@@ -73,7 +92,7 @@ export class Settings {
       threadId: current.threadId,
       model: modelId,
       ...(level ? { effort: level } : {}),
-    }, effects);
+    }, effects, current.generation);
     this.#requireObserved(observed, { model: modelId, reasoningEffort: level });
     return this.#view(threadId, selected, observed.reasoningEffort);
   }
@@ -113,7 +132,7 @@ export class Settings {
     const observed = await this.#update(threadId, {
       threadId: current.threadId,
       effort: level,
-    }, effects);
+    }, effects, current.generation);
     this.#requireObserved(observed, { model: current.model, reasoningEffort: level });
     return this.#view(threadId, this.#models.get(observed.model), observed.reasoningEffort);
   }
@@ -134,7 +153,9 @@ export class Settings {
     const efforts = selected?.efforts ?? [];
     const modelAmbiguous = visible.modelAmbiguous === true
       || (selected ? !this.#modelIdentityIsUnique(selected) : false);
-    this.#current = threadId && selected ? { threadId, model: selected.id, efforts, level } : null;
+    this.#current = threadId && selected
+      ? { generation: this.#generation, threadId, model: selected.id, efforts, level }
+      : null;
     return {
       binding: threadId ? { threadId } : null,
       model: {
@@ -153,12 +174,16 @@ export class Settings {
         level,
         canIncrease: level ? efforts.indexOf(level) < efforts.length - 1 : false,
         canDecrease: level ? efforts.indexOf(level) > 0 : false,
+        increaseTo: level ? efforts[efforts.indexOf(level) + 1] ?? null : null,
+        decreaseTo: level ? efforts[efforts.indexOf(level) - 1] ?? null : null,
       },
     };
   }
 
   #requireCurrent(expectedThreadId = null) {
-    if (!this.#current?.threadId) throw new Error("No focused Codex task is available for settings changes.");
+    if (!this.#current?.threadId || this.#current.generation !== this.#generation) {
+      throw new Error("No focused Codex task is available for settings changes.");
+    }
     if (expectedThreadId && this.#current.threadId !== expectedThreadId) {
       throw new Error("The focused Codex task changed before its settings mutation.");
     }
@@ -166,37 +191,55 @@ export class Settings {
   }
 
   async #resume(threadId) {
-    if (this.#threads.has(threadId)) return this.#threads.get(threadId);
-    let pending = this.#loading.get(threadId);
-    if (!pending) {
-      pending = this.#appServer.request("thread/resume", { threadId })
-        .then((result) => this.#capture(threadId, result))
-        .finally(() => {
-          if (this.#loading.get(threadId) === pending) this.#loading.delete(threadId);
-        });
-      this.#loading.set(threadId, pending);
+    while (true) {
+      const generation = this.#generation;
+      if (this.#threads.has(threadId)) return this.#threads.get(threadId);
+      let pending = this.#loading.get(threadId);
+      if (!pending) {
+        pending = this.#appServer.request("thread/resume", { threadId })
+          .then((result) => this.#capture(threadId, result, generation))
+          .finally(() => {
+            if (this.#loading.get(threadId) === pending) this.#loading.delete(threadId);
+          });
+        this.#loading.set(threadId, pending);
+      }
+      try {
+        const observed = await pending;
+        if (generation === this.#generation) return observed;
+      } catch (error) {
+        if (generation === this.#generation) throw error;
+      }
     }
-    return pending;
   }
 
-  async #update(threadId, params, effects) {
+  async #update(threadId, params, effects, generation) {
     try {
       await effects.commit(() => this.#appServer.request("thread/settings/update", params));
     } finally {
-      this.#dropThread(threadId);
+      if (generation === this.#generation) this.#dropThread(threadId);
+    }
+    if (generation !== this.#generation) {
+      throw new Error("The app-server restarted before its settings mutation was confirmed.");
     }
     return this.#readFresh(threadId);
   }
 
   async #readFresh(threadId) {
-    const pending = this.#appServer.request("thread/resume", { threadId });
-    this.#loading.set(threadId, pending);
-    try {
-      const observed = observedSettings(await pending);
-      this.#threads.set(threadId, observed);
-      return observed;
-    } finally {
-      if (this.#loading.get(threadId) === pending) this.#loading.delete(threadId);
+    while (true) {
+      const generation = this.#generation;
+      const pending = this.#appServer.request("thread/resume", { threadId })
+        .then((result) => observedSettings(result));
+      this.#loading.set(threadId, pending);
+      try {
+        const observed = await pending;
+        if (generation !== this.#generation) continue;
+        this.#threads.set(threadId, observed);
+        return observed;
+      } catch (error) {
+        if (generation === this.#generation) throw error;
+      } finally {
+        if (this.#loading.get(threadId) === pending) this.#loading.delete(threadId);
+      }
     }
   }
 
@@ -215,13 +258,17 @@ export class Settings {
     }
   }
 
-  #invalidateThreadState() {
+  #invalidateState() {
+    this.#generation += 1;
     this.#current = null;
     this.#threads.clear();
     this.#loading.clear();
+    this.#models.clear();
+    this.#started = false;
+    this.#starting = null;
   }
 
-  async #loadModels() {
+  async #loadModels(generation) {
     const result = await this.#appServer.request("model/list", { limit: 50 });
     const models = new Map();
     for (const entry of result.data ?? []) {
@@ -235,12 +282,13 @@ export class Settings {
           .filter((effort) => typeof effort === "string" && effort.length > 0) ?? [],
       });
     }
+    if (generation !== this.#generation) return;
     this.#models = models;
     this.#started = true;
   }
 
-  #capture(threadId, value) {
-    if (typeof threadId !== "string" || !value) return null;
+  #capture(threadId, value, generation = this.#generation) {
+    if (generation !== this.#generation || typeof threadId !== "string" || !value) return null;
     const previous = this.#threads.get(threadId) ?? {};
     const next = {
       model: typeof value.model === "string" ? value.model : previous.model ?? null,

@@ -47,7 +47,7 @@ if (
 
 const deepLink = quoteForShell(pairingUrl.toString());
 process.stdout.write(
-  `exec am start -W -a android.intent.action.VIEW -d ${deepLink} -p au.edu.uts.vibepocket\n`,
+  `exec am start -W -n au.edu.uts.vibepocket/.MainActivity -a android.intent.action.VIEW -d ${deepLink}\n`,
 );
 
 function quoteForShell(value) {

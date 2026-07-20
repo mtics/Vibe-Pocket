@@ -7,6 +7,7 @@ import test from "node:test";
 import { bindingFor, createDefault } from "../../src/profile/model.mjs";
 import { Operations, persistOperations } from "../../src/control/operations.mjs";
 import { Session } from "../../src/control/session.mjs";
+import { PROTOCOL_VERSION } from "../../src/protocol.mjs";
 
 class FakeEvents {
   published = [];
@@ -139,6 +140,7 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   await service.start();
 
   const snapshot = await service.snapshot();
+  assert.equal(snapshot.protocolVersion, PROTOCOL_VERSION);
   assert.equal(snapshot.focusSessionId, "vibe-pocket-codex");
   assert.equal(snapshot.controller.profile.layers.length, 6);
   assert.equal(snapshot.controller.profile.inputs.length, 20);
@@ -194,6 +196,8 @@ test("keeps reasoning adjustable upward at the minimum level", async () => {
     level: "minimal",
     canIncrease: true,
     canDecrease: false,
+    increaseTo: null,
+    decreaseTo: null,
   });
 });
 
@@ -312,6 +316,18 @@ test("routes default-layer keys, gestures, joystick, touch, and dial inputs", as
   assert.deepEqual(desktop.calls[13], ["selectModel", "gpt-test"]);
 });
 
+test("describes approve and reject only as explicit Codex decisions", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await service.command({ kind: "approve" }, "approve-message");
+  assert.equal((await service.snapshot()).status.message, "Approved the focused Codex request.");
+
+  await service.command({ kind: "reject" }, "reject-message");
+  assert.equal((await service.snapshot()).status.message, "Rejected the focused Codex request.");
+});
+
 test("keeps workflow controls available while the visible task is running", async () => {
   const desktop = new FakeDesktop();
   desktop.taskState = "executing";
@@ -359,7 +375,24 @@ test("acknowledges a desktop action before a slow state scan completes", async (
   await service.dispose();
 });
 
-test("waits for initial desktop discovery before accepting a control command", async () => {
+test("fails closed when a control command arrives before startup", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+
+  await assert.rejects(
+    () => service.command(bindingCommand("key_accept"), "before-startup"),
+    (error) => error?.status === 503 && error?.code === "bridge_not_ready",
+  );
+  assert.deepEqual(desktop.calls, []);
+
+  await service.start();
+  const result = await service.command(bindingCommand("key_accept"), "before-startup");
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  await service.dispose();
+});
+
+test("returns 503 without executing a control command during initial discovery", async () => {
   class StartingDesktop extends FakeDesktop {
     discovery = Promise.withResolvers();
 
@@ -372,21 +405,35 @@ test("waits for initial desktop discovery before accepting a control command", a
   const desktop = new StartingDesktop();
   const service = makeService(desktop);
   const starting = service.start();
-  let completed = false;
-  const command = service.command(bindingCommand("key_accept"), "startup-command")
-    .then((result) => {
-      completed = true;
-      return result;
-    });
 
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(completed, false);
+  await assert.rejects(
+    () => service.command(bindingCommand("key_accept"), "startup-command"),
+    (error) => error?.status === 503 && error?.code === "bridge_not_ready",
+  );
   assert.deepEqual(desktop.calls, []);
 
   desktop.discovery.resolve();
   await starting;
-  assert.equal((await command).result.accepted, true);
+  const command = await service.command(bindingCommand("key_accept"), "startup-command");
+  assert.equal(command.result.accepted, true);
   assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  await service.dispose();
+});
+
+test("remains fail closed after startup fails", async () => {
+  const desktop = new FakeDesktop();
+  const startupFailure = new Error("profile load failed");
+  const profileStore = {
+    async load() { throw startupFailure; },
+  };
+  const service = makeService(desktop, new FakeEvents(), { profileStore });
+
+  await assert.rejects(service.start(), startupFailure);
+  await assert.rejects(
+    () => service.command(bindingCommand("key_accept"), "failed-startup"),
+    (error) => error?.status === 503 && error?.code === "bridge_not_ready",
+  );
+  assert.deepEqual(desktop.calls, []);
   await service.dispose();
 });
 
@@ -1342,4 +1389,24 @@ test("rejects unsafe configuration commands before desktop dispatch or persisten
   }
   assert.equal(store.saves, 0);
   assert.deepEqual(desktop.calls, []);
+});
+
+test("invalid commands cannot consume durable operation capacity", async () => {
+  const desktop = new FakeDesktop();
+  const operations = new Operations({ maxEntries: 1 });
+  const service = makeService(desktop, new FakeEvents(), { operations });
+  await service.start();
+
+  await assert.rejects(
+    () => service.command({ kind: "navigate", direction: "diagonal" }, "invalid-capacity"),
+    (error) => error.status === 400,
+  );
+  await assert.rejects(
+    () => service.commandResult("invalid-capacity"),
+    (error) => error.status === 404 && error.code === "operation_not_found",
+  );
+
+  const accepted = await service.command({ kind: "approve" }, "valid-capacity");
+  assert.equal(accepted.status, "succeeded");
+  assert.deepEqual(desktop.calls.at(-1), ["press", "approve"]);
 });

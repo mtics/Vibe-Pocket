@@ -15,6 +15,8 @@ export class Rpc extends EventEmitter {
   #requestTimeoutMs;
   #stopTimeoutMs;
   #child = null;
+  #children = new Set();
+  #stoppingChildren = new Map();
   #startPromise = null;
   #initialized = false;
   #nextRequestId = 1;
@@ -64,15 +66,10 @@ export class Rpc extends EventEmitter {
 
   async stop() {
     const child = this.#child;
-    let failure = null;
     if (child) {
       this.#invalidateChild(child, new RpcTransportError("Codex app-server was stopped."));
-      try {
-        await this.#stopChild(child);
-      } catch (error) {
-        failure = error;
-      }
     }
+    const stopping = [...this.#children].map((trackedChild) => this.#ensureChildStopped(trackedChild));
     if (this.#startPromise) {
       try {
         await this.#startPromise;
@@ -80,7 +77,9 @@ export class Rpc extends EventEmitter {
         // Stopping an initializing child intentionally rejects initialize.
       }
     }
-    if (failure) throw failure;
+    const results = await Promise.allSettled(stopping);
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
 
   async request(method, params = {}) {
@@ -134,6 +133,7 @@ export class Rpc extends EventEmitter {
     } catch (error) {
       throw new RpcTransportError("Codex app-server could not be started.", { cause: error });
     }
+    this.#children.add(child);
     this.#child = child;
     this.#initialized = false;
     const transport = { child, stdoutBuffer: "" };
@@ -152,6 +152,7 @@ export class Rpc extends EventEmitter {
       this.emit("childError", error);
     });
     child.on("exit", (code, signal) => {
+      this.#children.delete(child);
       const reason = new RpcTransportError(
         `Codex app-server exited (${signal ?? `code ${code ?? "unknown"}`}).`,
       );
@@ -267,7 +268,22 @@ export class Rpc extends EventEmitter {
 
   #terminateChild(child, error) {
     this.#invalidateChild(child, error);
-    if (child.exitCode == null) child.kill("SIGTERM");
+    this.#ensureChildStopped(child);
+  }
+
+  #ensureChildStopped(child) {
+    const existing = this.#stoppingChildren.get(child);
+    if (existing) return existing;
+
+    const stopping = this.#stopChild(child);
+    this.#stoppingChildren.set(child, stopping);
+    const forget = () => {
+      if (this.#stoppingChildren.get(child) === stopping) {
+        this.#stoppingChildren.delete(child);
+      }
+    };
+    stopping.then(forget, forget);
+    return stopping;
   }
 
   async #stopChild(child) {

@@ -1,3 +1,5 @@
+import { PROTOCOL_VERSION } from "../protocol.mjs";
+
 const MAX_AGENTS = 24;
 const TASK_STATES = new Set([
   "idle",
@@ -53,6 +55,7 @@ export class State {
 
   snapshot({ profile, gestures, actions, activeLayerId, taskId }) {
     return {
+      protocolVersion: PROTOCOL_VERSION,
       revision: this.revision,
       status: this.#status,
       focusSessionId: this.#task.state === "error" ? null : taskId,
@@ -196,6 +199,8 @@ function emptyDesktop() {
       level: null,
       canIncrease: false,
       canDecrease: false,
+      increaseTo: null,
+      decreaseTo: null,
     },
     userInput: null,
   };
@@ -272,15 +277,20 @@ function normalizeSelector(value) {
 
 function normalizeReasoning(value) {
   const available = value?.available === true;
-  const level = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(value?.level)
+  const levels = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  const level = levels.includes(value?.level)
     ? value.level
     : null;
+  const canIncrease = available && value?.canIncrease !== false;
+  const canDecrease = available && value?.canDecrease !== false;
   return {
     available,
     label: typeof value?.label === "string" ? value.label.slice(0, 80) : "",
     level,
-    canIncrease: available && value?.canIncrease !== false,
-    canDecrease: available && value?.canDecrease !== false,
+    canIncrease,
+    canDecrease,
+    increaseTo: canIncrease && levels.includes(value?.increaseTo) ? value.increaseTo : null,
+    decreaseTo: canDecrease && levels.includes(value?.decreaseTo) ? value.decreaseTo : null,
   };
 }
 

@@ -27,6 +27,7 @@ class FakeAppServer {
       const searchable = [...this.threads, ...Object.values(this.searchResults).flat()];
       return { thread: searchable.find(({ id }) => id === params.threadId) ?? null };
     }
+    if (method === "model/list") return { data: [] };
     assert.equal(method, "thread/list");
     return { data: params.searchTerm ? (this.searchResults[params.searchTerm] ?? []) : this.threads };
   }
@@ -341,7 +342,7 @@ test("filters canonical workspace escapes and rechecks focus targets before open
   assert.deepEqual(opened, []);
 });
 
-test("preserves provable focus and disambiguates duplicate titles", async () => {
+test("drops historical focus when a formerly unique title becomes ambiguous", async () => {
   const title = "A duplicate task title that remains readable in the controller";
   const appServer = new FakeAppServer([
     { id: "thread-duplicate-one", name: title, parentThreadId: null },
@@ -351,7 +352,7 @@ test("preserves provable focus and disambiguates duplicate titles", async () => 
   const initial = await catalog.resolveVisibleAgents([
     { label: title, state: "idle", focused: true },
   ]);
-  const focusedId = initial[0].id;
+  assert.equal(initial[0].focused, true);
   appServer.threads.push(withDefaultCwd({
     id: "thread-duplicate-two",
     name: title,
@@ -362,9 +363,14 @@ test("preserves provable focus and disambiguates duplicate titles", async () => 
     { label: "A duplicate task title that remains…", state: "idle", focused: true },
   ]);
   assert.equal(ambiguous.length, 2);
-  assert.equal(ambiguous.find(({ focused }) => focused)?.id, focusedId);
+  assert.equal(ambiguous.some(({ focused }) => focused), false);
   assert.equal(new Set(ambiguous.map(({ label }) => label)).size, 2);
   assert.ok(ambiguous.every(({ label }) => label.length <= 64 && /\[default:[a-f0-9]{6}\]$/.test(label)));
+
+  const settings = await catalog.settings({ modelLabel: "Sol", level: "medium" });
+  assert.equal(settings.binding, null);
+  assert.equal(settings.model.available, false);
+  assert.equal(settings.reasoning.available, false);
 
   const unknown = new Catalog({ appServer, cacheTtlMs: 0, openThread: async () => {} });
   const unresolved = await unknown.resolveVisibleAgents([

@@ -98,7 +98,7 @@ export class Catalog {
     const resolved = [];
     for (const agent of visibleAgents) {
       if (!agent || typeof agent.label !== "string") continue;
-      const thread = resolvedMatch(agent, threads, this.#focusedThreadId);
+      const thread = resolvedMatch(agent, threads);
       if (!thread || assignedThreadIds.has(thread.id)) continue;
       const id = agentIdForThread(thread.id);
       assignedThreadIds.add(thread.id);
@@ -384,12 +384,9 @@ function uniqueMatches(agent, threads) {
   return threads.filter((thread) => labelMatchesThread(agent.label, thread));
 }
 
-function resolvedMatch(agent, threads, focusedThreadId) {
+function resolvedMatch(agent, threads) {
   const matches = uniqueMatches(agent, threads);
   if (matches.length === 1) return matches[0];
-  if (agent.focused === true && focusedThreadId) {
-    return matches.find((thread) => thread.id === focusedThreadId) ?? null;
-  }
   return null;
 }
 

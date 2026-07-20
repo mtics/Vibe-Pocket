@@ -8,7 +8,7 @@ import { create, PROTOCOL_VERSION } from "../../src/server/http.mjs";
 import { Events } from "../../src/server/events.mjs";
 import { Failure } from "../../src/server/failure.mjs";
 import { Invitations } from "../../src/pairing/invitations.mjs";
-import { Readiness } from "../../src/server/readiness.mjs";
+import { NOT_READY, READY, Readiness } from "../../src/server/readiness.mjs";
 
 const TOKEN = "test-token-with-at-least-24-characters";
 const DEVICE_TOKEN = "vp1.testdevice.abcdefghijklmnopqrstuvwxyzABCDEFG";
@@ -139,6 +139,7 @@ test("requires every HTTP server call site to supply readiness", () => {
 test("health remains live while readiness waits for service startup", async () => {
   assert.equal(PROTOCOL_VERSION, 9);
   const readiness = readyReadiness({ ready: false });
+  assert.equal(readiness.state, NOT_READY);
   await withServer(async ({ baseUrl }) => {
     const response = await fetch(`${baseUrl}/healthz`);
     assert.equal(response.status, 200);
@@ -157,6 +158,7 @@ test("health remains live while readiness waits for service startup", async () =
     });
 
     readiness.markReady();
+    assert.equal(readiness.state, READY);
     const ready = await fetch(`${baseUrl}/readyz`);
     assert.equal(ready.status, 200);
     assert.deepEqual(await ready.json(), {
@@ -165,6 +167,36 @@ test("health remains live while readiness waits for service startup", async () =
       runtimeIdentity: RUNTIME_IDENTITY,
       protocolVersion: PROTOCOL_VERSION,
     });
+  }, { readiness });
+});
+
+test("authenticated commands receive 503 and never reach the service while not ready", async () => {
+  const readiness = readyReadiness({ ready: false });
+  await withServer(async ({ baseUrl, calls }) => {
+    const request = () => fetch(`${baseUrl}/v1/pocket/commands`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "startup-command",
+      },
+      body: JSON.stringify({ kind: "stop" }),
+    });
+
+    const blocked = await request();
+    assert.equal(blocked.status, 503);
+    assert.deepEqual(await blocked.json(), {
+      error: {
+        code: "bridge_not_ready",
+        message: "The Vibe Pocket bridge is not ready.",
+      },
+    });
+    assert.deepEqual(calls, []);
+
+    readiness.markReady();
+    const accepted = await request();
+    assert.equal(accepted.status, 200);
+    assert.equal(calls.length, 1);
   }, { readiness });
 });
 

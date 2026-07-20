@@ -61,7 +61,7 @@ fi
 PAYLOAD=$("$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ origin: process.argv[1] }))' "$PUBLIC_URL")
 
 PAIRING_SOCKET="$CONFIG_DIR/pairing.sock"
-RESPONSE=$("$CURL_BIN" -fsS \
+RESPONSE=$("$CURL_BIN" --connect-timeout 1 --max-time 3 --max-filesize 16384 -fsS \
   --unix-socket "$PAIRING_SOCKET" \
   -X POST \
   -H "Content-Type: application/json" \

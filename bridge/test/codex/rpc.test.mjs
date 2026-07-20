@@ -29,6 +29,23 @@ function scriptedProcess(handle) {
   return child;
 }
 
+function stubbornProcess(handle) {
+  const child = scriptedProcess(handle);
+  child.signals = [];
+  child.exited = new Promise((resolve) => {
+    child.kill = (signal) => {
+      child.signals.push(signal);
+      if (signal === "SIGKILL") {
+        child.signalCode = signal;
+        child.emit("exit", null, signal);
+        resolve();
+      }
+      return true;
+    };
+  });
+  return child;
+}
+
 function reply(child, request, result) {
   queueMicrotask(() => child.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`));
 }
@@ -188,8 +205,9 @@ test("times out but never retries an in-flight settings mutation", async () => {
   const children = [];
   const appServer = new Rpc({
     requestTimeoutMs: 20,
+    stopTimeoutMs: 5,
     spawnProcess: () => {
-      const child = scriptedProcess((message, process) => {
+      const child = stubbornProcess((message, process) => {
         if (message.method === "initialize") reply(process, message, {});
       });
       children.push(child);
@@ -201,9 +219,37 @@ test("times out but never retries an in-flight settings mutation", async () => {
     () => appServer.request("thread/settings/update", { threadId: "thread-a", effort: "high" }),
     /timed out.*thread\/settings\/update/i,
   );
+  await children[0].exited;
   assert.equal(children.length, 1);
   assert.equal(
     children[0].messages.filter(({ method }) => method === "thread/settings/update").length,
     1,
   );
+  assert.deepEqual(children[0].signals, ["SIGTERM", "SIGKILL"]);
+
+  await appServer.stop();
+  assert.deepEqual(children[0].signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("stop reaps every tracked child after SIGTERM is ignored", async () => {
+  const children = [];
+  const appServer = new Rpc({
+    stopTimeoutMs: 5,
+    spawnProcess: () => {
+      const child = stubbornProcess((message, process) => {
+        if (message.method === "initialize") reply(process, message, {});
+      });
+      children.push(child);
+      return child;
+    },
+  });
+
+  await appServer.start();
+  await appServer.stop();
+
+  assert.deepEqual(children[0].signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(appServer.isRunning, false);
+
+  await appServer.stop();
+  assert.deepEqual(children[0].signals, ["SIGTERM", "SIGKILL"]);
 });

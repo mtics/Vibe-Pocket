@@ -13,7 +13,7 @@ import {
   listenOnOwnedUnixSocket,
   startService,
 } from "../src/index.mjs";
-import { Readiness } from "../src/server/readiness.mjs";
+import { NOT_READY, READY, Readiness } from "../src/server/readiness.mjs";
 
 test("awaits public and pairing binds before starting Accessibility discovery", async () => {
   const source = await readFile(new URL("../src/index.mjs", import.meta.url), "utf8");
@@ -37,10 +37,26 @@ test("does not become ready until service startup completes", async () => {
 
   const starting = startService(service, readiness);
   assert.equal(readiness.response().status, 503);
+  assert.equal(readiness.state, NOT_READY);
 
   completeStartup();
   await starting;
   assert.equal(readiness.response().status, 200);
+  assert.equal(readiness.state, READY);
+});
+
+test("returns to NOT_READY before startup and stays there when startup fails", async () => {
+  const failure = new Error("startup failed");
+  const service = { start: async () => { throw failure; } };
+  const readiness = new Readiness({
+    runtimeIdentity: `sha256:${"c".repeat(64)}`,
+    protocolVersion: 9,
+  });
+  readiness.markReady();
+
+  await assert.rejects(startService(service, readiness), failure);
+  assert.equal(readiness.state, NOT_READY);
+  assert.equal(readiness.response().status, 503);
 });
 
 test("creates deterministic readiness for an unmanifested source checkout", async () => {

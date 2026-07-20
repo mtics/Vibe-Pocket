@@ -19,6 +19,8 @@ function effectBoundary() {
 class FakeAppServer extends EventEmitter {
   calls = [];
   applyUpdates = true;
+  modelListResponse = null;
+  resumeResponse = null;
   updateError = null;
 
   constructor(resumed = null) {
@@ -34,10 +36,12 @@ class FakeAppServer extends EventEmitter {
   async request(method, params) {
     this.calls.push([method, params]);
     if (method === "model/list") {
+      if (this.modelListResponse) return this.modelListResponse;
       return {
         data: this.models,
       };
     }
+    if (method === "thread/resume" && this.resumeResponse) return this.resumeResponse;
     if (method === "thread/resume" && this.resumed) return this.resumed;
     if (method === "thread/settings/update") {
       if (this.updateError) throw this.updateError;
@@ -74,6 +78,22 @@ function model(id, displayName, efforts) {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function waitForCalls(appServer, method, count) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (appServer.calls.filter(([called]) => called === method).length >= count) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`Timed out waiting for ${count} ${method} calls`);
+}
+
 test("uses the exact thread observation ahead of a stale visible selector", async () => {
   const appServer = new FakeAppServer({ model: "gpt-sol", reasoningEffort: "ultra" });
   const settings = new Settings({
@@ -94,6 +114,8 @@ test("uses the exact thread observation ahead of a stale visible selector", asyn
     level: "ultra",
     canIncrease: false,
     canDecrease: true,
+    increaseTo: null,
+    decreaseTo: "max",
   });
   assert.deepEqual(appServer.calls.map(([method]) => method), ["model/list", "thread/resume"]);
 });
@@ -220,7 +242,7 @@ test("refreshes the exact model catalog and rejects a stale ID", async () => {
   assert.deepEqual(await settings.modelOption("gpt-solar"), { id: "gpt-solar", label: "Solar" });
 });
 
-test("invalidates thread settings when the app-server transport resets", async () => {
+test("invalidates thread settings and the model catalog when the app-server transport resets", async () => {
   const appServer = new FakeAppServer({ model: "gpt-sol", reasoningEffort: "xhigh" });
   const settings = new Settings({ appServer, context: new FakeContext() });
   await settings.start();
@@ -229,10 +251,69 @@ test("invalidates thread settings when the app-server transport resets", async (
   const before = await settings.projection(thread, { modelLabel: "Sol", ambiguous: true });
   assert.equal(before.reasoning.level, "xhigh");
 
-  appServer.resumed = { model: "gpt-sol", reasoningEffort: "ultra" };
+  appServer.models = [model("gpt-sol", "GPT-Sol", ["low", "medium"])];
+  appServer.resumed = { model: "gpt-sol", reasoningEffort: "medium" };
   appServer.emit("transportReset", { reason: new Error("restarted") });
   const after = await settings.projection(thread, { modelLabel: "Sol", ambiguous: true });
 
-  assert.equal(after.reasoning.level, "ultra");
+  assert.equal(after.model.id, "gpt-sol");
+  assert.deepEqual(after.model.options.map(({ id }) => id), ["gpt-sol"]);
+  assert.equal(after.reasoning.level, "medium");
+  assert.equal(after.reasoning.canIncrease, false);
+  assert.equal(settings.hasReasoningLevel("xhigh"), false);
+  assert.equal(appServer.calls.filter(([method]) => method === "model/list").length, 2);
+  assert.equal(appServer.calls.filter(([method]) => method === "thread/resume").length, 2);
+});
+
+test("does not let a delayed pre-reset model load replace the new catalog", async () => {
+  const oldLoad = deferred();
+  const appServer = new FakeAppServer();
+  appServer.modelListResponse = oldLoad.promise;
+  const settings = new Settings({ appServer, context: new FakeContext() });
+
+  const staleStart = settings.start();
+  await waitForCalls(appServer, "model/list", 1);
+
+  appServer.models = [model("gpt-luna", "GPT-Luna", ["low", "medium"])];
+  appServer.modelListResponse = null;
+  appServer.emit("transportReset", { reason: new Error("restarted") });
+  await Promise.all([settings.start(), settings.start()]);
+  assert.equal(appServer.calls.filter(([method]) => method === "model/list").length, 2);
+
+  oldLoad.resolve({ data: [model("gpt-sol", "GPT-Sol", ["xhigh", "ultra"])] });
+  await staleStart;
+
+  await assert.rejects(() => settings.modelOption("gpt-sol"), /unavailable or stale/i);
+  assert.deepEqual(await settings.modelOption("gpt-luna"), { id: "gpt-luna", label: "Luna" });
+});
+
+test("does not let a delayed pre-reset thread load replace new settings", async () => {
+  const oldLoad = deferred();
+  const newLoad = deferred();
+  const appServer = new FakeAppServer();
+  const settings = new Settings({ appServer, context: new FakeContext() });
+  const thread = { id: "thread-a", path: "/rollout.jsonl" };
+  await settings.start();
+
+  appServer.resumeResponse = oldLoad.promise;
+  const staleProjection = settings.projection(thread, { modelLabel: "Sol", ambiguous: true });
+  await waitForCalls(appServer, "thread/resume", 1);
+
+  appServer.resumeResponse = newLoad.promise;
+  appServer.emit("transportReset", { reason: new Error("restarted") });
+  const currentProjections = [
+    settings.projection(thread, { modelLabel: "Sol", ambiguous: true }),
+    settings.projection(thread, { modelLabel: "Sol", ambiguous: true }),
+  ];
+  await waitForCalls(appServer, "thread/resume", 2);
+  assert.equal(appServer.calls.filter(([method]) => method === "thread/resume").length, 2);
+
+  newLoad.resolve({ model: "gpt-sol", reasoningEffort: "ultra" });
+  const current = await Promise.all(currentProjections);
+  oldLoad.resolve({ model: "gpt-sol", reasoningEffort: "low" });
+  const stale = await staleProjection;
+
+  assert.deepEqual(current.map(({ reasoning }) => reasoning.level), ["ultra", "ultra"]);
+  assert.equal(stale.reasoning.level, "ultra");
   assert.equal(appServer.calls.filter(([method]) => method === "thread/resume").length, 2);
 });

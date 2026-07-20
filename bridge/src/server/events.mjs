@@ -1,12 +1,19 @@
+import { randomBytes } from "node:crypto";
+
 export class Events {
   #clients = new Set();
   #history = [];
   #nextId = 1;
   #heartbeat = null;
+  #streamId;
 
-  constructor({ historyLimit = 64, heartbeatMs = 20_000 } = {}) {
+  constructor({ historyLimit = 64, heartbeatMs = 20_000, streamId = randomBytes(8).toString("hex") } = {}) {
+    if (typeof streamId !== "string" || !/^[a-f0-9]{16}$/.test(streamId)) {
+      throw new TypeError("The SSE stream ID must be 16 lowercase hexadecimal characters.");
+    }
     this.historyLimit = historyLimit;
     this.heartbeatMs = heartbeatMs;
+    this.#streamId = streamId;
   }
 
   connect(request, response, principal = null) {
@@ -42,20 +49,26 @@ export class Events {
     this.#ensureHeartbeat();
     if (!this.#write(client, ": connected\n\n")) return;
 
-    const lastId = Number.parseInt(request.headers["last-event-id"] ?? "0", 10);
+    const rawCursor = request.headers["last-event-id"];
+    const cursor = parseCursor(rawCursor);
     const latestId = this.#history.at(-1)?.id ?? 0;
-    if (!Number.isNaN(lastId) && lastId > latestId) {
-      // A bridge restart resets its in-memory sequence. The caller's cursor
-      // cannot be replayed, so force exactly one fresh controller snapshot.
+    const earliestId = this.#history[0]?.id ?? this.#nextId;
+    const cannotReplay = rawCursor != null && (
+      !cursor
+      || cursor.streamId !== this.#streamId
+      || cursor.sequence > latestId
+      || cursor.sequence < earliestId - 1
+    );
+    if (cannotReplay) {
       const reset = { id: this.#nextId++, type: "snapshot_changed", data: { reason: "history_reset" } };
       this.#history.push(reset);
       if (this.#history.length > this.historyLimit) this.#history.shift();
-      this.#write(client, formatEvent(reset));
+      this.#write(client, formatEvent(reset, this.#streamId));
       return true;
     }
     for (const event of this.#history) {
-      if (!Number.isNaN(lastId) && event.id > lastId) {
-        if (!this.#write(client, formatEvent(event))) return;
+      if (event.id > (cursor?.sequence ?? 0)) {
+        if (!this.#write(client, formatEvent(event, this.#streamId))) return;
       }
     }
     return true;
@@ -67,7 +80,7 @@ export class Events {
     if (this.#history.length > this.historyLimit) {
       this.#history.shift();
     }
-    const serialized = formatEvent(event);
+    const serialized = formatEvent(event, this.#streamId);
     for (const client of [...this.#clients]) this.#write(client, serialized);
     return event;
   }
@@ -140,8 +153,16 @@ export class Events {
   }
 }
 
-function formatEvent(event) {
-  return `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`;
+function formatEvent(event, streamId) {
+  return `id: ${streamId}:${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`;
+}
+
+function parseCursor(value) {
+  if (typeof value !== "string") return null;
+  const match = value.match(/^([a-f0-9]{16}):([1-9][0-9]*)$/);
+  if (!match) return null;
+  const sequence = Number(match[2]);
+  return Number.isSafeInteger(sequence) ? { streamId: match[1], sequence } : null;
 }
 
 function normalizePrincipal(principal) {

@@ -10,6 +10,7 @@ import { PROTOCOL_VERSION } from "../src/protocol.mjs";
 import { readyPayload, writeRuntimeIdentity } from "../src/runtime/identity.mjs";
 
 const BRIDGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ANDROID_MANIFEST = resolve(BRIDGE_ROOT, "../android/app/src/main/AndroidManifest.xml");
 const CLAIM_CODE = "abcdefghijklmnopqrstuvwxyzABCDEF";
 const PAIRING_URL = `vibepocket://pair?origin=https%3A%2F%2Fbridge.test&code=${CLAIM_CODE}`;
 const VALID_RESPONSE = JSON.stringify({
@@ -133,20 +134,47 @@ test("keeps the pairing URL and claim code out of Node and adb argv", async (t) 
   assert.equal(adbArgv.includes(PAIRING_URL), false);
   assert.equal(adbArgv.includes(CLAIM_CODE), false);
   assert.match(adbArgv, /-s phone-123 shell sh/);
-  assert.match(await readFile(setup.paths.adbStdin, "utf8"), new RegExp(CLAIM_CODE));
+  const adbStdin = await readFile(setup.paths.adbStdin, "utf8");
+  assert.match(adbStdin, new RegExp(CLAIM_CODE));
+  assert.match(
+    adbStdin,
+    /^exec am start -W -n au\.edu\.uts\.vibepocket\/\.MainActivity -a android\.intent\.action\.VIEW -d /,
+  );
+  assert.doesNotMatch(adbStdin, /(?:^|\s)-p(?:\s|$)/);
 });
 
 test("shell-quotes the deep link passed through adb stdin", async (t) => {
-  const quotedUrl = `${PAIRING_URL}&note=it's`;
-  const setup = await fixture(t, {
-    response: JSON.stringify({ pairingUrl: quotedUrl, expiresAt: "2099-01-01T00:05:00.000Z" }),
+  const quotedUrl = `${PAIRING_URL}&note=it's;$(touch%20/tmp/pwned)`;
+  const response = JSON.stringify({
+    pairingUrl: quotedUrl,
+    expiresAt: "2099-01-01T00:05:00.000Z",
   });
-  const result = await runLauncher(setup.launcher, setup.environment);
+  const result = await runPairingResponse(response);
 
   assert.equal(result.code, 0, result.stderr);
-  const command = await readFile(setup.paths.adbStdin, "utf8");
-  assert.equal(command.includes("note=it'\\''s"), true);
-  assert.equal(command.includes("note=it's"), false);
+  const shellQuotedUrl = `'${quotedUrl.replaceAll("'", "'\\''")}'`;
+  assert.equal(
+    result.stdout,
+    `exec am start -W -n au.edu.uts.vibepocket/.MainActivity -a android.intent.action.VIEW -d ${shellQuotedUrl}\n`,
+  );
+  assert.equal(result.stdout.includes("note=it's"), false);
+});
+
+test("keeps vibepocket pairing private while preserving the launcher", async () => {
+  const manifest = await readFile(ANDROID_MANIFEST, "utf8");
+  const intentFilters = manifest.match(/<intent-filter\b[\s\S]*?<\/intent-filter>/g) ?? [];
+
+  assert.equal(
+    intentFilters.some((filter) => /android:scheme\s*=\s*"vibepocket"/.test(filter)),
+    false,
+  );
+  assert.equal(
+    intentFilters.some((filter) => (
+      filter.includes("android.intent.action.MAIN")
+      && filter.includes("android.intent.category.LAUNCHER")
+    )),
+    true,
+  );
 });
 
 test("requires exact local and remote readiness before creating an invitation", async (t) => {
@@ -166,6 +194,20 @@ test("requires exact local and remote readiness before creating an invitation", 
       assert.equal(await readOptional(setup.paths.adbLog), "");
     });
   }
+});
+
+test("bounds the local pairing invitation response", async (t) => {
+  const setup = await fixture(t);
+  const result = await runLauncher(setup.launcher, setup.environment);
+
+  assert.equal(result.code, 0, result.stderr);
+  const invitationCall = (await readFile(setup.paths.curlLog, "utf8"))
+    .split("\n")
+    .find((line) => line.includes("/v1/pairing/invitations"));
+  assert.ok(invitationCall);
+  assert.match(invitationCall, /--connect-timeout 1/);
+  assert.match(invitationCall, /--max-time 3/);
+  assert.match(invitationCall, /--max-filesize 16384/);
 });
 
 test("rejects malformed admin responses before invoking adb", async (t) => {
@@ -207,6 +249,21 @@ async function runLauncher(launcher, environment) {
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
     child.once("close", (code, signal) => resolvePromise({ code, signal, stdout, stderr }));
+  });
+}
+
+async function runPairingResponse(response) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [resolve(BRIDGE_ROOT, "bin/pairing-response.mjs")]);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolvePromise({ code, signal, stdout, stderr }));
+    child.stdin.end(response);
   });
 }
 

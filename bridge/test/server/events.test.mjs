@@ -16,7 +16,7 @@ class FakeResponse {
 }
 
 test("forces a snapshot refresh when a client resumes after the bridge sequence resets", () => {
-  const hub = new Events({ heartbeatMs: 60_000 });
+  const hub = new Events({ heartbeatMs: 60_000, streamId: "aaaaaaaaaaaaaaaa" });
   hub.publish("snapshot_changed", { revision: "r_1" });
   const request = new EventEmitter();
   request.headers = { "last-event-id": "99" };
@@ -25,12 +25,41 @@ test("forces a snapshot refresh when a client resumes after the bridge sequence 
   hub.connect(request, response);
 
   assert.equal(response.headers["Content-Type"], "text/event-stream; charset=utf-8");
-  assert.match(response.chunks.join(""), /id: 2\nevent: snapshot_changed/);
+  assert.match(response.chunks.join(""), /id: aaaaaaaaaaaaaaaa:2\nevent: snapshot_changed/);
   assert.match(response.chunks.join(""), /"reason":"history_reset"/);
   request.emit("close");
   const chunksAfterClose = response.chunks.length;
   hub.publish("snapshot_changed", { revision: "r_2" });
   assert.equal(response.chunks.length, chunksAfterClose);
+  hub.close();
+});
+
+test("resets an equal sequence cursor from a different bridge instance", () => {
+  const hub = new Events({ heartbeatMs: 60_000, streamId: "bbbbbbbbbbbbbbbb" });
+  hub.publish("snapshot_changed", { revision: "r_new" });
+  const request = new EventEmitter();
+  request.headers = { "last-event-id": "aaaaaaaaaaaaaaaa:1" };
+  const response = new FakeResponse();
+
+  hub.connect(request, response);
+
+  assert.match(response.chunks.join(""), /id: bbbbbbbbbbbbbbbb:2/);
+  assert.match(response.chunks.join(""), /"reason":"history_reset"/);
+  request.emit("close");
+  hub.close();
+});
+
+test("does not invent a reset for the current stream at its latest event", () => {
+  const hub = new Events({ heartbeatMs: 60_000, streamId: "cccccccccccccccc" });
+  hub.publish("snapshot_changed", { revision: "r_1" });
+  const request = new EventEmitter();
+  request.headers = { "last-event-id": "cccccccccccccccc:1" };
+  const response = new FakeResponse();
+
+  hub.connect(request, response);
+
+  assert.equal(response.chunks.join(""), ": connected\n\n");
+  request.emit("close");
   hub.close();
 });
 

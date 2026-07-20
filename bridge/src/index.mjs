@@ -90,6 +90,7 @@ export async function createRuntimeReadiness(runtimeRoot) {
 }
 
 export async function startService(service, readiness) {
+  readiness.markNotReady();
   await service.start();
   readiness.markReady();
 }

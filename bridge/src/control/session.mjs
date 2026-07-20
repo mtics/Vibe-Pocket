@@ -8,6 +8,7 @@ import {
   workflowPrompt,
 } from "../profile/model.mjs";
 import { Failure } from "../server/failure.mjs";
+import { NOT_READY, READY } from "../server/readiness.mjs";
 import { resolve } from "./command.mjs";
 import { Operations } from "./operations.mjs";
 import { Queue } from "./queue.mjs";
@@ -30,6 +31,7 @@ export class Session {
   #revokedPrincipals = new Set();
   #refresh;
   #ready = null;
+  #readiness = NOT_READY;
   #stopping = null;
   #disposing = null;
 
@@ -69,7 +71,17 @@ export class Session {
   }
 
   start() {
-    if (!this.#ready) this.#ready = this.#start();
+    if (!this.#ready) {
+      this.#ready = this.#start().then(
+        () => {
+          if (!this.#stopping) this.#readiness = READY;
+        },
+        (error) => {
+          this.#readiness = NOT_READY;
+          throw error;
+        },
+      );
+    }
     return this.#ready;
   }
 
@@ -82,6 +94,7 @@ export class Session {
   }
 
   stop() {
+    this.#readiness = NOT_READY;
     if (!this.#stopping) {
       this.#stopping = (async () => {
         await this.#queue.stop();
@@ -105,6 +118,7 @@ export class Session {
   }
 
   async snapshot() {
+    this.#requireReady();
     return this.#state.snapshot({
       profile: this.#profile,
       gestures: GESTURES,
@@ -115,7 +129,7 @@ export class Session {
   }
 
   async bindDesktopThread(threadId) {
-    await this.#ready;
+    this.#requireReady();
     return this.#queue.run(async () => {
       const authority = new Authority(
         (operation) => this.#dispatch(operation),
@@ -131,7 +145,7 @@ export class Session {
   }
 
   async codexHook(event, payload) {
-    await this.#ready;
+    this.#requireReady();
     if (!HOOK_EVENTS.has(event)) {
       throw new Failure(400, "invalid_hook_event", "Unsupported Codex lifecycle event.");
     }
@@ -148,10 +162,11 @@ export class Session {
   }
 
   async command(command, idempotencyKey, principal = null) {
-    await this.#ready;
+    this.#requireReady();
     principal = normalizePrincipal(principal);
     const existing = this.#operations.match(idempotencyKey, command, principal.id);
     if (existing) return this.#replay(existing, principal.id);
+    this.#resolveCommand(command);
 
     const admission = this.#queue.reserve({ principal });
     let claim;
@@ -180,7 +195,7 @@ export class Session {
   }
 
   async commandResult(operationId, principal = null) {
-    await this.#ready;
+    this.#requireReady();
     principal = normalizePrincipal(principal);
     return this.#operations.get(operationId, principal.id);
   }
@@ -188,6 +203,12 @@ export class Session {
   revokePrincipal(principalId) {
     this.#revokedPrincipals.add(principalId);
     return this.#cleanupRevokedPrincipal(principalId);
+  }
+
+  #requireReady() {
+    if (this.#readiness !== READY) {
+      throw new Failure(503, "bridge_not_ready", "The Vibe Pocket bridge is not ready.");
+    }
   }
 
   #replay(operation, principalId) {
@@ -253,7 +274,7 @@ export class Session {
 
   async #execute(command, authority) {
     try {
-      const intent = resolve(command, { profile: this.#profile, layerId: this.#activeLayerId });
+      const intent = this.#resolveCommand(command);
       if (intent.kind === "voice") {
         await this.#setVoice(intent.active, authority);
         return;
@@ -295,6 +316,21 @@ export class Session {
     }
   }
 
+  #resolveCommand(command) {
+    try {
+      const intent = resolve(command, { profile: this.#profile, layerId: this.#activeLayerId });
+      return intent.kind === "action"
+        ? { ...intent, value: validateAction(intent.value) }
+        : intent;
+    } catch (error) {
+      if (error instanceof Failure) throw error;
+      if (error instanceof ValidationError) {
+        throw new Failure(400, "invalid_controller_configuration", error.message);
+      }
+      throw error;
+    }
+  }
+
   async #executeAction(action, authority) {
     action = validateAction(action);
     switch (action.type) {
@@ -308,10 +344,10 @@ export class Session {
         await this.#press("stop", "Stopped the focused Codex turn.", authority);
         return;
       case "approve":
-        await this.#press("approve", "Approved the focused Codex request or submitted its draft.", authority);
+        await this.#press("approve", "Approved the focused Codex request.", authority);
         return;
       case "reject":
-        await this.#press("reject", "Rejected the focused Codex request or discarded its draft.", authority);
+        await this.#press("reject", "Rejected the focused Codex request.", authority);
         return;
       case "new_task":
         await this.#press("new-task", "Created a new Vibe Pocket Codex task.", authority);

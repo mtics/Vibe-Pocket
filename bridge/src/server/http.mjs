@@ -24,7 +24,7 @@ export function create({
   }),
   deadlines: deadlineOverrides = {},
 }) {
-  if (typeof readiness?.response !== "function") {
+  if (typeof readiness?.response !== "function" || typeof readiness?.requireReady !== "function") {
     throw new TypeError("Bridge HTTP server requires readiness state.");
   }
   const deadlines = normalizeDeadlines(deadlineOverrides);
@@ -80,6 +80,7 @@ export function create({
         return;
       }
       requireActive(principal);
+      readiness.requireReady();
       if (request.method === "GET" && url.pathname === "/v1/pocket/snapshot") {
         requireBodyless(request);
         sendJson(request, response, 200, await service.snapshot());
