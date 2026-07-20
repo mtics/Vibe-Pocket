@@ -44,6 +44,8 @@ class RefreshTest {
         client.succeed(0, snapshot("intermediate"))
         runCurrent()
 
+        assertEquals("base", harness.state.value.snapshot?.revision)
+        assertTrue(harness.reconciled.isEmpty())
         assertEquals(2, client.calls.size)
         assertEquals(1, client.maxActive)
         assertEquals(0, client.cancellations)
@@ -151,7 +153,7 @@ class RefreshTest {
     }
 
     @Test
-    fun callbacksUseAppliedRequestVersions() = runTest(dispatcher) {
+    fun callbacksUseOnlyTheLatestAppliedRequestVersion() = runTest(dispatcher) {
         val client = ControlledClient()
         val harness = harness(client, snapshot("base"))
         val prepared = mutableListOf<Long>()
@@ -165,8 +167,9 @@ class RefreshTest {
         client.succeed(0, snapshot("first"))
         runCurrent()
 
-        assertEquals("first", harness.state.value.snapshot?.revision)
-        assertEquals(listOf("first" to first), harness.reconciled)
+        assertEquals("base", harness.state.value.snapshot?.revision)
+        assertTrue(harness.state.value.snapshot?.transportFresh == true)
+        assertTrue(harness.reconciled.isEmpty())
         assertEquals(2, client.calls.size)
 
         client.succeed(1, snapshot("latest"))
@@ -174,7 +177,7 @@ class RefreshTest {
 
         assertEquals(listOf(first, replaced, latest), prepared)
         assertTrue(first < replaced && replaced < latest)
-        assertEquals(listOf("first" to first, "latest" to latest), harness.reconciled)
+        assertEquals(listOf("latest" to latest), harness.reconciled)
         assertFalse(harness.reconciled.any { it.second == replaced })
     }
 

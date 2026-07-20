@@ -451,7 +451,7 @@ class Session internal constructor(
                 snapshotChanged = {
                     if (isCurrentEvent(config, generation)) {
                         delivery.recover()
-                        requestRefresh(generation, stale = true)
+                        requestRefresh(generation)
                     }
                 },
                 eventId = { if (isCurrentEvent(config, generation)) lastEventId = it },

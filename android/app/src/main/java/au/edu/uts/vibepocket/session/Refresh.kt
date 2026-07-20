@@ -120,47 +120,41 @@ internal class Refresh(
     ) {
         val applied = synchronized(lock) {
             if (flight !== owner || lease !== request.lease) return
-            result.fold(
-                onSuccess = { remote ->
-                val fresh = remote.copy(transportFresh = true)
-                val queuedRequest = queued != null
-                var updated = false
-                state.update { current ->
-                    updated = false
-                    if (current.config != request.lease.config) {
-                        current
-                    } else {
-                        updated = true
-                        val visible = current.snapshot
-                        val resolved = reconcile(fresh, visible)
-                        val observed = if (queuedRequest) {
-                            resolved.copy(transportFresh = false)
-                        } else {
-                            resolved
-                        }
-                        current.copy(
-                            snapshot = observed,
-                            isRefreshing = false,
-                            error = persistentError(),
-                        )
-                    }
-                }
-                updated
-            },
-                onFailure = { error ->
-                state.update { current ->
-                    if (current.config != request.lease.config) {
-                        current
-                    } else {
-                        current.copy(
-                            snapshot = current.snapshot?.copy(transportFresh = false),
-                            isRefreshing = current.snapshot == null && queued != null,
-                            error = error.message ?: persistentError(),
-                        )
-                    }
-                }
+            if (result.isSuccess && queued != null) {
                 false
-            },
+            } else result.fold(
+                onSuccess = { remote ->
+                    val fresh = remote.copy(transportFresh = true)
+                    var updated = false
+                    state.update { current ->
+                        updated = false
+                        if (current.config != request.lease.config) {
+                            current
+                        } else {
+                            updated = true
+                            current.copy(
+                                snapshot = reconcile(fresh, current.snapshot),
+                                isRefreshing = false,
+                                error = persistentError(),
+                            )
+                        }
+                    }
+                    updated
+                },
+                onFailure = { error ->
+                    state.update { current ->
+                        if (current.config != request.lease.config) {
+                            current
+                        } else {
+                            current.copy(
+                                snapshot = current.snapshot?.copy(transportFresh = false),
+                                isRefreshing = current.snapshot == null && queued != null,
+                                error = error.message ?: persistentError(),
+                            )
+                        }
+                    }
+                    false
+                },
             )
         }
         if (applied) reconciled(result.getOrThrow().copy(transportFresh = true), request.version)

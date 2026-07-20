@@ -688,6 +688,35 @@ class SessionTest {
     }
 
     @Test
+    fun ordinarySseRefreshKeepsTheConfirmedControllerFreshWhileLoading() = runTest(dispatcher) {
+        val events = FakeEvents()
+        val client = BlockingSseRefreshClient()
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+            eventFactory = events,
+        )
+        runCurrent()
+        viewModel.setForeground(true)
+        events.callbacks.connected()
+        runCurrent()
+        assertTrue(viewModel.state.value.snapshot?.transportFresh == true)
+
+        events.callbacks.snapshotChanged()
+        runCurrent()
+
+        val visible = requireNotNull(viewModel.state.value.snapshot)
+        assertTrue(visible.transportFresh)
+        assertTrue(activation(visible, "key_accept", Gesture.Kind.TAP) is Plan.HidTap)
+        assertEquals(3, client.snapshotCalls)
+
+        client.refreshRelease.complete(Unit)
+        runCurrent()
+        assertTrue(viewModel.state.value.snapshot?.transportFresh == true)
+    }
+
+    @Test
     fun sseRefreshRejectsAProtocolChangeAndDoesNotUseItsCommands() = runTest(dispatcher) {
         val initial = reasoningSnapshot("agent-a", "model-a").copy(
             revision = "r_compatible",
@@ -1411,6 +1440,19 @@ class SessionTest {
         override suspend fun snapshot(config: Config): Snapshot {
             snapshotCalls += 1
             if (snapshotCalls > 1) refreshRelease.await()
+            return VOICE_SNAPSHOT
+        }
+
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class BlockingSseRefreshClient : Client {
+        var snapshotCalls = 0
+        val refreshRelease = CompletableDeferred<Unit>()
+
+        override suspend fun snapshot(config: Config): Snapshot {
+            snapshotCalls += 1
+            if (snapshotCalls >= 3) refreshRelease.await()
             return VOICE_SNAPSHOT
         }
 
