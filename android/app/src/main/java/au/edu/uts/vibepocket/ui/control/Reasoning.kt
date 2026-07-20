@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Reasoning as State
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.ui.control.sheet.Handle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -108,7 +109,10 @@ internal fun Reasoning(
     }
 
     if (showOptions) {
-        ModalBottomSheet(onDismissRequest = { showOptions = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showOptions = false },
+            dragHandle = { Handle() },
+        ) {
             Column(Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
                 Text(
                     "Choose reasoning",

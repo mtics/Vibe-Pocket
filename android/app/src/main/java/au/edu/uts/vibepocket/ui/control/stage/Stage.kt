@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.ui.control.stage
 
 import au.edu.uts.vibepocket.ui.colorFor
 import au.edu.uts.vibepocket.ui.control.state.State
+import au.edu.uts.vibepocket.ui.control.sheet.Handle
 import au.edu.uts.vibepocket.ui.iconFor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -98,7 +99,10 @@ internal fun Stage(state: State, modifier: Modifier = Modifier) {
     }
 
     if (showDetails) {
-        ModalBottomSheet(onDismissRequest = { showDetails = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showDetails = false },
+            dragHandle = { Handle() },
+        ) {
             Column(
                 Modifier.fillMaxWidth().heightIn(max = 480.dp)
                     .verticalScroll(rememberScrollState())

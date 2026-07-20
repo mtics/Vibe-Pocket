@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.ui.control.sheet.Handle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -112,7 +113,10 @@ internal fun Mode(
     }
 
     if (showOptions) {
-        ModalBottomSheet(onDismissRequest = { showOptions = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showOptions = false },
+            dragHandle = { Handle() },
+        ) {
             Text(
                 "Mode",
                 style = MaterialTheme.typography.titleMedium,

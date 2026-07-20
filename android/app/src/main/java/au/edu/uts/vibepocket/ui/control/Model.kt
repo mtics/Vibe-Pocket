@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Model as State
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.ui.control.sheet.Handle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -127,7 +128,10 @@ internal fun Model(
     }
 
     if (showOptions) {
-        ModalBottomSheet(onDismissRequest = { showOptions = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showOptions = false },
+            dragHandle = { Handle() },
+        ) {
             Column(
                 Modifier
                     .fillMaxWidth()
