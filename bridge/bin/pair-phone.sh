@@ -5,6 +5,11 @@ set -euo pipefail
 CONFIG_DIR="$HOME/Library/Application Support/Vibe Pocket"
 CONFIG_FILE=${VIBE_POCKET_CONFIG_FILE:-"$CONFIG_DIR/bridge.env"}
 HOST_APP="$CONFIG_DIR/Vibe Pocket Bridge Host.app"
+INSTALLED_LAUNCHER="$CONFIG_DIR/runtime/bin/pair-phone.sh"
+
+if [[ -x "$INSTALLED_LAUNCHER" && "${0:A}" != "${INSTALLED_LAUNCHER:A}" ]]; then
+  exec "$INSTALLED_LAUNCHER" "$@"
+fi
 
 if [[ ! -r "$CONFIG_FILE" ]]; then
   print -u2 "Vibe Pocket Bridge is not installed."

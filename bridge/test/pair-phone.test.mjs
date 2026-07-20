@@ -18,6 +18,31 @@ const VALID_RESPONSE = JSON.stringify({
   expiresAt: "2099-01-01T00:05:00.000Z",
 });
 
+test("delegates a source checkout to the exact installed pairing launcher", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-pair-delegation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const installedLauncher = join(
+    home,
+    "Library",
+    "Application Support",
+    "Vibe Pocket",
+    "runtime",
+    "bin",
+    "pair-phone.sh",
+  );
+  await mkdir(dirname(installedLauncher), { recursive: true });
+  await executable(installedLauncher, "#!/bin/zsh\nprint -r -- delegated\n");
+
+  const result = await runLauncher(join(BRIDGE_ROOT, "bin", "pair-phone.sh"), {
+    ...process.env,
+    HOME: home,
+  });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "delegated\n");
+});
+
 async function fixture(t, {
   response = VALID_RESPONSE,
   device = true,
