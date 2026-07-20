@@ -1,10 +1,16 @@
 package au.edu.uts.vibepocket.ui.control
 
+import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Status
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -56,5 +62,53 @@ class BoardAccessibilityTest {
         rule.onNodeWithText("Bridge unavailable").performClick()
         rule.onAllNodesWithText(detail).assertCountEquals(2)
         rule.onRoot().tryPerformAccessibilityChecks()
+    }
+
+    @Test
+    fun modePickerClosesWhenAQuestionArrives() {
+        var snapshot by mutableStateOf(Fixtures.snapshot())
+        rule.setContent { BoardPreview(snapshot) }
+
+        rule.onNodeWithContentDescription("Mode, Default").performClick()
+        rule.onNodeWithText("Plan").assertIsDisplayed()
+
+        rule.runOnIdle {
+            snapshot = snapshot.copy(
+                desktop = snapshot.desktop?.copy(
+                    question = Question(
+                        index = 0,
+                        count = 1,
+                        header = "Choose scope",
+                        text = "Which module should change?",
+                        options = listOf(Question.Option("Android", "Only the phone app")),
+                        selectedOptionIndex = 0,
+                        hasSpokenAnswer = false,
+                        isSecret = false,
+                    ),
+                ),
+            )
+        }
+
+        rule.onAllNodesWithText("Plan").assertCountEquals(0)
+        rule.onRoot().tryPerformAccessibilityChecks()
+    }
+
+    @Test
+    fun modePickerClosesWhenTheFocusedTaskChanges() {
+        var snapshot by mutableStateOf(Fixtures.snapshot())
+        rule.setContent { BoardPreview(snapshot) }
+
+        rule.onNodeWithContentDescription("Mode, Default").performClick()
+        rule.onNodeWithText("Plan").assertIsDisplayed()
+
+        rule.runOnIdle {
+            snapshot = snapshot.copy(
+                desktop = snapshot.desktop?.copy(
+                    focusedAgentId = "agent-000000000000000000000002",
+                ),
+            )
+        }
+
+        rule.onAllNodesWithText("Plan").assertCountEquals(0)
     }
 }

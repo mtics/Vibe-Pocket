@@ -73,7 +73,7 @@ internal fun Model(
         fresh = snapshot.transportFresh,
         voiceActive = snapshot.desktop?.voice?.active == true,
     )
-    var showOptions by rememberSaveable { mutableStateOf(false) }
+    var showOptions by rememberSaveable(snapshot.desktop?.focusedAgentId) { mutableStateOf(false) }
 
     LaunchedEffect(enabled) {
         if (!enabled) showOptions = false

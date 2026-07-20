@@ -69,7 +69,7 @@ internal fun Reasoning(
     val enabled = !blocked && !pending && snapshot.transportFresh && snapshot.capabilities.reasoning &&
         state.available && options.isNotEmpty() && snapshot.desktop?.foreground == true &&
         snapshot.desktop.question == null && snapshot.desktop.voice?.active != true
-    var showOptions by rememberSaveable { mutableStateOf(false) }
+    var showOptions by rememberSaveable(snapshot.desktop?.focusedAgentId) { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) showOptions = false }
 
     Row(

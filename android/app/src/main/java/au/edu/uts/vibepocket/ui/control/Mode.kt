@@ -55,7 +55,7 @@ internal fun Mode(
     modifier: Modifier = Modifier,
 ) {
     val largeText = largeText(LocalDensity.current.fontScale)
-    var showOptions by remember { mutableStateOf(false) }
+    var showOptions by remember(snapshot.desktop?.focusedAgentId) { mutableStateOf(false) }
     val pending = inFlightIds.any { it.startsWith("mode:") }
     val showProgress = progressVisible(pending)
     val enabled = !blocked && !pending && snapshot.transportFresh &&
@@ -63,9 +63,7 @@ internal fun Mode(
         snapshot.desktop?.foreground == true && snapshot.desktop.question == null &&
         snapshot.desktop.voice?.active != true
 
-    LaunchedEffect(blocked, pending, state.id) {
-        if (blocked || pending) showOptions = false
-    }
+    LaunchedEffect(enabled) { if (!enabled) showOptions = false }
 
     Box(
         modifier
