@@ -101,7 +101,7 @@ class PresentationTest {
             capabilities = Capabilities(voice = false),
         )
 
-        assertEquals("key_voice", dedicatedVoiceInput(snapshot)?.id)
+        assertEquals("key_voice", dedicatedVoiceInput(snapshot).id)
     }
 
     @Test
@@ -145,6 +145,12 @@ class PresentationTest {
     @Test
     fun agentChipWidthDoesNotDependOnFocus() {
         assertEquals(160, AgentChipWidthDp)
+    }
+
+    @Test
+    fun agentPositionNamesFocusAndCollectionPosition() {
+        assertEquals("Focused, 1 of 24", agentPositionDescription(focused = true, index = 0, total = 24))
+        assertEquals("8 of 24", agentPositionDescription(focused = false, index = 7, total = 24))
     }
 
     private fun snapshot(

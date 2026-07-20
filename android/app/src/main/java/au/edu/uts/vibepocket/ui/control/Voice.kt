@@ -7,20 +7,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun Voice(
-    input: Input?,
+    input: Input,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     blocked: Boolean,
+    height: Dp = 84.dp,
     modifier: Modifier = Modifier,
 ) {
-    input ?: return
     InputButton(
         input = input,
         snapshot = snapshot,
@@ -31,6 +32,6 @@ internal fun Voice(
         blocked = blocked,
         dedicatedVoiceControl = true,
         labelPlacement = LabelPlacement.BESIDE,
-        modifier = modifier.fillMaxWidth().height(84.dp),
+        modifier = modifier.fillMaxWidth().height(height),
     )
 }

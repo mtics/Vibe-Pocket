@@ -13,6 +13,7 @@ class LayoutTest {
         assertEquals(244.dp, layout.pad)
         assertEquals(72.dp, layout.workflows)
         assertEquals(64.dp, layout.selectors)
+        assertEquals(81.33.dp, layout.direction)
         assertEquals(643.dp, layout.content)
         assertTrue(layout.content <= 650.dp)
     }
@@ -24,7 +25,20 @@ class LayoutTest {
 
         assertEquals(first, second)
         assertEquals(228.dp, first.pad)
+        assertEquals(76.dp, first.direction)
         assertEquals(590.dp, first.content)
         assertTrue(first.content <= 600.dp)
+    }
+
+    @Test
+    fun landscapeKeepsBothColumnsInsideTheAvailableHeight() {
+        val layout = Layout.landscape()
+
+        assertEquals(278.dp, layout.information)
+        assertEquals(288.dp, layout.landscapeRight)
+        assertTrue(layout.information <= 290.dp)
+        assertTrue(layout.landscapeRight <= 290.dp)
+        assertTrue(layout.direction >= 48.dp)
+        assertTrue(layout.voice >= 48.dp)
     }
 }

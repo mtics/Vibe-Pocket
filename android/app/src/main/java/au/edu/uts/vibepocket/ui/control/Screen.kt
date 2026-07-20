@@ -2,11 +2,15 @@ package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Reasoning
+import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Gesture
+import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.ui.control.actions.Actions
+import au.edu.uts.vibepocket.ui.control.actions.LandscapeActions
 import au.edu.uts.vibepocket.ui.control.stage.Stage
 import au.edu.uts.vibepocket.ui.control.state.state
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -20,15 +24,32 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.focusable
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.foundation.background
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
+
+private data class Events(
+    val input: (String, Gesture.Kind) -> Unit,
+    val repeat: (String, Boolean) -> Unit,
+    val voiceStart: (String) -> Boolean,
+    val voiceStop: (String) -> Unit,
+    val agent: (String) -> Unit,
+    val model: (String) -> Boolean,
+    val mode: (String) -> Boolean,
+    val reasoning: (Reasoning.Level) -> Boolean,
+    val layer: (String) -> Boolean,
+)
 
 @Composable
 internal fun Screen(
@@ -45,117 +66,295 @@ internal fun Screen(
     onMode: (String) -> Boolean,
     onReasoning: (Reasoning.Level) -> Boolean,
     onLayer: (String) -> Boolean,
+    voiceInput: Input,
 ) {
-    val desktop = snapshot.desktop
     val catalog = Catalog.from(snapshot)
     val blocked = contextTransitionPending || !snapshot.transportFresh
+    val events = Events(
+        input = onInput,
+        repeat = onNavigationRepeat,
+        voiceStart = onVoiceStart,
+        voiceStop = onVoiceStop,
+        agent = onAgent,
+        model = onModel,
+        mode = onMode,
+        reasoning = onReasoning,
+        layer = onLayer,
+    )
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-        val layout = Layout.of(maxHeight)
-        Column(
-            Modifier.widthIn(max = layout.maxWidth).fillMaxWidth().fillMaxHeight()
-                .padding(horizontal = layout.horizontalPadding),
-            verticalArrangement = Arrangement.spacedBy(layout.gap),
-        ) {
-            Column(Modifier.fillMaxWidth().height(layout.context)) {
-                Row(
-                    Modifier.fillMaxWidth().height(layout.agents),
-                    horizontalArrangement = Arrangement.spacedBy(layout.gap),
-                ) {
-                    Agents(snapshot, inFlightIds, blocked, onAgent, Modifier.weight(1f).fillMaxHeight())
-                    RailAction(
-                        control = catalog.find("focus_next"),
-                        snapshot = snapshot,
-                        inFlightIds = inFlightIds,
-                        onInput = onInput,
-                        onVoiceStart = onVoiceStart,
-                        onVoiceStop = onVoiceStop,
-                        blocked = blocked,
-                        modifier = Modifier.width(layout.agentAction).fillMaxHeight(),
-                    )
-                }
-                Spacer(Modifier.height(layout.contextGap))
-                Row(
-                    Modifier.fillMaxWidth().height(layout.status),
-                    horizontalArrangement = Arrangement.spacedBy(layout.gap),
-                ) {
-                    Stage(snapshot.state(), Modifier.weight(1f).fillMaxHeight())
-                    RailAction(
-                        control = catalog.find("attach"),
-                        snapshot = snapshot,
-                        inFlightIds = inFlightIds,
-                        onInput = onInput,
-                        onVoiceStart = onVoiceStart,
-                        onVoiceStop = onVoiceStop,
-                        blocked = blocked,
-                        modifier = Modifier.width(layout.focusAction).fillMaxHeight(),
-                    )
-                }
-            }
-            Layers(
-                layers = desktop?.profile?.layers.orEmpty().take(6),
-                active = desktop?.activeLayerId,
-                inFlightIds = inFlightIds,
-                enabled = snapshot.status.state == "ready" && snapshot.transportFresh && !blocked,
-                onLayer = onLayer,
-                modifier = Modifier.height(layout.layers),
+        if (maxWidth > maxHeight) {
+            Landscape(
+                snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked,
+                voiceInput, events, Layout.landscape(),
             )
-            Workflows(
-                catalog = catalog,
-                snapshot = snapshot,
-                inFlightIds = inFlightIds,
-                onInput = onInput,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                blocked = blocked,
-                modifier = Modifier.height(layout.workflows),
-            )
-            Actions(
-                catalog = catalog,
-                mode = desktop?.mode ?: au.edu.uts.vibepocket.control.Selector(false, ""),
-                snapshot = snapshot,
-                hidNavigationAvailable = hidNavigationAvailable,
-                inFlightIds = inFlightIds,
-                onInput = onInput,
-                onNavigationRepeat = onNavigationRepeat,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                onMode = onMode,
-                blocked = blocked,
-                layout = layout,
-            )
-            Row(
-                Modifier.fillMaxWidth().height(layout.selectors),
-                horizontalArrangement = Arrangement.spacedBy(layout.gap),
-            ) {
-                Model(
-                    state = desktop?.model ?: Model.Unavailable,
-                    snapshot = snapshot,
-                    inFlightIds = inFlightIds,
-                    onModel = onModel,
-                    blocked = blocked,
-                    modifier = Modifier.weight(1f),
-                )
-                Reasoning(
-                    state = desktop?.reasoning ?: Reasoning.Unavailable,
-                    snapshot = snapshot,
-                    inFlightIds = inFlightIds,
-                    onReasoning = onReasoning,
-                    blocked = blocked,
-                    modifier = Modifier.weight(1.18f),
-                )
+        } else {
+            val layout = Layout.of(maxHeight)
+            if (maxHeight < layout.content) {
+                Short(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
+            } else {
+                Portrait(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
             }
         }
     }
 }
 
 @Composable
+private fun Portrait(
+    snapshot: Snapshot,
+    catalog: Catalog,
+    inFlightIds: Set<String>,
+    hidNavigationAvailable: Boolean,
+    blocked: Boolean,
+    events: Events,
+    layout: Layout,
+) {
+    Column(
+        board(layout),
+        verticalArrangement = Arrangement.spacedBy(layout.gap),
+    ) {
+        Context(snapshot, catalog, inFlightIds, blocked, events, layout)
+        LayersRow(snapshot, inFlightIds, blocked, events, layout)
+        WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
+        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
+        Selectors(snapshot, inFlightIds, blocked, events, layout)
+    }
+}
+
+@Composable
+private fun Short(
+    snapshot: Snapshot,
+    catalog: Catalog,
+    inFlightIds: Set<String>,
+    hidNavigationAvailable: Boolean,
+    blocked: Boolean,
+    events: Events,
+    layout: Layout,
+) {
+    Column(board(layout)) {
+        Column(
+            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(layout.gap),
+        ) {
+            Context(snapshot, catalog, inFlightIds, blocked, events, layout)
+            LayersRow(snapshot, inFlightIds, blocked, events, layout)
+            WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
+        }
+        Spacer(Modifier.height(layout.gap))
+        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
+        Spacer(Modifier.height(layout.gap))
+        Selectors(snapshot, inFlightIds, blocked, events, layout)
+    }
+}
+
+@Composable
+private fun Landscape(
+    snapshot: Snapshot,
+    catalog: Catalog,
+    inFlightIds: Set<String>,
+    hidNavigationAvailable: Boolean,
+    blocked: Boolean,
+    voiceInput: Input,
+    events: Events,
+    layout: Layout,
+) {
+    Row(
+        Modifier.widthIn(max = layout.maxWidth).fillMaxWidth().fillMaxHeight()
+            .padding(horizontal = layout.horizontalPadding),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(
+            Modifier.weight(1f).fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(layout.gap),
+        ) {
+            Context(snapshot, catalog, inFlightIds, blocked, events, layout)
+            LayersRow(snapshot, inFlightIds, blocked, events, layout)
+            WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
+            Selectors(snapshot, inFlightIds, blocked, events, layout)
+        }
+        Column(
+            Modifier.weight(1f).fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(layout.gap),
+        ) {
+            LandscapeActions(
+                catalog = catalog,
+                mode = snapshot.desktop?.mode ?: Selector(false, ""),
+                snapshot = snapshot,
+                hidNavigationAvailable = hidNavigationAvailable,
+                inFlightIds = inFlightIds,
+                onInput = events.input,
+                onNavigationRepeat = events.repeat,
+                onVoiceStart = events.voiceStart,
+                onVoiceStop = events.voiceStop,
+                onMode = events.mode,
+                blocked = blocked,
+                layout = layout,
+            )
+            Voice(
+                input = voiceInput,
+                snapshot = snapshot,
+                inFlightIds = inFlightIds,
+                onInput = events.input,
+                onVoiceStart = events.voiceStart,
+                onVoiceStop = events.voiceStop,
+                blocked = blocked,
+                height = layout.voice,
+            )
+        }
+    }
+}
+
+@Composable
+private fun Context(
+    snapshot: Snapshot,
+    catalog: Catalog,
+    inFlightIds: Set<String>,
+    blocked: Boolean,
+    events: Events,
+    layout: Layout,
+) {
+    val nextFocus = remember { FocusRequester() }
+    Column(Modifier.fillMaxWidth().height(layout.context)) {
+        Row(
+            Modifier.fillMaxWidth().height(layout.agents),
+            horizontalArrangement = Arrangement.spacedBy(layout.gap),
+        ) {
+            Agents(
+                snapshot = snapshot,
+                inFlightIds = inFlightIds,
+                blocked = blocked,
+                onAgent = events.agent,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                onSkip = { nextFocus.requestFocus() },
+            )
+            RailAction(
+                catalog.find("focus_next"), snapshot, inFlightIds, events, blocked,
+                Modifier.width(layout.agentAction).fillMaxHeight()
+                    .focusRequester(nextFocus).focusable(),
+            )
+        }
+        Spacer(Modifier.height(layout.contextGap))
+        Row(
+            Modifier.fillMaxWidth().height(layout.status),
+            horizontalArrangement = Arrangement.spacedBy(layout.gap),
+        ) {
+            Stage(snapshot.state(), Modifier.weight(1f).fillMaxHeight())
+            RailAction(
+                catalog.find("attach"), snapshot, inFlightIds, events, blocked,
+                Modifier.width(layout.focusAction).fillMaxHeight(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LayersRow(
+    snapshot: Snapshot,
+    inFlightIds: Set<String>,
+    blocked: Boolean,
+    events: Events,
+    layout: Layout,
+) {
+    val desktop = snapshot.desktop
+    Layers(
+        layers = desktop?.profile?.layers.orEmpty().take(6),
+        active = desktop?.activeLayerId,
+        inFlightIds = inFlightIds,
+        enabled = snapshot.status.state == "ready" && snapshot.transportFresh && !blocked,
+        onLayer = events.layer,
+        modifier = Modifier.height(layout.layers),
+    )
+}
+
+@Composable
+private fun WorkflowsRow(
+    snapshot: Snapshot,
+    catalog: Catalog,
+    inFlightIds: Set<String>,
+    blocked: Boolean,
+    events: Events,
+    layout: Layout,
+) {
+    Workflows(
+        catalog = catalog,
+        snapshot = snapshot,
+        inFlightIds = inFlightIds,
+        onInput = events.input,
+        onVoiceStart = events.voiceStart,
+        onVoiceStop = events.voiceStop,
+        blocked = blocked,
+        modifier = Modifier.height(layout.workflows),
+    )
+}
+
+@Composable
+private fun ActionsRow(
+    snapshot: Snapshot,
+    catalog: Catalog,
+    inFlightIds: Set<String>,
+    hidNavigationAvailable: Boolean,
+    blocked: Boolean,
+    events: Events,
+    layout: Layout,
+) {
+    Actions(
+        catalog = catalog,
+        mode = snapshot.desktop?.mode ?: Selector(false, ""),
+        snapshot = snapshot,
+        hidNavigationAvailable = hidNavigationAvailable,
+        inFlightIds = inFlightIds,
+        onInput = events.input,
+        onNavigationRepeat = events.repeat,
+        onVoiceStart = events.voiceStart,
+        onVoiceStop = events.voiceStop,
+        onMode = events.mode,
+        blocked = blocked,
+        layout = layout,
+    )
+}
+
+@Composable
+private fun Selectors(
+    snapshot: Snapshot,
+    inFlightIds: Set<String>,
+    blocked: Boolean,
+    events: Events,
+    layout: Layout,
+) {
+    Row(
+        Modifier.fillMaxWidth().height(layout.selectors),
+        horizontalArrangement = Arrangement.spacedBy(layout.gap),
+    ) {
+        Model(
+            state = snapshot.desktop?.model ?: Model.Unavailable,
+            snapshot = snapshot,
+            inFlightIds = inFlightIds,
+            onModel = events.model,
+            blocked = blocked,
+            modifier = Modifier.weight(1f),
+        )
+        Reasoning(
+            state = snapshot.desktop?.reasoning ?: Reasoning.Unavailable,
+            snapshot = snapshot,
+            inFlightIds = inFlightIds,
+            onReasoning = events.reasoning,
+            blocked = blocked,
+            modifier = Modifier.weight(1.18f),
+        )
+    }
+}
+
+private fun board(layout: Layout): Modifier = Modifier
+    .widthIn(max = layout.maxWidth)
+    .fillMaxWidth()
+    .fillMaxHeight()
+    .padding(horizontal = layout.horizontalPadding)
+
+@Composable
 private fun RailAction(
     control: Control?,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
-    onInput: (String, Gesture.Kind) -> Unit,
-    onVoiceStart: (String) -> Boolean,
-    onVoiceStop: (String) -> Unit,
+    events: Events,
     blocked: Boolean,
     modifier: Modifier,
 ) {
@@ -172,9 +371,9 @@ private fun RailAction(
         gesture = control.gesture,
         snapshot = snapshot,
         inFlightIds = inFlightIds,
-        onInput = onInput,
-        onVoiceStart = onVoiceStart,
-        onVoiceStop = onVoiceStop,
+        onInput = events.input,
+        onVoiceStart = events.voiceStart,
+        onVoiceStop = events.voiceStop,
         blocked = blocked,
         labelPlacement = LabelPlacement.HIDDEN,
         modifier = modifier,

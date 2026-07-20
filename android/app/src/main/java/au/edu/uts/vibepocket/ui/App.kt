@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.ui
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.content.res.Configuration
 import android.content.Intent
 import android.os.Build
 import android.view.HapticFeedbackConstants
@@ -64,6 +65,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -83,6 +85,7 @@ internal fun voiceStopTarget(ownerInputId: String?, visibleInputId: String): Str
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun App(viewModel: Session, hidController: Keyboard) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val snackbar = remember { SnackbarHostState() }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var voiceOwnerInputId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -288,7 +291,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
             )
         },
         bottomBar = {
-            snapshot?.let { current ->
+            if (!landscape) snapshot?.let { current ->
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -350,6 +353,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                     onMode = onMode,
                     onReasoning = onReasoning,
                     onLayer = onLayer,
+                    voiceInput = dedicatedVoiceInput(snapshot, voiceOwnerInputId),
                 )
             }
         }

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
@@ -106,6 +107,94 @@ internal fun Actions(
                 Slot(
                     control, label, snapshot, inFlightIds, onInput, onVoiceStart, onVoiceStop,
                     blocked, Modifier.weight(1f).fillMaxSize(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun LandscapeActions(
+    catalog: Catalog,
+    mode: Selector,
+    snapshot: Snapshot,
+    hidNavigationAvailable: Boolean,
+    inFlightIds: Set<String>,
+    onInput: (String, Gesture.Kind) -> Unit,
+    onNavigationRepeat: (String, Boolean) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
+    onMode: (String) -> Boolean,
+    blocked: Boolean,
+    layout: Layout,
+    modifier: Modifier = Modifier,
+) {
+    val directions = listOf("up", "down", "left", "right")
+        .associateWith { catalog.find("navigate", direction = it) }
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(layout.gap)) {
+        Row(
+            Modifier.fillMaxWidth().height(layout.pad),
+            horizontalArrangement = Arrangement.spacedBy(layout.actionGap),
+        ) {
+            Pad(
+                directions = directions,
+                snapshot = snapshot,
+                hidNavigationAvailable = hidNavigationAvailable,
+                inFlightIds = inFlightIds,
+                onInput = onInput,
+                onNavigationRepeat = onNavigationRepeat,
+                onVoiceStart = onVoiceStart,
+                onVoiceStop = onVoiceStop,
+                blocked = blocked,
+                directionSize = layout.direction,
+                centerSize = layout.center,
+                modifier = Modifier.size(layout.pad),
+            )
+            Column(
+                Modifier.weight(1f).fillMaxHeight(),
+                verticalArrangement = Arrangement.spacedBy(layout.gap),
+            ) {
+                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(layout.gap)) {
+                    Mode(
+                        state = mode,
+                        snapshot = snapshot,
+                        inFlightIds = inFlightIds,
+                        onMode = onMode,
+                        blocked = blocked,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    Slot(
+                        catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
+                        onInput, onVoiceStart, onVoiceStop, blocked,
+                        Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(layout.gap)) {
+                    Slot(
+                        catalog.find("new_task"), "New task", snapshot, inFlightIds,
+                        onInput, onVoiceStart, onVoiceStop, blocked,
+                        Modifier.weight(1f).fillMaxHeight(),
+                    )
+                    Slot(
+                        catalog.find("approve"), "Accept", snapshot, inFlightIds,
+                        onInput, onVoiceStart, onVoiceStop, blocked,
+                        Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().height(layout.safety),
+            horizontalArrangement = Arrangement.spacedBy(layout.gap),
+        ) {
+            listOf(
+                catalog.find("clear_input") to "Clear",
+                catalog.find("reject") to "Reject",
+                catalog.find("stop") to "Stop",
+            ).forEach { (control, label) ->
+                Slot(
+                    control, label, snapshot, inFlightIds, onInput, onVoiceStart, onVoiceStop,
+                    blocked, Modifier.weight(1f).fillMaxHeight(),
                 )
             }
         }

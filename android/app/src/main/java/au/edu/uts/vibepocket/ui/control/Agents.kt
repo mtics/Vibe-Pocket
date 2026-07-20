@@ -31,9 +31,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CollectionInfo
+import androidx.compose.ui.semantics.CollectionItemInfo
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.collectionInfo
+import androidx.compose.ui.semantics.collectionItemInfo
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -44,6 +51,7 @@ internal fun Agents(
     blocked: Boolean,
     onAgent: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onSkip: () -> Boolean = { false },
 ) {
     val slots = snapshot.agentSlots().filter { it.agent != null }
     if (slots.isEmpty()) {
@@ -69,10 +77,14 @@ internal fun Agents(
             modifier = modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
-                .horizontalScroll(rememberScrollState()),
+                .horizontalScroll(rememberScrollState())
+                .semantics {
+                    collectionInfo = CollectionInfo(rowCount = 1, columnCount = slots.size)
+                    customActions = listOf(CustomAccessibilityAction("Skip agents", onSkip))
+                },
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            slots.forEach { slot ->
+            slots.forEachIndexed { index, slot ->
                 val agent = requireNotNull(slot.agent)
                 val color = colorFor(agent.activity)
                 val loading = "agent:${agent.id}" in inFlightIds
@@ -90,6 +102,13 @@ internal fun Agents(
                         .semantics {
                             role = Role.Button
                             selected = slot.focused
+                            collectionItemInfo = CollectionItemInfo(
+                                rowIndex = 0,
+                                rowSpan = 1,
+                                columnIndex = index,
+                                columnSpan = 1,
+                            )
+                            stateDescription = agentPositionDescription(slot.focused, index, slots.size)
                         }
                         .clickable(enabled = slot.canFocus && !loading && !blocked, onClick = { onAgent(agent.id) })
                         .padding(horizontal = 10.dp),
@@ -115,3 +134,6 @@ internal fun Agents(
         }
     }
 }
+
+internal fun agentPositionDescription(focused: Boolean, index: Int, total: Int): String =
+    listOfNotNull(if (focused) "Focused" else null, "${index + 1} of $total").joinToString(", ")

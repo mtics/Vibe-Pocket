@@ -24,13 +24,13 @@ internal fun Snapshot.voiceMappingIdentity(inputId: String): VoiceMappingIdentit
     return if (action?.type == "voice") VoiceMappingIdentity(layer.id, inputId) else null
 }
 
-internal fun dedicatedVoiceInput(snapshot: Snapshot, activeOwnerInputId: String? = null): Input? {
+internal fun dedicatedVoiceInput(snapshot: Snapshot, activeOwnerInputId: String? = null): Input {
     val candidates = (snapshot.desktop?.profile?.inputs.orEmpty() + FallbackInputs).distinctBy(Input::id)
     if (snapshot.desktop?.voice?.active == true) {
         candidates.firstOrNull { it.id == activeOwnerInputId }?.let { return it }
     }
     candidates.firstOrNull { snapshot.voiceMappingIdentity(it.id) != null }?.let { return it }
-    return candidates.firstOrNull { it.id == "key_voice" }
+    return candidates.first { it.id == "key_voice" }
 }
 
 internal fun unrepresentedInputs(inputs: List<Input>, representedIds: Set<String>): List<Input> =
