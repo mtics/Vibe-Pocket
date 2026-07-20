@@ -4,5 +4,9 @@
         <activity
             android:name="au.edu.uts.vibepocket.ui.control.BoardTestActivity"
             android:exported="false" />
+        <activity
+            android:name="au.edu.uts.vibepocket.ui.control.LandscapeBoardTestActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
     </application>
 </manifest>

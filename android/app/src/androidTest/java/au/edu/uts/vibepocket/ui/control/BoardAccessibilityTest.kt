@@ -1,14 +1,18 @@
 package au.edu.uts.vibepocket.ui.control
 
+import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Status
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -19,6 +23,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.tryPerformAccessibilityChecks
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Before
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -46,6 +52,47 @@ class BoardAccessibilityTest {
         rule.onNodeWithContentDescription("Up", substring = true)
             .assertIsEnabled()
             .assertHasClickAction()
+    }
+
+    @Test
+    fun everyActionableTargetMeetsThe48DpBaseline() {
+        rule.setContent { BoardPreview(Fixtures.snapshot()) }
+        val density = rule.activity.resources.displayMetrics.density
+        val nodes = rule.onAllNodes(hasClickAction()).fetchSemanticsNodes()
+        val undersized = nodes.mapNotNull { node ->
+            val bounds = node.touchBoundsInRoot
+            val small = bounds.width / density < 48f || bounds.height / density < 48f
+            if (!small) null else {
+                val label = node.config.getOrElse(SemanticsProperties.ContentDescription) { emptyList() }
+                    .joinToString()
+                    .ifBlank { "Unlabelled" }
+                "$label: $bounds"
+            }
+        }
+
+        assertTrue("Undersized actionable bounds: $undersized", undersized.isEmpty())
+    }
+
+    @Test
+    fun coreControlBoundsStayFixedWhileWorkStateChanges() {
+        var snapshot by mutableStateOf(Fixtures.snapshot())
+        rule.setContent { BoardPreview(snapshot) }
+        val controls = listOf(
+            hasContentDescription("Mode, Default"),
+            hasContentDescription("Model, GPT-5.4"),
+            hasContentDescription("Reasoning, Medium"),
+            hasContentDescription("Layer 1: Default"),
+            hasContentDescription("Up", substring = true),
+            hasContentDescription("Voice", substring = true),
+        )
+        fun bounds() = controls.map { rule.onNode(it).fetchSemanticsNode().boundsInRoot }
+        val ready = bounds()
+
+        rule.runOnIdle {
+            snapshot = Fixtures.snapshot(activity = Activity.EXECUTING, message = "Running tests")
+        }
+
+        assertEquals(ready, bounds())
     }
 
     @Test
