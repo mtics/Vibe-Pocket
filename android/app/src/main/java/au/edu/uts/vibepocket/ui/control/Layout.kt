@@ -7,7 +7,6 @@ internal data class Layout(
     val maxWidth: Dp,
     val horizontalPadding: Dp,
     val gap: Dp,
-    val header: Dp,
     val agents: Dp,
     val agentAction: Dp,
     val contextGap: Dp,
@@ -27,8 +26,7 @@ internal data class Layout(
     val actions: Dp get() = pad + gap + safety
     val content: Dp get() = context + layers + workflows + actions + selectors + gap * 4
     val information: Dp get() = context + layers + workflows + selectors + gap * 3
-    val landscapeLeft: Dp get() = header + gap + information
-    val controls: Dp get() = actions + gap + selectors
+    val landscapeLeft: Dp get() = information
     val landscapeRight: Dp get() = actions + gap + voice
 
     companion object {
@@ -37,7 +35,6 @@ internal data class Layout(
                 maxWidth = 393.dp,
                 horizontalPadding = 16.dp,
                 gap = 7.dp,
-                header = 0.dp,
                 agents = 58.dp,
                 agentAction = 56.dp,
                 contextGap = 4.dp,
@@ -58,7 +55,6 @@ internal data class Layout(
                 maxWidth = 393.dp,
                 horizontalPadding = 12.dp,
                 gap = 6.dp,
-                header = 0.dp,
                 agents = 52.dp,
                 agentAction = 52.dp,
                 contextGap = 4.dp,
@@ -80,21 +76,20 @@ internal data class Layout(
             maxWidth = 860.dp,
             horizontalPadding = 12.dp,
             gap = 6.dp,
-            header = 40.dp,
-            agents = 48.dp,
-            agentAction = 48.dp,
+            agents = 54.dp,
+            agentAction = 54.dp,
             contextGap = 4.dp,
-            status = 48.dp,
-            focusAction = 48.dp,
-            layers = 48.dp,
-            workflows = 60.dp,
-            pad = 180.dp,
-            direction = 60.dp,
-            center = 48.dp,
+            status = 54.dp,
+            focusAction = 54.dp,
+            layers = 56.dp,
+            workflows = 76.dp,
+            pad = 204.dp,
+            direction = 68.dp,
+            center = 54.dp,
             actionGap = 8.dp,
-            safety = 48.dp,
-            selectors = 52.dp,
-            voice = 48.dp,
+            safety = 54.dp,
+            selectors = 62.dp,
+            voice = 54.dp,
         )
     }
 }

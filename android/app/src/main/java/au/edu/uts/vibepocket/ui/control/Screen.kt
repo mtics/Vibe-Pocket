@@ -12,6 +12,7 @@ import au.edu.uts.vibepocket.ui.control.stage.Stage
 import au.edu.uts.vibepocket.ui.control.state.state
 import au.edu.uts.vibepocket.ui.preference.Hand
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -32,7 +33,6 @@ import androidx.compose.foundation.focusable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
@@ -44,7 +44,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
 private data class Events(
@@ -181,8 +182,7 @@ private fun Landscape(
             Modifier.weight(1f).fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
-            LandscapeHeader(onSettings, Modifier.height(layout.header))
-            Context(snapshot, catalog, inFlightIds, blocked, events, layout)
+            Context(snapshot, catalog, inFlightIds, blocked, events, layout, onSettings)
             LayersRow(snapshot, inFlightIds, blocked, events, layout)
             WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
             Selectors(snapshot, inFlightIds, blocked, events, layout)
@@ -221,24 +221,6 @@ private fun Landscape(
 }
 
 @Composable
-private fun LandscapeHeader(onSettings: () -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "Vibe Pocket",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(onClick = onSettings) {
-            Icon(Icons.Filled.Settings, contentDescription = "Open settings")
-        }
-    }
-}
-
-@Composable
 private fun Context(
     snapshot: Snapshot,
     catalog: Catalog,
@@ -246,6 +228,7 @@ private fun Context(
     blocked: Boolean,
     events: Events,
     layout: Layout,
+    onSettings: (() -> Unit)? = null,
 ) {
     val nextFocus = remember { FocusRequester() }
     Column(Modifier.fillMaxWidth().height(layout.context)) {
@@ -277,7 +260,28 @@ private fun Context(
                 catalog.find("attach"), snapshot, inFlightIds, events, blocked,
                 Modifier.width(layout.focusAction).fillMaxHeight(),
             )
+            onSettings?.let {
+                SettingsAction(
+                    onClick = it,
+                    modifier = Modifier.width(layout.focusAction).fillMaxHeight(),
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun SettingsAction(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(8.dp)
+    IconButton(
+        onClick = onClick,
+        modifier = modifier
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), shape)
+            .semantics { contentDescription = "Open settings" },
+    ) {
+        Icon(Icons.Filled.Settings, contentDescription = null)
     }
 }
 
