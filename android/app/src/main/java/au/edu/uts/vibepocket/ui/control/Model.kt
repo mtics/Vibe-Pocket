@@ -61,6 +61,7 @@ internal fun Model(
 ) {
     val largeText = largeText(LocalDensity.current.fontScale)
     val pending = inFlightIds.any { it.startsWith("model:") }
+    val showProgress = progressVisible(pending)
     val enabled = modelSelectionAllowed(
         blocked = blocked,
         pending = pending,
@@ -118,7 +119,7 @@ internal fun Model(
                 fontWeight = FontWeight.Medium,
             )
         }
-        if (pending) {
+        if (showProgress) {
             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
         } else if (!largeText) {
             Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))

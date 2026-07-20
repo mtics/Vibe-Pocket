@@ -61,6 +61,7 @@ internal fun Reasoning(
 ) {
     val largeText = largeText(LocalDensity.current.fontScale)
     val pending = inFlightIds.any { it.startsWith("reasoning:") }
+    val showProgress = progressVisible(pending)
     val options = state.options.ifEmpty {
         listOfNotNull(state.decreaseTo, state.level, state.increaseTo).distinct()
     }
@@ -76,7 +77,7 @@ internal fun Reasoning(
             .alpha(if (enabled || pending) 1f else 0.58f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Step(state.decreaseTo, "Decrease reasoning", Icons.Default.Remove, enabled, pending, onReasoning)
+        Step(state.decreaseTo, "Decrease reasoning", Icons.Default.Remove, enabled, showProgress, onReasoning)
         Column(
             Modifier.weight(1f)
                 .semantics {
@@ -103,7 +104,7 @@ internal fun Reasoning(
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        Step(state.increaseTo, "Increase reasoning", Icons.Default.Add, enabled, pending, onReasoning)
+        Step(state.increaseTo, "Increase reasoning", Icons.Default.Add, enabled, showProgress, onReasoning)
     }
 
     if (showOptions) {
@@ -142,7 +143,7 @@ private fun Step(
     action: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     enabled: Boolean,
-    pending: Boolean,
+    showProgress: Boolean,
     onReasoning: (State.Level) -> Boolean,
 ) {
     Box(
@@ -155,7 +156,7 @@ private fun Step(
             .clickable(enabled = enabled && target != null) { target?.let(onReasoning) },
         contentAlignment = Alignment.Center,
     ) {
-        if (pending) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        if (showProgress) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         else Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp))
     }
 }

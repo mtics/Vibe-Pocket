@@ -104,6 +104,7 @@ internal fun Agents(
                     val agent = requireNotNull(slot.agent)
                     val color = colorFor(agent.activity)
                     val loading = "agent:${agent.id}" in inFlightIds
+                    val showProgress = progressVisible(loading)
                     Row(
                         modifier = Modifier
                             .width(agentChipWidth(maxWidth, largeText = largeText))
@@ -131,7 +132,7 @@ internal fun Agents(
                             .padding(horizontal = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (loading) {
+                        if (showProgress) {
                             CircularProgressIndicator(Modifier.size(16.dp), color = color, strokeWidth = 2.dp)
                         } else {
                             Icon(iconFor(agent.activity), contentDescription = null, tint = color, modifier = Modifier.size(16.dp))

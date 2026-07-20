@@ -132,6 +132,7 @@ internal fun InputButton(
     val container = container(action, voiceActive)
     val pending = inFlightIds.any { it.startsWith("input:${input.id}:") } &&
         !snapshot.inputAllowsQueuedRepeat(input.id)
+    val showProgress = progressVisible(pending)
     val interactive = inputInteractive(
         voiceActive = voiceActive,
         blocked = blocked,
@@ -277,7 +278,7 @@ internal fun InputButton(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (pending) {
+        if (showProgress) {
             CircularProgressIndicator(
                 Modifier.size(if (labelPlacement == LabelPlacement.HIDDEN) 22.dp else 20.dp),
                 color = visualAccent,

@@ -56,6 +56,7 @@ internal fun Mode(
     val largeText = largeText(LocalDensity.current.fontScale)
     var showOptions by remember { mutableStateOf(false) }
     val pending = inFlightIds.any { it.startsWith("mode:") }
+    val showProgress = progressVisible(pending)
     val enabled = !blocked && !pending && snapshot.transportFresh &&
         snapshot.capabilities.modeCycle && state.available && state.options.isNotEmpty() &&
         snapshot.desktop?.foreground == true && snapshot.desktop.question == null &&
@@ -79,7 +80,7 @@ internal fun Mode(
             .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (pending) {
+        if (showProgress) {
             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         } else {
             Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {

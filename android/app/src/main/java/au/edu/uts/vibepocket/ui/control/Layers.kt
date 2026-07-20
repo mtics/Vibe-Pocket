@@ -47,6 +47,7 @@ internal fun Layers(
         layers.take(6).forEachIndexed { index, layer ->
             val selected = layer.id == active
             val loading = "layer:${layer.id}" in inFlightIds
+            val showProgress = progressVisible(loading)
             val accentSource = profileColor(layer.color)
             val surface = MaterialTheme.colorScheme.surface
             val background = if (selected) compositedBackground(accentSource, 0.16f, surface) else surface
@@ -65,7 +66,7 @@ internal fun Layers(
                     .padding(horizontal = 5.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                if (loading) {
+                if (showProgress) {
                     CircularProgressIndicator(strokeWidth = 2.dp)
                 } else {
                     Text(
