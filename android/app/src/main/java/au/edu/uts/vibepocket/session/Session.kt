@@ -292,8 +292,17 @@ class Session internal constructor(
                 transitionBarrier = TransitionBarrier.AwaitingDelivery(uiId, transition)
                 _state.update { it.copy(contextTransitionPending = true) }
             }
+            val reasoningTarget = (command as? Command.SelectReasoning)?.level
+            if (reasoningTarget != null) {
+                _state.update { prediction.expect(it, reasoningTarget) }
+            }
             val accepted = delivery.send(command, uiId, family, transition)
-            if (!accepted && transition != null) clearTransitionLocked(uiId, transition)
+            if (!accepted) {
+                if (reasoningTarget != null) _state.update(prediction::fail)
+                if (transition != null) clearTransitionLocked(uiId, transition)
+            } else if (reasoningTarget != null) {
+                schedulePredictionExpiry()
+            }
             accepted
         }
     }
@@ -393,6 +402,11 @@ class Session internal constructor(
         command: PendingCommand?,
         error: Throwable,
     ) {
+        if (uiId.startsWith("reasoning:")) {
+            predictionExpiry?.cancel()
+            predictionExpiry = null
+            _state.update(prediction::fail)
+        }
         val ambiguous = (error as? Failure)?.errorCode == CommandOutcomeIndeterminate
         synchronized(transitionLock) {
             clearTransitionLocked(uiId, command?.transition)
@@ -537,6 +551,7 @@ class Session internal constructor(
 
     private fun snapshotReconciled(snapshot: Snapshot, version: Long) {
         delivery.recover()
+        _state.update { it.copy(reasoningTarget = prediction.target()) }
         predictionReconciled()
         val command = synchronized(transitionLock) {
             transitionBarrier = transitionBarrier.observe(snapshot, version)

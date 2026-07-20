@@ -118,6 +118,28 @@ class PresentationTest {
     }
 
     @Test
+    fun reasoningPendingStateKeepsConfirmedAndTargetValuesDistinct() {
+        val state = Reasoning(
+            available = true,
+            label = "Medium",
+            level = Reasoning.Level.MEDIUM,
+            canIncrease = true,
+            canDecrease = true,
+        )
+
+        assertEquals(
+            Reasoning.Level.HIGH,
+            reasoningPendingTarget(setOf("input:key_accept:tap", "reasoning:high")),
+        )
+        assertEquals("Medium -> High", reasoningDisplay(state, Reasoning.Level.HIGH))
+        assertEquals(
+            "Reasoning, Medium, changing to High",
+            reasoningDescription(state, Reasoning.Level.HIGH),
+        )
+        assertEquals("Medium", reasoningDisplay(state, null))
+    }
+
+    @Test
     fun contextTransitionPendingIsStructuredSessionState() {
         assertTrue(au.edu.uts.vibepocket.session.State(contextTransitionPending = true).contextTransitionPending)
         assertFalse(

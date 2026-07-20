@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 internal fun BoardPreview(
     snapshot: Snapshot,
     inFlightIds: Set<String> = emptySet(),
+    reasoningTarget: Reasoning.Level? = null,
     dark: Boolean = false,
     landscape: Boolean = false,
 ) {
@@ -77,6 +78,7 @@ internal fun BoardPreview(
                         snapshot = snapshot,
                         hidNavigationAvailable = true,
                         inFlightIds = inFlightIds,
+                        reasoningTarget = reasoningTarget,
                         contextTransitionPending = false,
                         onInput = { _, _ -> },
                         onNavigationRepeat = { _, _ -> },

@@ -295,7 +295,7 @@ class SessionTest {
     }
 
     @Test
-    fun deliveredHidReasoningStepIsImmediateAndSurvivesAStaleSnapshot() = runTest(dispatcher) {
+    fun deliveredHidReasoningStepKeepsConfirmedValueUntilDesktopObservation() = runTest(dispatcher) {
         val confirmed = REASONING_SNAPSHOT.copy(
             revision = "r_confirmed",
             desktop = REASONING_SNAPSHOT.desktop?.copy(
@@ -319,15 +319,18 @@ class SessionTest {
         runCurrent()
 
         viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
-        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
 
         viewModel.refresh()
         runCurrent()
-        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
 
         viewModel.refresh()
         runCurrent()
         assertEquals("High", viewModel.state.value.snapshot?.desktop?.reasoning?.label)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -354,6 +357,7 @@ class SessionTest {
         assertFalse(visible?.capabilities?.reasoning == true)
         assertFalse(visible?.desktop?.reasoning?.available == true)
         assertEquals(null, visible?.desktop?.reasoning?.level)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -383,6 +387,7 @@ class SessionTest {
         assertFalse(visible?.capabilities?.reasoning == true)
         assertFalse(visible?.desktop?.reasoning?.available == true)
         assertEquals(null, visible?.desktop?.reasoning?.level)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -761,6 +766,7 @@ class SessionTest {
         runCurrent()
 
         viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
         advanceTimeBy(2_999)
         runCurrent()
         assertEquals(1, client.snapshotCalls)
@@ -769,6 +775,7 @@ class SessionTest {
         runCurrent()
         assertEquals(2, client.snapshotCalls)
         assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -794,6 +801,8 @@ class SessionTest {
         runCurrent()
 
         assertEquals(2, client.snapshotCalls)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -807,11 +816,13 @@ class SessionTest {
         runCurrent()
 
         viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
-        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
 
         viewModel.reportLocalDeliveryFailure("Bluetooth delivery failed.")
 
         assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -828,7 +839,8 @@ class SessionTest {
         runCurrent()
 
         viewModel.applyLocalAction(Action("reasoning_depth", delta = 1))
-        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.MEDIUM, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
 
         viewModel.refresh()
         runCurrent()
@@ -837,6 +849,7 @@ class SessionTest {
         assertEquals("agent-b", visible.desktop?.focusedAgentId)
         assertEquals("model-b", visible.desktop?.model?.id)
         assertEquals(Reasoning.Level.MEDIUM, visible.desktop?.reasoning?.level)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
     }
 
     @Test

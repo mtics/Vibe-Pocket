@@ -2,13 +2,13 @@ package au.edu.uts.vibepocket.session
 
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Action
+import au.edu.uts.vibepocket.control.Reasoning
 
 internal class Prediction(
     private val nowMillis: () -> Long,
 ) {
     private data class Pending(
-        val status: au.edu.uts.vibepocket.control.Reasoning,
-        val previous: au.edu.uts.vibepocket.control.Reasoning,
+        val target: Reasoning.Level,
         val focusedAgentId: String?,
         val modelId: String?,
         val expiresAtMillis: Long,
@@ -21,20 +21,21 @@ internal class Prediction(
         val snapshot = state.snapshot ?: return state
         val desktop = snapshot.desktop ?: return state
         val shifted = desktop.reasoning.shifted(action.delta) ?: return state
+        return expect(state, requireNotNull(shifted.level))
+    }
+
+    fun expect(state: State, target: Reasoning.Level): State {
+        val desktop = state.snapshot?.desktop ?: return state
         pending = Pending(
-            status = shifted,
-            previous = desktop.reasoning,
+            target = target,
             focusedAgentId = desktop.focusedAgentId,
             modelId = desktop.model.id,
             expiresAtMillis = nowMillis() + ConfirmationWindowMillis,
         )
-        return state.copy(
-            snapshot = snapshot.copy(desktop = desktop.copy(reasoning = shifted)),
-            error = null,
-        )
+        return state.copy(reasoningTarget = target, error = null)
     }
 
-    fun reconcile(remote: Snapshot, visible: Snapshot?): Snapshot {
+    fun reconcile(remote: Snapshot, @Suppress("UNUSED_PARAMETER") visible: Snapshot?): Snapshot {
         val expected = pending ?: return remote
         val desktop = remote.desktop ?: run {
             pending = null
@@ -47,29 +48,19 @@ internal class Prediction(
             desktop.focusedAgentId != expected.focusedAgentId ||
             desktop.model.id != expected.modelId
         val confirmed = remoteReasoning.available &&
-            remoteReasoning.level == expected.status.level
+            remoteReasoning.level == expected.target
         if (
             expired ||
             invalidContext ||
-            confirmed
-        ) {
-            pending = null
-            return remote
-        }
-        if (
+            confirmed ||
             !remote.capabilities.reasoning ||
             !remoteReasoning.available ||
             desktop.activity == au.edu.uts.vibepocket.control.Activity.THINKING ||
             desktop.activity == au.edu.uts.vibepocket.control.Activity.EXECUTING
         ) {
-            return remote
+            pending = null
         }
-        val optimistic = visible?.desktop?.reasoning
-            ?.takeIf { it.level == expected.status.level }
-            ?: expected.status
-        return remote.copy(
-            desktop = desktop.copy(reasoning = optimistic),
-        )
+        return remote
     }
 
     fun clear() {
@@ -80,17 +71,11 @@ internal class Prediction(
 
     fun isPending(): Boolean = pending != null
 
+    fun target(): Reasoning.Level? = pending?.target
+
     fun fail(state: State): State {
-        val expected = pending ?: return state
         pending = null
-        val snapshot = state.snapshot ?: return state
-        val desktop = snapshot.desktop ?: return state
-        if (
-            desktop.focusedAgentId != expected.focusedAgentId ||
-            desktop.model.id != expected.modelId
-        ) return state
-        if (desktop.reasoning.level != expected.status.level) return state
-        return state.copy(snapshot = snapshot.copy(desktop = desktop.copy(reasoning = expected.previous)))
+        return state.copy(reasoningTarget = null)
     }
 
     private companion object {

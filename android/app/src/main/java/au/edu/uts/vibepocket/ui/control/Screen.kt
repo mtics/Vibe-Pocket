@@ -65,6 +65,7 @@ internal fun Screen(
     snapshot: Snapshot,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
+    reasoningTarget: Reasoning.Level?,
     contextTransitionPending: Boolean,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
@@ -96,15 +97,15 @@ internal fun Screen(
         val largeText = largeText(LocalDensity.current.fontScale)
         if (maxWidth > maxHeight) {
             Landscape(
-                snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked,
+                snapshot, catalog, inFlightIds, reasoningTarget, hidNavigationAvailable, blocked,
                 voiceInput, events, Layout.landscape(maxWidth, maxHeight), onSettings, hand,
             )
         } else {
             val layout = Layout.of(maxHeight)
             if (maxHeight < layout.content || largeText) {
-                Short(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
+                Short(snapshot, catalog, inFlightIds, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
             } else {
-                Portrait(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
+                Portrait(snapshot, catalog, inFlightIds, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
             }
         }
     }
@@ -115,6 +116,7 @@ private fun Portrait(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
     events: Events,
@@ -129,7 +131,7 @@ private fun Portrait(
         LayersRow(snapshot, inFlightIds, blocked, events, layout)
         WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
         ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
-        Selectors(snapshot, inFlightIds, blocked, events, layout)
+        Selectors(snapshot, inFlightIds, reasoningTarget, blocked, events, layout)
     }
 }
 
@@ -138,6 +140,7 @@ private fun Short(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
     events: Events,
@@ -156,7 +159,7 @@ private fun Short(
         Spacer(Modifier.height(layout.gap))
         ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
         Spacer(Modifier.height(layout.gap))
-        Selectors(snapshot, inFlightIds, blocked, events, layout)
+        Selectors(snapshot, inFlightIds, reasoningTarget, blocked, events, layout)
     }
 }
 
@@ -165,6 +168,7 @@ private fun Landscape(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
     voiceInput: Input,
@@ -185,7 +189,7 @@ private fun Landscape(
             Context(snapshot, catalog, inFlightIds, blocked, events, layout, onSettings)
             LayersRow(snapshot, inFlightIds, blocked, events, layout)
             WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
-            Selectors(snapshot, inFlightIds, blocked, events, layout)
+            Selectors(snapshot, inFlightIds, reasoningTarget, blocked, events, layout)
         }
         Column(
             Modifier.weight(1f).fillMaxHeight(),
@@ -360,6 +364,7 @@ private fun ActionsRow(
 private fun Selectors(
     snapshot: Snapshot,
     inFlightIds: Set<String>,
+    reasoningTarget: Reasoning.Level?,
     blocked: Boolean,
     events: Events,
     layout: Layout,
@@ -380,6 +385,7 @@ private fun Selectors(
             state = snapshot.desktop?.reasoning ?: Reasoning.Unavailable,
             snapshot = snapshot,
             inFlightIds = inFlightIds,
+            target = reasoningTarget,
             onReasoning = events.reasoning,
             blocked = blocked,
             modifier = Modifier.weight(1.18f),

@@ -56,13 +56,16 @@ internal fun Reasoning(
     state: State,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
+    target: State.Level?,
     onReasoning: (State.Level) -> Boolean,
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val largeText = largeText(LocalDensity.current.fontScale)
-    val pending = inFlightIds.any { it.startsWith("reasoning:") }
+    val pendingTarget = reasoningPendingTarget(inFlightIds) ?: target
+    val pending = pendingTarget != null
     val showProgress = progressVisible(pending)
+    val display = reasoningDisplay(state, pendingTarget)
     val options = state.options.ifEmpty {
         listOfNotNull(state.decreaseTo, state.level, state.increaseTo).distinct()
     }
@@ -78,12 +81,19 @@ internal fun Reasoning(
             .alpha(if (enabled || pending) 1f else 0.58f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Step(state.decreaseTo, "Decrease reasoning", Icons.Default.Remove, enabled, showProgress, onReasoning)
+        Step(
+            state.decreaseTo,
+            "Decrease reasoning",
+            Icons.Default.Remove,
+            enabled,
+            showProgress && pendingTarget == state.decreaseTo,
+            onReasoning,
+        )
         Column(
             Modifier.weight(1f)
                 .semantics {
                     role = Role.Button
-                    contentDescription = "Reasoning, ${state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" }}"
+                    contentDescription = reasoningDescription(state, pendingTarget)
                     if (!enabled) disabled()
                 }
                 .clickable(enabled = enabled) { showOptions = true },
@@ -94,7 +104,7 @@ internal fun Reasoning(
                 Text("Reasoning", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
             Text(
-                state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" },
+                display,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = if (largeText) {
@@ -105,7 +115,14 @@ internal fun Reasoning(
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        Step(state.increaseTo, "Increase reasoning", Icons.Default.Add, enabled, showProgress, onReasoning)
+        Step(
+            state.increaseTo,
+            "Increase reasoning",
+            Icons.Default.Add,
+            enabled,
+            showProgress && pendingTarget == state.increaseTo,
+            onReasoning,
+        )
     }
 
     if (showOptions) {
@@ -122,7 +139,7 @@ internal fun Reasoning(
                 )
                 options.forEach { level ->
                     val selected = level == state.level
-                    val optionPending = "reasoning:${level.wireValue}" in inFlightIds
+                    val optionPending = level == pendingTarget
                     ListItem(
                         headlineContent = { Text(level.displayLabel) },
                         trailingContent = when {
@@ -167,3 +184,22 @@ private fun Step(
 
 internal fun reasoningStepDescription(action: String, target: State.Level?): String =
     target?.let { "$action to ${it.displayLabel}" } ?: "$action unavailable"
+
+internal fun reasoningPendingTarget(inFlightIds: Set<String>): State.Level? = inFlightIds
+    .firstNotNullOfOrNull { id ->
+        id.removePrefix("reasoning:")
+            .takeIf { it != id }
+            ?.let(State.Level::fromWire)
+    }
+
+internal fun reasoningDisplay(state: State, target: State.Level?): String {
+    val confirmed = state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" }
+    return target?.takeIf { it != state.level }?.let { "$confirmed -> ${it.displayLabel}" } ?: confirmed
+}
+
+internal fun reasoningDescription(state: State, target: State.Level?): String {
+    val confirmed = state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" }
+    return target?.takeIf { it != state.level }
+        ?.let { "Reasoning, $confirmed, changing to ${it.displayLabel}" }
+        ?: "Reasoning, $confirmed"
+}

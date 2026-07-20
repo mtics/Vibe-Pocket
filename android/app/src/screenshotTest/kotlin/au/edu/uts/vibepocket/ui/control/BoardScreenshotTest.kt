@@ -82,6 +82,14 @@ fun voicePortrait() = BoardPreview(Fixtures.snapshot(voiceActive = true))
 fun pendingPortrait() = BoardPreview(Fixtures.snapshot(), inFlightIds = setOf("input:key_accept:tap"))
 
 @PreviewTest
+@Preview(name = "Reasoning pending", widthDp = 393, heightDp = 873, showBackground = true)
+@Composable
+fun reasoningPendingPortrait() = BoardPreview(
+    Fixtures.snapshot(),
+    reasoningTarget = au.edu.uts.vibepocket.control.Reasoning.Level.HIGH,
+)
+
+@PreviewTest
 @Preview(name = "Short phone", widthDp = 360, heightDp = 640, showBackground = true)
 @Composable
 fun shortPortrait() = BoardPreview(Fixtures.snapshot())

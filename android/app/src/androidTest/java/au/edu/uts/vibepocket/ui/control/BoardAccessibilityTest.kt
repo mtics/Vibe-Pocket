@@ -114,6 +114,19 @@ class BoardAccessibilityTest {
     }
 
     @Test
+    fun reasoningTargetIsAnnouncedWithoutReplacingTheConfirmedValue() {
+        rule.setContent {
+            BoardPreview(
+                Fixtures.snapshot(),
+                reasoningTarget = au.edu.uts.vibepocket.control.Reasoning.Level.HIGH,
+            )
+        }
+
+        rule.onNodeWithContentDescription("Reasoning, Medium, changing to High")
+            .assertIsDisplayed()
+    }
+
+    @Test
     fun staleBoardPassesAutomatedChecks() {
         rule.setContent { BoardPreview(Fixtures.snapshot().copy(transportFresh = false)) }
         rule.onRoot().tryPerformAccessibilityChecks()

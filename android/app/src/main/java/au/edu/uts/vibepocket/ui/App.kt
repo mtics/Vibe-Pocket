@@ -354,6 +354,7 @@ internal fun App(
                     snapshot = snapshot,
                     hidNavigationAvailable = hidState.connected,
                     inFlightIds = state.inFlightIds,
+                    reasoningTarget = state.reasoningTarget,
                     contextTransitionPending = state.contextTransitionPending,
                     onInput = onInput,
                     onNavigationRepeat = onNavigationRepeat,
