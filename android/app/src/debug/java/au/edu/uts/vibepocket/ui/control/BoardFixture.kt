@@ -38,6 +38,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -62,8 +64,11 @@ internal fun BoardPreview(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text("Vibe Pocket", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        IconButton(onClick = {}) {
-                            Icon(Icons.Default.Settings, contentDescription = "Open settings")
+                        IconButton(
+                            onClick = {},
+                            modifier = Modifier.semantics { contentDescription = "Open settings" },
+                        ) {
+                            Icon(Icons.Default.Settings, contentDescription = null)
                         }
                     }
                 }

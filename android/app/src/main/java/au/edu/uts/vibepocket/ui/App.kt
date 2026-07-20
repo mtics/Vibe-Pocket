@@ -330,8 +330,11 @@ internal fun App(
                         )
                     },
                     actions = {
-                        IconButton(onClick = { showSettings = true }) {
-                            Icon(Icons.Filled.Settings, contentDescription = "Open settings")
+                        IconButton(
+                            onClick = { showSettings = true },
+                            modifier = Modifier.semantics { contentDescription = "Open settings" },
+                        ) {
+                            Icon(Icons.Filled.Settings, contentDescription = null)
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),

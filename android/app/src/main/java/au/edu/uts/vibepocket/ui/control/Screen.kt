@@ -231,6 +231,7 @@ private fun Context(
     onSettings: (() -> Unit)? = null,
 ) {
     val nextFocus = remember { FocusRequester() }
+    val focusNext = catalog.find("focus_next")
     Column(Modifier.fillMaxWidth().height(layout.context)) {
         Row(
             Modifier.fillMaxWidth().height(layout.agents),
@@ -245,9 +246,12 @@ private fun Context(
                 onSkip = { nextFocus.requestFocus() },
             )
             RailAction(
-                catalog.find("focus_next"), snapshot, inFlightIds, events, blocked,
+                focusNext, snapshot, inFlightIds, events, blocked,
                 Modifier.width(layout.agentAction).fillMaxHeight()
-                    .focusRequester(nextFocus).focusable(),
+                    .then(
+                        if (focusNext == null) Modifier
+                        else Modifier.focusRequester(nextFocus).focusable(),
+                    ),
             )
         }
         Spacer(Modifier.height(layout.contextGap))
