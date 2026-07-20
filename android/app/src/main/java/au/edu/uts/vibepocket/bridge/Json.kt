@@ -195,6 +195,17 @@ private fun decodeChoices(value: JSONArray?): List<Choice> = value.objects().map
 private fun decodeSelector(value: JSONObject?): Selector = Selector(
     available = value?.optBoolean("available", false) == true,
     label = value?.safeString("label")?.take(64).orEmpty(),
+    id = value?.safeString("id")?.takeIf { it.matches(Regex("^[a-zA-Z0-9._-]{1,64}$")) },
+    options = value?.optJSONArray("options").objects().mapNotNull { option ->
+        val id = option.safeString("id")
+            ?.takeIf { it.matches(Regex("^[a-zA-Z0-9._-]{1,64}$")) }
+            ?: return@mapNotNull null
+        Selector.Option(
+            id = id,
+            label = option.safeString("label")?.take(64) ?: id,
+            selected = option.optBoolean("selected", false),
+        )
+    }.distinctBy(Selector.Option::id).take(8),
 )
 
 private fun decodeReasoning(value: JSONObject?): Reasoning {
@@ -209,6 +220,9 @@ private fun decodeReasoning(value: JSONObject?): Reasoning {
         canDecrease = available && value.optBoolean("canDecrease", true),
         increaseTo = Reasoning.Level.fromWire(value?.safeString("increaseTo")),
         decreaseTo = Reasoning.Level.fromWire(value?.safeString("decreaseTo")),
+        options = value?.optJSONArray("options").strings()
+            .mapNotNull(Reasoning.Level::fromWire)
+            .distinct(),
     )
 }
 
@@ -245,6 +259,13 @@ private fun JSONArray?.objects(): List<JSONObject> {
     if (this == null) return emptyList()
     return buildList {
         for (index in 0 until length()) optJSONObject(index)?.let(::add)
+    }
+}
+
+private fun JSONArray?.strings(): List<String> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (index in 0 until length()) optString(index, "").takeIf(String::isNotBlank)?.let(::add)
     }
 }
 

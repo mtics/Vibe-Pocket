@@ -22,6 +22,8 @@ class ContextTransitionTest {
         assertFalse(ContextTransition.Agent(AgentB).matches(snapshot(focusedAgentId = AgentA)))
         assertTrue(ContextTransition.Model("model-2").matches(snapshot(modelId = "model-2")))
         assertFalse(ContextTransition.Model("model-2").matches(snapshot(modelId = "model-1")))
+        assertTrue(ContextTransition.Mode("plan").matches(snapshot(modeId = "plan")))
+        assertTrue(ContextTransition.Reasoning(Reasoning.Level.HIGH).matches(snapshot(reasoning = Reasoning.Level.HIGH)))
         assertTrue(ContextTransition.Layer("layer-2").matches(snapshot(activeLayerId = "layer-2")))
         assertFalse(ContextTransition.Layer("layer-2").matches(snapshot(activeLayerId = "layer-1")))
         assertFalse(
@@ -62,6 +64,11 @@ class ContextTransitionTest {
 
         assertEquals(ContextTransition.Agent(AgentB), Command.FocusAgent(AgentB).contextTransition(snapshot))
         assertEquals(ContextTransition.Model("model-2"), Command.SelectModel("model-2").contextTransition(snapshot))
+        assertEquals(ContextTransition.Mode("plan"), Command.SelectMode("plan").contextTransition(snapshot))
+        assertEquals(
+            ContextTransition.Reasoning(Reasoning.Level.HIGH),
+            Command.SelectReasoning(Reasoning.Level.HIGH).contextTransition(snapshot),
+        )
         assertEquals(ContextTransition.Layer("layer-2"), Command.SelectLayer("layer-2").contextTransition(snapshot))
         assertEquals(ContextTransition.NewDesktop(AgentA), Command.NewTask.contextTransition(snapshot))
         assertEquals(ContextTransition.Attached, Command.Attach.contextTransition(snapshot))
@@ -86,6 +93,8 @@ class ContextTransitionTest {
         modelId: String? = "model-1",
         activeLayerId: String = "layer-1",
         foreground: Boolean = true,
+        modeId: String = "default",
+        reasoning: Reasoning.Level = Reasoning.Level.MEDIUM,
     ): Snapshot {
         val layers = listOf("layer-1", "layer-2").map { id ->
             Layer(
@@ -118,14 +127,14 @@ class ContextTransitionTest {
                 focusedAgentIndex = agents.indexOfFirst { it.id == focusedAgentId },
                 focusedAgentId = focusedAgentId,
                 voice = Voice(available = true, active = false),
-                mode = Selector(false, ""),
+                mode = Selector(true, modeId, modeId),
                 model = Model(
                     available = true,
                     id = modelId,
                     label = modelId.orEmpty(),
                     options = emptyList(),
                 ),
-                reasoning = Reasoning.Unavailable,
+                reasoning = Reasoning(true, reasoning.displayLabel, reasoning, true, true),
             ),
         )
     }

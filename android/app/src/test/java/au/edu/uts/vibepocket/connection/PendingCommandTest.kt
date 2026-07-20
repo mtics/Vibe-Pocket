@@ -28,6 +28,8 @@ class PendingCommandTest {
             Command.SelectLayer("layer-2"),
             Command.FocusAgent(AgentId),
             Command.SelectModel("model-2"),
+            Command.SelectMode("plan"),
+            Command.SelectReasoning(au.edu.uts.vibepocket.control.Reasoning.Level.HIGH),
             Command.UpdateBinding("layer-1", "key_test", Gesture.Kind.HOLD, action),
             Command.ClearBinding("layer-1", "key_test", Gesture.Kind.TAP),
             Command.RenameLayer("layer-1", "Research"),
@@ -61,6 +63,8 @@ class PendingCommandTest {
             ContextTransition.Attached,
             ContextTransition.Agent(AgentId),
             ContextTransition.Model("model-2"),
+            ContextTransition.Mode("plan"),
+            ContextTransition.Reasoning(au.edu.uts.vibepocket.control.Reasoning.Level.HIGH),
             ContextTransition.Layer("layer-2"),
         )
 

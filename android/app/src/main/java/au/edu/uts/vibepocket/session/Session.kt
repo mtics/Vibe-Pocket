@@ -251,6 +251,11 @@ class Session internal constructor(
 
     fun selectModel(modelId: String): Boolean = commands.selectModel(modelId)
 
+    fun selectMode(modeId: String): Boolean = commands.selectMode(modeId)
+
+    fun selectReasoning(level: au.edu.uts.vibepocket.control.Reasoning.Level): Boolean =
+        commands.selectReasoning(level)
+
     fun selectLayer(layerId: String): Boolean = commands.selectLayer(layerId)
 
     fun updateBinding(

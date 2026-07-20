@@ -48,6 +48,26 @@ internal class Commands(
         return deliver(Command.SelectModel(modelId), "model:$modelId", "model")
     }
 
+    fun selectMode(modeId: String): Boolean {
+        val current = snapshot() ?: return false
+        val desktop = current.desktop ?: return false
+        val mode = desktop.mode
+        if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
+        if (!current.capabilities.modeCycle || !mode.available || mode.id == modeId) return false
+        if (mode.options.none { it.id == modeId }) return false
+        return deliver(Command.SelectMode(modeId), "mode:$modeId", "settings")
+    }
+
+    fun selectReasoning(level: au.edu.uts.vibepocket.control.Reasoning.Level): Boolean {
+        val current = snapshot() ?: return false
+        val desktop = current.desktop ?: return false
+        val reasoning = desktop.reasoning
+        if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
+        if (!current.capabilities.reasoning || !reasoning.available || reasoning.level == level) return false
+        if (reasoning.options.none { it == level }) return false
+        return deliver(Command.SelectReasoning(level), "reasoning:${level.wireValue}", "settings")
+    }
+
     fun selectLayer(layerId: String): Boolean {
         val desktop = snapshot()?.desktop ?: return false
         if (desktop.profile?.layers?.none { it.id == layerId } != false) return false

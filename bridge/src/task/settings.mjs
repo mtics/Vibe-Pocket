@@ -4,6 +4,7 @@ export class Settings {
   #appServer;
   #context;
   #models = new Map();
+  #modes = new Map();
   #generation = 0;
   #started = false;
   #starting = null;
@@ -27,7 +28,7 @@ export class Settings {
       const generation = this.#generation;
       let pending = this.#starting;
       if (!pending) {
-        pending = this.#loadModels(generation)
+        pending = this.#loadCatalogs(generation)
           .finally(() => {
             if (this.#starting === pending) this.#starting = null;
           });
@@ -60,6 +61,7 @@ export class Settings {
       const observed = {
         model: native?.model ?? rollout?.model ?? null,
         reasoningEffort: native?.reasoningEffort ?? rollout?.reasoningEffort ?? null,
+        mode: native?.mode ?? modeFromLabel(visible.modeLabel),
       };
       const visibleMatches = this.#matches(visible.modelLabel);
       const visibleModel = visibleMatches.length === 1 ? visibleMatches[0] : null;
@@ -70,7 +72,7 @@ export class Settings {
         : typeof visible.level === "string" ? visible.level : null;
       const level = [observed.reasoningEffort, visibleLevel]
         .find((effort) => efforts.includes(effort)) ?? null;
-      return this.#view(thread?.id, selected, level, {
+      return this.#view(thread?.id, selected, level, observed.mode, {
         ...visible,
         modelAmbiguous: visibleMatches.length > 1,
       });
@@ -94,7 +96,7 @@ export class Settings {
       ...(level ? { effort: level } : {}),
     }, effects, current.generation);
     this.#requireObserved(observed, { model: modelId, reasoningEffort: level });
-    return this.#view(threadId, selected, observed.reasoningEffort);
+    return this.#view(threadId, selected, observed.reasoningEffort, observed.mode);
   }
 
   async modelOption(selection, { refresh = false } = {}) {
@@ -134,7 +136,36 @@ export class Settings {
       effort: level,
     }, effects, current.generation);
     this.#requireObserved(observed, { model: current.model, reasoningEffort: level });
-    return this.#view(threadId, this.#models.get(observed.model), observed.reasoningEffort);
+    return this.#view(threadId, this.#models.get(observed.model), observed.reasoningEffort, observed.mode);
+  }
+
+  async selectMode(selection) {
+    const { value: modeId, threadId, effects } = mutationSelection(selection, "id");
+    const current = this.#requireCurrent(threadId);
+    const selected = this.#modes.get(modeId);
+    if (!selected) throw new Error("The requested Codex mode is unavailable or stale.");
+    const observed = await this.#update(threadId, {
+      threadId: current.threadId,
+      collaborationMode: {
+        mode: selected.id,
+        settings: {
+          model: current.model,
+          reasoning_effort: current.level ?? null,
+          developer_instructions: null,
+        },
+      },
+    }, effects, current.generation);
+    this.#requireObserved(observed, {
+      model: current.model,
+      reasoningEffort: current.level,
+      mode: selected.id,
+    });
+    return this.#view(
+      threadId,
+      this.#models.get(observed.model),
+      observed.reasoningEffort,
+      observed.mode,
+    );
   }
 
   reasoningTarget(delta) {
@@ -149,15 +180,25 @@ export class Settings {
     return typeof level === "string" && this.#current?.efforts.includes(level) === true;
   }
 
-  #view(threadId, selected, level, visible = {}) {
+  #view(threadId, selected, level, modeId, visible = {}) {
     const efforts = selected?.efforts ?? [];
     const modelAmbiguous = visible.modelAmbiguous === true
       || (selected ? !this.#modelIdentityIsUnique(selected) : false);
     this.#current = threadId && selected
-      ? { generation: this.#generation, threadId, model: selected.id, efforts, level }
+      ? { generation: this.#generation, threadId, model: selected.id, efforts, level, mode: modeId }
       : null;
     return {
       binding: threadId ? { threadId } : null,
+      mode: {
+        available: Boolean(threadId && modeId && this.#modes.has(modeId)),
+        id: modeId,
+        label: this.#modes.get(modeId)?.label ?? modeLabel(modeId),
+        options: [...this.#modes.values()].map((mode) => ({
+          id: mode.id,
+          label: mode.label,
+          selected: mode.id === modeId,
+        })),
+      },
       model: {
         available: Boolean(threadId && selected && this.#models.size > 0 && !modelAmbiguous),
         id: selected?.id ?? null,
@@ -176,6 +217,7 @@ export class Settings {
         canDecrease: level ? efforts.indexOf(level) > 0 : false,
         increaseTo: level ? efforts[efforts.indexOf(level) + 1] ?? null : null,
         decreaseTo: level ? efforts[efforts.indexOf(level) - 1] ?? null : null,
+        options: efforts,
       },
     };
   }
@@ -213,6 +255,7 @@ export class Settings {
   }
 
   async #update(threadId, params, effects, generation) {
+    const requestedMode = modeId({ collaborationMode: params.collaborationMode });
     try {
       await effects.commit(() => this.#appServer.request("thread/settings/update", params));
     } finally {
@@ -221,7 +264,12 @@ export class Settings {
     if (generation !== this.#generation) {
       throw new Error("The app-server restarted before its settings mutation was confirmed.");
     }
-    return this.#readFresh(threadId);
+    const observed = await this.#readFresh(threadId);
+    if (requestedMode) {
+      observed.mode = requestedMode;
+      this.#threads.set(threadId, observed);
+    }
+    return observed;
   }
 
   async #readFresh(threadId) {
@@ -253,6 +301,7 @@ export class Settings {
     if (
       actual.model !== expected.model
       || (expected.reasoningEffort && actual.reasoningEffort !== expected.reasoningEffort)
+      || (expected.mode && actual.mode !== expected.mode)
     ) {
       throw new Error("Codex did not confirm the requested settings for the bound task.");
     }
@@ -264,12 +313,16 @@ export class Settings {
     this.#threads.clear();
     this.#loading.clear();
     this.#models.clear();
+    this.#modes.clear();
     this.#started = false;
     this.#starting = null;
   }
 
-  async #loadModels(generation) {
-    const result = await this.#appServer.request("model/list", { limit: 50 });
+  async #loadCatalogs(generation) {
+    const [result, modeResult] = await Promise.all([
+      this.#appServer.request("model/list", { limit: 50 }),
+      this.#appServer.request("collaborationMode/list", {}).catch(() => ({ data: [] })),
+    ]);
     const models = new Map();
     for (const entry of result.data ?? []) {
       if (!entry?.id || entry.hidden === true) continue;
@@ -284,6 +337,14 @@ export class Settings {
     }
     if (generation !== this.#generation) return;
     this.#models = models;
+    this.#modes = new Map((modeResult.data ?? [])
+      .filter(({ mode }) => mode === "default" || mode === "plan")
+      .map((mode) => [mode.mode, {
+        id: mode.mode,
+        label: typeof mode.name === "string" && mode.name.trim()
+          ? mode.name.trim().slice(0, 40)
+          : modeLabel(mode.mode),
+      }]));
     this.#started = true;
   }
 
@@ -297,6 +358,7 @@ export class Settings {
         : typeof value.reasoningEffort === "string"
           ? value.reasoningEffort
           : previous.reasoningEffort ?? null,
+      mode: modeId(value) ?? previous.mode ?? null,
     };
     this.#threads.set(threadId, next);
     return next;
@@ -350,7 +412,22 @@ function observedSettings(value) {
     reasoningEffort: typeof value?.effort === "string"
       ? value.effort
       : typeof value?.reasoningEffort === "string" ? value.reasoningEffort : null,
+    mode: modeId(value),
   };
+}
+
+function modeId(value) {
+  const mode = value?.collaborationMode?.mode ?? value?.collaboration_mode?.mode;
+  return mode === "default" || mode === "plan" ? mode : null;
+}
+
+function modeLabel(value) {
+  return value === "plan" ? "Plan" : value === "default" ? "Default" : "";
+}
+
+function modeFromLabel(value) {
+  const label = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return label === "plan" ? "plan" : label === "default" ? "default" : null;
 }
 
 function reasoningLabel(value) {

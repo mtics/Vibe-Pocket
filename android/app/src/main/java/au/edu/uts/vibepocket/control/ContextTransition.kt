@@ -21,6 +21,10 @@ sealed interface ContextTransition {
         }
     }
 
+    data class Mode(val id: String) : ContextTransition
+
+    data class Reasoning(val level: au.edu.uts.vibepocket.control.Reasoning.Level) : ContextTransition
+
     data class Layer(val id: String) : ContextTransition {
         init {
             require(id.length in 1..128 && id.none(Char::isISOControl))
@@ -32,6 +36,8 @@ internal fun Command.contextTransition(snapshot: Snapshot): ContextTransition? =
     is Command.Binding -> action.contextTransition(snapshot)
     is Command.FocusAgent -> ContextTransition.Agent(agentId)
     is Command.SelectModel -> ContextTransition.Model(modelId)
+    is Command.SelectMode -> ContextTransition.Mode(modeId)
+    is Command.SelectReasoning -> ContextTransition.Reasoning(level)
     is Command.SelectLayer -> ContextTransition.Layer(layerId)
     Command.Attach -> ContextTransition.Attached
     Command.NewTask -> ContextTransition.NewDesktop(snapshot.desktop?.focusedAgentId)
@@ -49,6 +55,8 @@ internal fun ContextTransition.matches(snapshot: Snapshot): Boolean {
         ContextTransition.Attached -> desktop.foreground
         is ContextTransition.Agent -> desktop.focusedAgentId == id
         is ContextTransition.Model -> desktop.model.id == id
+        is ContextTransition.Mode -> desktop.mode.id == id
+        is ContextTransition.Reasoning -> desktop.reasoning.level == level
         is ContextTransition.Layer -> desktop.activeLayerId == id
     }
 }

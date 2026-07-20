@@ -36,6 +36,23 @@ class CommandsTest {
         assertEquals(listOf(Command.SelectModel("model-2")), delivered)
     }
 
+    @Test
+    fun modeAndReasoningSelectionUseExactTargets() {
+        val delivered = mutableListOf<Command>()
+        val commands = Commands(
+            snapshot = { snapshot() },
+            deliver = { command, _, _ -> delivered.add(command) },
+        )
+
+        assertTrue(commands.selectMode("plan"))
+        assertTrue(commands.selectReasoning(Reasoning.Level.HIGH))
+
+        assertEquals(
+            listOf(Command.SelectMode("plan"), Command.SelectReasoning(Reasoning.Level.HIGH)),
+            delivered,
+        )
+    }
+
     private fun snapshot(
         foreground: Boolean = true,
         question: Question? = null,
@@ -43,7 +60,7 @@ class CommandsTest {
     ) = Snapshot(
         revision = "r_test",
         status = Status("ready", null),
-        capabilities = Capabilities(model = true),
+        capabilities = Capabilities(model = true, modeCycle = true, reasoning = true),
         desktop = Desktop(
             profile = null,
             gestures = emptyList(),
@@ -55,7 +72,15 @@ class CommandsTest {
             focusedAgentIndex = -1,
             focusedAgentId = null,
             voice = null,
-            mode = Selector(false, ""),
+            mode = Selector(
+                true,
+                "Default",
+                "default",
+                listOf(
+                    Selector.Option("default", "Default", true),
+                    Selector.Option("plan", "Plan", false),
+                ),
+            ),
             model = Model(
                 available = true,
                 id = "model-1",
@@ -65,7 +90,14 @@ class CommandsTest {
                     Model.Option("model-2", "Model 2", false),
                 ),
             ),
-            reasoning = Reasoning.Unavailable,
+            reasoning = Reasoning(
+                available = true,
+                label = "Medium",
+                level = Reasoning.Level.MEDIUM,
+                canIncrease = true,
+                canDecrease = true,
+                options = listOf(Reasoning.Level.LOW, Reasoning.Level.MEDIUM, Reasoning.Level.HIGH),
+            ),
             question = question,
         ),
         transportFresh = fresh,

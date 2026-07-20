@@ -38,6 +38,8 @@ internal interface Bridge {
     fun contextTransitionPending(): Boolean = false
     fun focusAgent(agentId: String): Boolean = false
     fun selectModel(modelId: String): Boolean = false
+    fun selectMode(modeId: String): Boolean = false
+    fun selectReasoning(level: au.edu.uts.vibepocket.control.Reasoning.Level): Boolean = false
     fun selectLayer(layerId: String): Boolean = false
     fun reportLocalDeliveryFailure(message: String)
     fun refresh()
@@ -177,6 +179,27 @@ internal class Dispatch(
         if (!snapshot.capabilities.model || !model.available || model.id == modelId) return false
         if (model.options.none { it.id == modelId } || desktop.voice?.active == true) return false
         return deliverTransition { bridge.selectModel(modelId) }
+    }
+
+    fun selectMode(snapshot: Snapshot?, modeId: String): Boolean {
+        val desktop = snapshot?.desktop ?: return false
+        val mode = desktop.mode
+        if (!snapshot.transportFresh || !desktop.foreground || desktop.question != null) return false
+        if (!snapshot.capabilities.modeCycle || !mode.available || mode.id == modeId) return false
+        if (mode.options.none { it.id == modeId } || desktop.voice?.active == true) return false
+        return deliverTransition { bridge.selectMode(modeId) }
+    }
+
+    fun selectReasoning(
+        snapshot: Snapshot?,
+        level: au.edu.uts.vibepocket.control.Reasoning.Level,
+    ): Boolean {
+        val desktop = snapshot?.desktop ?: return false
+        val reasoning = desktop.reasoning
+        if (!snapshot.transportFresh || !desktop.foreground || desktop.question != null) return false
+        if (!snapshot.capabilities.reasoning || !reasoning.available || reasoning.level == level) return false
+        if (reasoning.options.none { it == level } || desktop.voice?.active == true) return false
+        return deliverTransition { bridge.selectReasoning(level) }
     }
 
     fun selectLayer(snapshot: Snapshot?, layerId: String): Boolean {

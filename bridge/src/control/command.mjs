@@ -40,6 +40,22 @@ export function resolve(command, { profile, layerId }) {
     return { kind: "model", id: command.modelId };
   }
 
+  if (command.kind === "select_mode") {
+    requireKeys(command, ["kind", "modeId"]);
+    if (command.modeId !== "default" && command.modeId !== "plan") {
+      throw new ValidationError("A supported Codex mode ID is required.");
+    }
+    return { kind: "mode", id: command.modeId };
+  }
+
+  if (command.kind === "select_reasoning") {
+    requireKeys(command, ["kind", "level"]);
+    if (!["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(command.level)) {
+      throw new ValidationError("A supported Codex reasoning level is required.");
+    }
+    return { kind: "reasoning", level: command.level };
+  }
+
   if (command.kind === "binding") {
     requireKeys(command, ["kind", "inputId", "gesture", "layerId", "action"]);
     validateInputId(command.inputId);

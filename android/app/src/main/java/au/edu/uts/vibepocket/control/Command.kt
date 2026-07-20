@@ -23,6 +23,12 @@ sealed interface Command {
             require(modelId.matches(Regex("^[a-zA-Z0-9._-]{1,128}$")))
         }
     }
+    data class SelectMode(val modeId: String) : Command {
+        init {
+            require(modeId == "default" || modeId == "plan")
+        }
+    }
+    data class SelectReasoning(val level: Reasoning.Level) : Command
     data class UpdateBinding(
         val layerId: String,
         val inputId: String,

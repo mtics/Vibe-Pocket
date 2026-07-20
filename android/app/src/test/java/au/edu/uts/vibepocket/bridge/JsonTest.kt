@@ -263,6 +263,8 @@ class JsonTest {
         val workflow = Command.UpdateWorkflowPrompt("debug", "Investigate from evidence.").encode()
         val reset = Command.ResetProfile.encode()
         val model = Command.SelectModel("gpt-test").encode()
+        val mode = Command.SelectMode("plan").encode()
+        val reasoning = Command.SelectReasoning(Reasoning.Level.HIGH).encode()
 
         assertEquals("binding", binding.getString("kind"))
         assertEquals("key_voice", binding.getString("inputId"))
@@ -291,6 +293,10 @@ class JsonTest {
         assertEquals("model_picker", Command.ModelPicker.encode().getString("kind"))
         assertEquals("select_model", model.getString("kind"))
         assertEquals("gpt-test", model.getString("modelId"))
+        assertEquals("select_mode", mode.getString("kind"))
+        assertEquals("plan", mode.getString("modeId"))
+        assertEquals("select_reasoning", reasoning.getString("kind"))
+        assertEquals("high", reasoning.getString("level"))
     }
 
     private companion object {

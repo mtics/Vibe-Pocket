@@ -82,6 +82,12 @@ class FakeDesktop {
   async selectModel(modelId, effects) {
     return effects.commit(() => { this.calls.push(["selectModel", modelId]); });
   }
+  async selectMode(modeId, effects) {
+    return effects.commit(() => { this.calls.push(["selectMode", modeId]); });
+  }
+  async selectReasoning(level, effects) {
+    return effects.commit(() => { this.calls.push(["selectReasoning", level]); });
+  }
   async deleteBackward() { this.calls.push(["deleteBackward"]); }
   async clearInput() { this.calls.push(["clearInput"]); }
   async focusAgent(index) { this.calls.push(["focusAgent", index]); }
@@ -198,7 +204,22 @@ test("keeps reasoning adjustable upward at the minimum level", async () => {
     canDecrease: false,
     increaseTo: null,
     decreaseTo: null,
+    options: [],
   });
+});
+
+test("routes exact mode and reasoning selections without desktop menu cycling", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await service.command({ kind: "select_mode", modeId: "plan" }, "select-mode-plan");
+  await service.command({ kind: "select_reasoning", level: "xhigh" }, "select-reasoning-xhigh");
+
+  assert.deepEqual(desktop.calls, [
+    ["selectMode", "plan"],
+    ["selectReasoning", "xhigh"],
+  ]);
 });
 
 test("keeps both reasoning directions available when the host sees an unknown label", async () => {
@@ -572,9 +593,19 @@ test("ignores returned mode settings until a fresh desktop scan", async () => {
 
   await service.command(bindingCommand("key_mode"), "native-mode");
 
-  assert.deepEqual((await service.snapshot()).controller.mode, { available: true, label: "Codex" });
+  assert.deepEqual((await service.snapshot()).controller.mode, {
+    available: true,
+    label: "Codex",
+    id: null,
+    options: [],
+  });
   await new Promise((resolve) => setTimeout(resolve, 220));
-  assert.deepEqual((await service.snapshot()).controller.mode, { available: true, label: "Plan" });
+  assert.deepEqual((await service.snapshot()).controller.mode, {
+    available: true,
+    label: "Plan",
+    id: null,
+    options: [],
+  });
   assert.equal(desktop.statusCalls, 2);
   assert.deepEqual(desktop.calls, [["cycleMode"]]);
   assert.equal(events.published.length, initialEvents + 1);

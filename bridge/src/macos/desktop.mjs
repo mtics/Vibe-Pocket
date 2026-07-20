@@ -44,7 +44,10 @@ export class Desktop {
     if (!this.#threadCatalog) return result;
     let settings = null;
     try {
-      settings = await this.#threadCatalog.settings(result.reasoning);
+      settings = await this.#threadCatalog.settings({
+        ...result.reasoning,
+        modeLabel: result.mode?.label,
+      });
     } catch {
       settings = null;
     }
@@ -55,9 +58,11 @@ export class Desktop {
     const reasoningAvailable = Boolean(
       binding && settings?.reasoning.available === true && result.controls?.reasoning === true,
     );
+    const modeAvailable = Boolean(binding && settings?.mode?.available === true);
     const view = {
       ...result,
       agents,
+      mode: settings?.mode ? { ...settings.mode, available: modeAvailable } : result.mode,
       model: settings?.model ? { ...settings.model, available: modelAvailable } : undefined,
       reasoning: settings?.reasoning ? {
         ...settings.reasoning,
@@ -68,6 +73,7 @@ export class Desktop {
       controls: {
         ...result.controls,
         "focus-agent": agents.some((agent) => !agent.focused),
+        "mode-cycle": modeAvailable,
         model: modelAvailable,
         reasoning: reasoningAvailable,
       },
@@ -156,6 +162,22 @@ export class Desktop {
         effects,
       });
       return { ok: true, message: `Selected ${settings.model.label}.`, settings };
+    });
+  }
+
+  async selectMode(modeId, effects) {
+    if (!this.#threadCatalog) throw new Error("Native Codex mode selection is unavailable.");
+    requireEffects(effects);
+    return this.#enqueue(async () => {
+      const current = await this.#statusNow();
+      const binding = this.#requireSettingsAvailable(current, "mode");
+      await this.#confirmSettingsBinding(binding, "mode");
+      const settings = await this.#threadCatalog.selectMode({
+        id: modeId,
+        threadId: binding.threadId,
+        effects,
+      });
+      return { ok: true, message: `Selected ${settings.mode.label} mode.`, settings };
     });
   }
 

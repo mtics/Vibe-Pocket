@@ -287,6 +287,14 @@ export class Session {
         await this.#selectModel(intent.id, authority);
         return;
       }
+      if (intent.kind === "mode") {
+        await this.#selectMode(intent.id, authority);
+        return;
+      }
+      if (intent.kind === "reasoning") {
+        await this.#selectReasoning(intent.level, authority);
+        return;
+      }
       if (intent.kind === "action") {
         await this.#executeAction(intent.value, authority);
         return;
@@ -491,6 +499,22 @@ export class Session {
     await this.#performDeferred(
       (effects) => this.#desktop.selectModel(modelId, effects),
       "Selected the Codex model.",
+      authority,
+    );
+  }
+
+  async #selectMode(modeId, authority) {
+    await this.#performDeferred(
+      (effects) => this.#desktop.selectMode(modeId, effects),
+      "Selected the Codex mode.",
+      authority,
+    );
+  }
+
+  async #selectReasoning(level, authority) {
+    await this.#performDeferred(
+      (effects) => this.#desktop.selectReasoning(level, effects),
+      "Selected the Codex reasoning level.",
       authority,
     );
   }

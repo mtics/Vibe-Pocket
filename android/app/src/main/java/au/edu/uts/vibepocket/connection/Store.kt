@@ -716,6 +716,10 @@ private fun encodeTransition(transition: ContextTransition): JSONObject = when (
     ContextTransition.Attached -> JSONObject().put("kind", "attached")
     is ContextTransition.Agent -> JSONObject().put("kind", "agent").put("id", transition.id)
     is ContextTransition.Model -> JSONObject().put("kind", "model").put("id", transition.id)
+    is ContextTransition.Mode -> JSONObject().put("kind", "mode").put("id", transition.id)
+    is ContextTransition.Reasoning -> JSONObject()
+        .put("kind", "reasoning")
+        .put("level", transition.level.wireValue)
     is ContextTransition.Layer -> JSONObject().put("kind", "layer").put("id", transition.id)
 }
 
@@ -726,6 +730,12 @@ private fun decodeTransition(value: JSONObject): ContextTransition = when (value
     "attached" -> ContextTransition.Attached
     "agent" -> ContextTransition.Agent(value.getString("id"))
     "model" -> ContextTransition.Model(value.getString("id"))
+    "mode" -> ContextTransition.Mode(value.getString("id"))
+    "reasoning" -> ContextTransition.Reasoning(
+        requireNotNull(au.edu.uts.vibepocket.control.Reasoning.Level.fromWire(value.getString("level"))) {
+            "The pending command reasoning transition is invalid."
+        },
+    )
     "layer" -> ContextTransition.Layer(value.getString("id"))
     else -> throw IllegalArgumentException("The pending command transition target is invalid.")
 }

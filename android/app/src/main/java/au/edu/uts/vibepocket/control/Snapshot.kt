@@ -180,7 +180,15 @@ data class Voice(
 data class Selector(
     val available: Boolean,
     val label: String,
-)
+    val id: String? = null,
+    val options: List<Option> = emptyList(),
+) {
+    data class Option(
+        val id: String,
+        val label: String,
+        val selected: Boolean,
+    )
+}
 
 data class Model(
     val available: Boolean,
@@ -207,6 +215,7 @@ data class Reasoning(
     val canDecrease: Boolean,
     val increaseTo: Level? = null,
     val decreaseTo: Level? = null,
+    val options: List<Level> = emptyList(),
 ) {
     enum class Level(val wireValue: String) {
         MINIMAL("minimal"),

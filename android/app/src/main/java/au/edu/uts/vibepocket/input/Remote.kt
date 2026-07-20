@@ -19,6 +19,11 @@ internal fun remote(session: Session): Bridge = object : Bridge {
 
     override fun selectModel(modelId: String): Boolean = session.selectModel(modelId)
 
+    override fun selectMode(modeId: String): Boolean = session.selectMode(modeId)
+
+    override fun selectReasoning(level: au.edu.uts.vibepocket.control.Reasoning.Level): Boolean =
+        session.selectReasoning(level)
+
     override fun selectLayer(layerId: String): Boolean = session.selectLayer(layerId)
 
     override fun reportLocalDeliveryFailure(message: String) = session.reportLocalDeliveryFailure(message)

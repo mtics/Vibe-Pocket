@@ -47,6 +47,8 @@ internal fun Command.encode(): JSONObject = when (this) {
     is Command.SelectLayer -> JSONObject().put("kind", "select_layer").put("layerId", layerId)
     is Command.FocusAgent -> JSONObject().put("kind", "focus_agent").put("agentId", agentId)
     is Command.SelectModel -> JSONObject().put("kind", "select_model").put("modelId", modelId)
+    is Command.SelectMode -> JSONObject().put("kind", "select_mode").put("modeId", modeId)
+    is Command.SelectReasoning -> JSONObject().put("kind", "select_reasoning").put("level", level.wireValue)
     is Command.UpdateBinding -> JSONObject()
         .put("kind", "update_binding")
         .put("layerId", layerId)
@@ -99,6 +101,12 @@ internal fun decodeCommand(value: JSONObject): Command {
         "select_layer" -> Command.SelectLayer(field("layerId"))
         "focus_agent" -> Command.FocusAgent(field("agentId"))
         "select_model" -> Command.SelectModel(field("modelId", 128))
+        "select_mode" -> Command.SelectMode(field("modeId", 32))
+        "select_reasoning" -> Command.SelectReasoning(
+            requireNotNull(Reasoning.Level.fromWire(field("level", 32))) {
+                "The pending command reasoning level is invalid."
+            },
+        )
         "update_binding" -> Command.UpdateBinding(field("layerId"), field("inputId"), gesture(), action())
         "clear_binding" -> Command.ClearBinding(field("layerId"), field("inputId"), gesture())
         "rename_layer" -> Command.RenameLayer(field("layerId"), field("name"))

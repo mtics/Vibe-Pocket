@@ -41,6 +41,14 @@ class FakeAppServer extends EventEmitter {
         data: this.models,
       };
     }
+    if (method === "collaborationMode/list") {
+      return {
+        data: [
+          { name: "Default", mode: "default", model: null, reasoning_effort: null },
+          { name: "Plan", mode: "plan", model: null, reasoning_effort: null },
+        ],
+      };
+    }
     if (method === "thread/resume" && this.resumeResponse) return this.resumeResponse;
     if (method === "thread/resume" && this.resumed) return this.resumed;
     if (method === "thread/settings/update") {
@@ -50,6 +58,7 @@ class FakeAppServer extends EventEmitter {
           ...this.resumed,
           ...(params.model ? { model: params.model } : {}),
           ...(params.effort ? { reasoningEffort: params.effort } : {}),
+          ...(params.collaborationMode ? { collaborationMode: params.collaborationMode } : {}),
         };
       }
       return {};
@@ -116,8 +125,12 @@ test("uses the exact thread observation ahead of a stale visible selector", asyn
     canDecrease: true,
     increaseTo: null,
     decreaseTo: "max",
+    options: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   });
-  assert.deepEqual(appServer.calls.map(([method]) => method), ["model/list", "thread/resume"]);
+  assert.deepEqual(
+    appServer.calls.map(([method]) => method).sort(),
+    ["collaborationMode/list", "model/list", "thread/resume"].sort(),
+  );
 });
 
 test("keeps the catalog visible but disables selection without a matched desktop task", async () => {
@@ -130,6 +143,19 @@ test("keeps the catalog visible but disables selection without a matched desktop
   assert.equal(status.model.available, false);
   assert.equal(status.model.id, "gpt-sol");
   assert.equal(status.model.options.length, 2);
+});
+
+test("uses the read-only desktop mode when thread resume omits collaboration mode", async () => {
+  const appServer = new FakeAppServer({ model: "gpt-sol", reasoningEffort: "high" });
+  const settings = new Settings({ appServer, context: new FakeContext() });
+
+  const status = await settings.projection(
+    { id: "thread-a", path: "/rollout.jsonl" },
+    { modelLabel: "Sol", modeLabel: "Default" },
+  );
+
+  assert.equal(status.mode.available, true);
+  assert.equal(status.mode.id, "default");
 });
 
 test("writes model and every advertised reasoning level through app-server", async () => {
@@ -158,7 +184,8 @@ test("writes model and every advertised reasoning level through app-server", asy
   assert.equal(selected.model.id, "gpt-luna");
   assert.equal(selected.reasoning.level, "low");
 
-  assert.deepEqual(appServer.calls.slice(2), [
+  assert.deepEqual(appServer.calls.filter(([method]) => method.startsWith("thread/")), [
+    ["thread/resume", { threadId: "thread-a" }],
     ["thread/settings/update", { threadId: "thread-a", effort: "max" }],
     ["thread/resume", { threadId: "thread-a" }],
     ["thread/settings/update", { threadId: "thread-a", effort: "ultra" }],
@@ -166,6 +193,39 @@ test("writes model and every advertised reasoning level through app-server", asy
     ["thread/settings/update", { threadId: "thread-a", model: "gpt-luna", effort: "low" }],
     ["thread/resume", { threadId: "thread-a" }],
   ]);
+});
+
+test("writes an exact collaboration mode and confirms it from the bound thread", async () => {
+  const appServer = new FakeAppServer({
+    model: "gpt-sol",
+    reasoningEffort: "high",
+    collaborationMode: { mode: "default" },
+  });
+  const settings = new Settings({ appServer, context: new FakeContext() });
+  const thread = { id: "thread-a", path: "/rollout.jsonl" };
+  await settings.projection(thread, { modelLabel: "Sol" });
+
+  const selected = await settings.selectMode({
+    id: "plan",
+    threadId: "thread-a",
+    effects: effectBoundary(),
+  });
+
+  assert.equal(selected.mode.id, "plan");
+  assert.deepEqual(
+    appServer.calls.find(([method]) => method === "thread/settings/update")?.[1],
+    {
+      threadId: "thread-a",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-sol",
+          reasoning_effort: "high",
+          developer_instructions: null,
+        },
+      },
+    },
+  );
 });
 
 test("invalidates cached settings when an app-server update times out", async () => {

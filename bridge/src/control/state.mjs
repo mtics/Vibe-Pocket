@@ -190,7 +190,7 @@ function emptyDesktop() {
     focusedAgentIndex: -1,
     focusedAgentId: null,
     voice: { available: false, active: false },
-    mode: { available: false, label: "" },
+    mode: { available: false, id: null, label: "", options: [] },
     access: { available: false, label: "" },
     model: { available: false, id: null, label: "", options: [] },
     reasoning: {
@@ -201,6 +201,7 @@ function emptyDesktop() {
       canDecrease: false,
       increaseTo: null,
       decreaseTo: null,
+      options: [],
     },
     userInput: null,
   };
@@ -269,9 +270,24 @@ function normalizeVoice(value) {
 }
 
 function normalizeSelector(value) {
+  const options = Array.isArray(value?.options)
+    ? value.options
+      .filter((option) => option && (option.id === "default" || option.id === "plan"))
+      .slice(0, 8)
+      .map((option) => ({
+        id: option.id,
+        label: typeof option.label === "string" ? option.label.slice(0, 80) : option.id,
+        selected: option.selected === true,
+      }))
+    : [];
+  const id = value?.id === "default" || value?.id === "plan"
+    ? value.id
+    : options.find(({ selected }) => selected)?.id ?? null;
   return {
     available: value?.available === true,
     label: typeof value?.label === "string" ? value.label.slice(0, 80) : "",
+    id,
+    options: options.map((option) => ({ ...option, selected: option.id === id })),
   };
 }
 
@@ -291,6 +307,9 @@ function normalizeReasoning(value) {
     canDecrease,
     increaseTo: canIncrease && levels.includes(value?.increaseTo) ? value.increaseTo : null,
     decreaseTo: canDecrease && levels.includes(value?.decreaseTo) ? value.decreaseTo : null,
+    options: Array.isArray(value?.options)
+      ? value.options.filter((option) => levels.includes(option)).slice(0, levels.length)
+      : [],
   };
 }
 
