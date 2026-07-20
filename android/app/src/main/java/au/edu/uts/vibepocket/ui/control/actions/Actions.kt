@@ -2,6 +2,8 @@ package au.edu.uts.vibepocket.ui.control.actions
 
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.ConflictGroup
+import au.edu.uts.vibepocket.control.conflictGroups
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.ui.control.Catalog
 import au.edu.uts.vibepocket.ui.control.Control
@@ -44,6 +46,7 @@ internal fun Actions(
     snapshot: Snapshot,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
@@ -71,7 +74,7 @@ internal fun Actions(
                     onNavigationRepeat = onNavigationRepeat,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
-                    blocked = blocked,
+                    blocked = blocked || ConflictGroup.NAVIGATION in busyGroups,
                     directionSize = layout.direction,
                     centerSize = layout.center,
                     modifier = Modifier.size(layout.pad),
@@ -87,19 +90,19 @@ internal fun Actions(
                         snapshot = snapshot,
                         inFlightIds = inFlightIds,
                         onMode = onMode,
-                        blocked = blocked,
+                        blocked = blocked || ConflictGroup.CONTEXT in busyGroups,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                     Slot(
-                        catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
+                        catalog.find("delete_backward"), "Delete", snapshot, inFlightIds, busyGroups,
                         onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
                     )
                     Slot(
-                        catalog.find("new_task"), "New task", snapshot, inFlightIds,
+                        catalog.find("new_task"), "New task", snapshot, inFlightIds, busyGroups,
                         onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
                     )
                     Slot(
-                        catalog.find("approve"), "Accept", snapshot, inFlightIds,
+                        catalog.find("approve"), "Accept", snapshot, inFlightIds, busyGroups,
                         onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
                     )
                 }
@@ -115,7 +118,7 @@ internal fun Actions(
                 catalog.find("stop") to "Stop",
             ).forEach { (control, label) ->
                 Slot(
-                    control, label, snapshot, inFlightIds, onInput, onVoiceStart, onVoiceStop,
+                    control, label, snapshot, inFlightIds, busyGroups, onInput, onVoiceStart, onVoiceStop,
                     blocked, Modifier.weight(1f).fillMaxSize(),
                 )
             }
@@ -130,6 +133,7 @@ internal fun LandscapeActions(
     snapshot: Snapshot,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
     onInput: (String, Gesture.Kind) -> Unit,
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
@@ -157,7 +161,7 @@ internal fun LandscapeActions(
                     onNavigationRepeat = onNavigationRepeat,
                     onVoiceStart = onVoiceStart,
                     onVoiceStop = onVoiceStop,
-                    blocked = blocked,
+                    blocked = blocked || ConflictGroup.NAVIGATION in busyGroups,
                     directionSize = layout.direction,
                     centerSize = layout.center,
                     modifier = Modifier.size(layout.pad),
@@ -174,23 +178,23 @@ internal fun LandscapeActions(
                             snapshot = snapshot,
                             inFlightIds = inFlightIds,
                             onMode = onMode,
-                            blocked = blocked,
+                            blocked = blocked || ConflictGroup.CONTEXT in busyGroups,
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         Slot(
-                            catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
+                            catalog.find("delete_backward"), "Delete", snapshot, inFlightIds, busyGroups,
                             onInput, onVoiceStart, onVoiceStop, blocked,
                             Modifier.weight(1f).fillMaxHeight(),
                         )
                     }
                     Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(layout.gap)) {
                         Slot(
-                            catalog.find("new_task"), "New task", snapshot, inFlightIds,
+                            catalog.find("new_task"), "New task", snapshot, inFlightIds, busyGroups,
                             onInput, onVoiceStart, onVoiceStop, blocked,
                             Modifier.weight(1f).fillMaxHeight(),
                         )
                         Slot(
-                            catalog.find("approve"), "Accept", snapshot, inFlightIds,
+                            catalog.find("approve"), "Accept", snapshot, inFlightIds, busyGroups,
                             onInput, onVoiceStart, onVoiceStop, blocked,
                             Modifier.weight(1f).fillMaxHeight(),
                         )
@@ -208,7 +212,7 @@ internal fun LandscapeActions(
                 catalog.find("stop") to "Stop",
             ).forEach { (control, label) ->
                 Slot(
-                    control, label, snapshot, inFlightIds, onInput, onVoiceStart, onVoiceStop,
+                    control, label, snapshot, inFlightIds, busyGroups, onInput, onVoiceStart, onVoiceStop,
                     blocked, Modifier.weight(1f).fillMaxHeight(),
                 )
             }
@@ -306,6 +310,7 @@ private fun Slot(
     label: String,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
     onInput: (String, Gesture.Kind) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
@@ -316,6 +321,8 @@ private fun Slot(
         Empty(label, modifier)
         return
     }
+    val action = snapshot.actionFor(control.input.id, control.gesture)
+    val groupBlocked = action?.conflictGroups()?.any(busyGroups::contains) == true
     InputButton(
         input = control.input,
         gesture = control.gesture,
@@ -324,7 +331,7 @@ private fun Slot(
         onInput = onInput,
         onVoiceStart = onVoiceStart,
         onVoiceStop = onVoiceStop,
-        blocked = blocked,
+        blocked = blocked || groupBlocked,
         labelPlacement = LabelPlacement.TEXT,
         labelOverride = label,
         modifier = modifier,

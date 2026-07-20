@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.ui.control.state
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Tasks
+import au.edu.uts.vibepocket.session.Operation
 
 internal data class State(
     val kind: Kind,
@@ -19,11 +20,12 @@ internal data class State(
         QUESTION,
         DECISION,
         STALE,
+        UNKNOWN,
         ERROR,
     }
 }
 
-internal fun Snapshot.state(): State {
+internal fun Snapshot.state(operation: Operation? = null): State {
     val desktop = desktop
     if (!transportFresh) {
         return State(
@@ -42,6 +44,25 @@ internal fun Snapshot.state(): State {
             task = null,
             detail = status.message?.takeIf(String::isNotBlank),
         )
+    }
+
+    when (operation?.phase) {
+        Operation.Phase.UNKNOWN -> return State(
+            kind = State.Kind.UNKNOWN,
+            activity = Activity.WAITING,
+            title = "Outcome unknown",
+            task = focusedTaskLabel(),
+            detail = operation.message
+                ?: "The Mac may have completed this command. The last confirmed state is unchanged.",
+        )
+        Operation.Phase.FAILED -> return State(
+            kind = State.Kind.ERROR,
+            activity = Activity.ERROR,
+            title = "Command failed",
+            task = focusedTaskLabel(),
+            detail = operation.message,
+        )
+        else -> Unit
     }
 
     if (desktop.tasks.availability != Tasks.Availability.FRESH) {
@@ -126,3 +147,8 @@ internal fun Snapshot.state(): State {
         )
     }
 }
+
+private fun Snapshot.focusedTaskLabel(): String? = desktop?.agents
+    ?.firstOrNull { it.id == desktop.focusedAgentId || it.focused }
+    ?.label
+    ?.takeIf(String::isNotBlank)

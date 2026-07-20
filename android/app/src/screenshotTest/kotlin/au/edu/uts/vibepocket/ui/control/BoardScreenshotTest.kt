@@ -6,6 +6,7 @@ import au.edu.uts.vibepocket.control.Capabilities
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.session.Operation
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.android.tools.screenshot.PreviewTest
@@ -68,7 +69,13 @@ fun offlinePortrait() = BoardPreview(
 @Preview(name = "Outcome unknown", widthDp = 393, heightDp = 873, showBackground = true)
 @Composable
 fun unknownPortrait() = BoardPreview(
-    Fixtures.snapshot(activity = Activity.ERROR, message = "Outcome unknown. Check the Mac before retrying."),
+    Fixtures.snapshot(),
+    operation = Operation(
+        id = "unknown-operation",
+        uiId = "input:key_accept:tap",
+        phase = Operation.Phase.UNKNOWN,
+        message = "The Mac may have completed this command. Check it before retrying.",
+    ),
 )
 
 @PreviewTest

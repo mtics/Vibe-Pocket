@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.ui.control
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Capabilities
+import au.edu.uts.vibepocket.control.ConflictGroup
 import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Question
@@ -11,6 +12,7 @@ import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
 import au.edu.uts.vibepocket.control.Voice
+import au.edu.uts.vibepocket.session.Operation
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
 import au.edu.uts.vibepocket.profile.Gesture
@@ -47,6 +49,8 @@ import androidx.compose.ui.unit.dp
 internal fun BoardPreview(
     snapshot: Snapshot,
     inFlightIds: Set<String> = emptySet(),
+    busyGroups: Set<ConflictGroup> = emptySet(),
+    operation: Operation? = null,
     reasoningTarget: Reasoning.Level? = null,
     dark: Boolean = false,
     landscape: Boolean = false,
@@ -78,6 +82,8 @@ internal fun BoardPreview(
                         snapshot = snapshot,
                         hidNavigationAvailable = true,
                         inFlightIds = inFlightIds,
+                        busyGroups = busyGroups,
+                        operation = operation,
                         reasoningTarget = reasoningTarget,
                         contextTransitionPending = false,
                         onInput = { _, _ -> },
@@ -102,7 +108,7 @@ internal fun BoardPreview(
                         onInput = { _, _ -> },
                         onVoiceStart = { false },
                         onVoiceStop = {},
-                        blocked = !snapshot.transportFresh,
+                        blocked = !snapshot.transportFresh || ConflictGroup.VOICE in busyGroups,
                         modifier = Modifier.padding(start = 16.dp, top = 6.dp, end = 16.dp, bottom = 4.dp),
                     )
                 }

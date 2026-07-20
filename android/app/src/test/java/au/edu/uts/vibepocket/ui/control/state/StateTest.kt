@@ -11,6 +11,7 @@ import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
 import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.Voice
+import au.edu.uts.vibepocket.session.Operation
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -79,6 +80,60 @@ class StateTest {
         assertEquals(State.Kind.STALE, state.kind)
         assertEquals("Task list stale", state.title)
         assertEquals("Catalog refresh failed.", state.detail)
+    }
+
+    @Test
+    fun unknownOperationOverridesAReadyTaskWithoutDiscardingItsContext() {
+        val state = snapshot(Activity.IDLE).state(
+            Operation(
+                id = "operation-1",
+                uiId = "input:key_accept:tap",
+                phase = Operation.Phase.UNKNOWN,
+                message = "The result could not be confirmed.",
+            ),
+        )
+
+        assertEquals(State.Kind.UNKNOWN, state.kind)
+        assertEquals("Outcome unknown", state.title)
+        assertEquals("The result could not be confirmed.", state.detail)
+    }
+
+    @Test
+    fun failedOperationNeverLooksReady() {
+        val state = snapshot(Activity.IDLE).state(
+            Operation(
+                id = "operation-2",
+                uiId = "input:key_stop:tap",
+                phase = Operation.Phase.FAILED,
+                message = "The Mac rejected the command.",
+            ),
+        )
+
+        assertEquals(State.Kind.ERROR, state.kind)
+        assertEquals("Command failed", state.title)
+        assertEquals("The Mac rejected the command.", state.detail)
+    }
+
+    @Test
+    fun unknownOperationKeepsTheConfirmedTaskButReportsUncertainty() {
+        val state = snapshot(Activity.IDLE).state(
+            Operation("operation-1", "approve", Operation.Phase.UNKNOWN, "Check the Mac before retrying."),
+        )
+
+        assertEquals(State.Kind.UNKNOWN, state.kind)
+        assertEquals("Outcome unknown", state.title)
+        assertEquals("Check the Mac before retrying.", state.detail)
+    }
+
+    @Test
+    fun failedOperationIsDistinctFromDesktopTaskFailure() {
+        val state = snapshot(Activity.IDLE).state(
+            Operation("operation-2", "stop", Operation.Phase.FAILED, "The Bridge rejected Stop."),
+        )
+
+        assertEquals(State.Kind.ERROR, state.kind)
+        assertEquals("Command failed", state.title)
+        assertEquals("The Bridge rejected Stop.", state.detail)
     }
 
     private fun snapshot(

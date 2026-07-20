@@ -8,6 +8,7 @@ import android.os.Build
 import android.view.HapticFeedbackConstants
 import au.edu.uts.vibepocket.hid.Keyboard
 import au.edu.uts.vibepocket.connection.Invitation
+import au.edu.uts.vibepocket.control.ConflictGroup
 import au.edu.uts.vibepocket.input.Dispatch
 import au.edu.uts.vibepocket.input.remote
 import au.edu.uts.vibepocket.profile.Gesture
@@ -313,7 +314,9 @@ internal fun App(
                         onInput = onInput,
                         onVoiceStart = onVoiceStart,
                         onVoiceStop = onVoiceStop,
-                        blocked = transitionPending || !current.transportFresh,
+                        blocked = !current.transportFresh ||
+                            ConflictGroup.CONTEXT in state.busyGroups ||
+                            ConflictGroup.VOICE in state.busyGroups,
                         modifier = Modifier.widthIn(max = 361.dp),
                     )
                 }
@@ -354,6 +357,8 @@ internal fun App(
                     snapshot = snapshot,
                     hidNavigationAvailable = hidState.connected,
                     inFlightIds = state.inFlightIds,
+                    busyGroups = state.busyGroups,
+                    operation = state.operation,
                     reasoningTarget = state.reasoningTarget,
                     contextTransitionPending = state.contextTransitionPending,
                     onInput = onInput,

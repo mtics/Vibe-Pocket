@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Agent
+import au.edu.uts.vibepocket.control.ConflictGroup
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Status
 import au.edu.uts.vibepocket.control.Tasks
@@ -58,6 +59,22 @@ class BoardAccessibilityTest {
         rule.onNodeWithContentDescription("Up", substring = true)
             .assertIsEnabled()
             .assertHasClickAction()
+    }
+
+    @Test
+    fun contextOperationDoesNotFreezeUnrelatedControls() {
+        rule.setContent {
+            BoardPreview(
+                Fixtures.snapshot(),
+                busyGroups = setOf(ConflictGroup.CONTEXT),
+            )
+        }
+
+        rule.onNodeWithContentDescription("Mode, Default").assertIsNotEnabled()
+        rule.onNodeWithContentDescription("Layer 1: Default").assertIsNotEnabled()
+        rule.onNodeWithContentDescription("Voice", substring = true).assertIsEnabled()
+        rule.onNodeWithContentDescription("Up", substring = true).assertIsEnabled()
+        rule.onNodeWithContentDescription("Review", substring = true).assertIsEnabled()
     }
 
     @Test

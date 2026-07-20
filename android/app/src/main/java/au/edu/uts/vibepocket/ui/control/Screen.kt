@@ -4,6 +4,8 @@ import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.ConflictGroup
+import au.edu.uts.vibepocket.session.Operation
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.ui.control.actions.Actions
@@ -65,6 +67,8 @@ internal fun Screen(
     snapshot: Snapshot,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
+    operation: Operation?,
     reasoningTarget: Reasoning.Level?,
     contextTransitionPending: Boolean,
     onInput: (String, Gesture.Kind) -> Unit,
@@ -81,7 +85,12 @@ internal fun Screen(
     hand: Hand,
 ) {
     val catalog = Catalog.from(snapshot)
-    val blocked = contextTransitionPending || !snapshot.transportFresh
+    val activeGroups = if (contextTransitionPending) {
+        busyGroups + ConflictGroup.CONTEXT
+    } else {
+        busyGroups
+    }
+    val blocked = !snapshot.transportFresh
     val events = Events(
         input = onInput,
         repeat = onNavigationRepeat,
@@ -97,15 +106,15 @@ internal fun Screen(
         val largeText = largeText(LocalDensity.current.fontScale)
         if (maxWidth > maxHeight) {
             Landscape(
-                snapshot, catalog, inFlightIds, reasoningTarget, hidNavigationAvailable, blocked,
+                snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked,
                 voiceInput, events, Layout.landscape(maxWidth, maxHeight), onSettings, hand,
             )
         } else {
             val layout = Layout.of(maxHeight)
             if (maxHeight < layout.content || largeText) {
-                Short(snapshot, catalog, inFlightIds, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
+                Short(snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
             } else {
-                Portrait(snapshot, catalog, inFlightIds, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
+                Portrait(snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
             }
         }
     }
@@ -116,6 +125,8 @@ private fun Portrait(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
+    operation: Operation?,
     reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
@@ -127,11 +138,11 @@ private fun Portrait(
         board(layout),
         verticalArrangement = Arrangement.spacedBy(layout.gap),
     ) {
-        Context(snapshot, catalog, inFlightIds, blocked, events, layout)
-        LayersRow(snapshot, inFlightIds, blocked, events, layout)
-        WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
-        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
-        Selectors(snapshot, inFlightIds, reasoningTarget, blocked, events, layout)
+        Context(snapshot, catalog, inFlightIds, operation, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+        LayersRow(snapshot, inFlightIds, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+        WorkflowsRow(snapshot, catalog, inFlightIds, blocked || ConflictGroup.DRAFT in busyGroups, events, layout)
+        ActionsRow(snapshot, catalog, inFlightIds, busyGroups, hidNavigationAvailable, blocked, events, layout, hand)
+        Selectors(snapshot, inFlightIds, reasoningTarget, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
     }
 }
 
@@ -140,6 +151,8 @@ private fun Short(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
+    operation: Operation?,
     reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
@@ -152,14 +165,14 @@ private fun Short(
             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
-            Context(snapshot, catalog, inFlightIds, blocked, events, layout)
-            LayersRow(snapshot, inFlightIds, blocked, events, layout)
-            WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
+            Context(snapshot, catalog, inFlightIds, operation, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+            LayersRow(snapshot, inFlightIds, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+            WorkflowsRow(snapshot, catalog, inFlightIds, blocked || ConflictGroup.DRAFT in busyGroups, events, layout)
         }
         Spacer(Modifier.height(layout.gap))
-        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
+        ActionsRow(snapshot, catalog, inFlightIds, busyGroups, hidNavigationAvailable, blocked, events, layout, hand)
         Spacer(Modifier.height(layout.gap))
-        Selectors(snapshot, inFlightIds, reasoningTarget, blocked, events, layout)
+        Selectors(snapshot, inFlightIds, reasoningTarget, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
     }
 }
 
@@ -168,6 +181,8 @@ private fun Landscape(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
+    operation: Operation?,
     reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
@@ -186,10 +201,10 @@ private fun Landscape(
             Modifier.weight(1f).fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
-            Context(snapshot, catalog, inFlightIds, blocked, events, layout, onSettings)
-            LayersRow(snapshot, inFlightIds, blocked, events, layout)
-            WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
-            Selectors(snapshot, inFlightIds, reasoningTarget, blocked, events, layout)
+            Context(snapshot, catalog, inFlightIds, operation, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout, onSettings)
+            LayersRow(snapshot, inFlightIds, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+            WorkflowsRow(snapshot, catalog, inFlightIds, blocked || ConflictGroup.DRAFT in busyGroups, events, layout)
+            Selectors(snapshot, inFlightIds, reasoningTarget, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
         }
         Column(
             Modifier.weight(1f).fillMaxHeight(),
@@ -201,6 +216,7 @@ private fun Landscape(
                 snapshot = snapshot,
                 hidNavigationAvailable = hidNavigationAvailable,
                 inFlightIds = inFlightIds,
+                busyGroups = busyGroups,
                 onInput = events.input,
                 onNavigationRepeat = events.repeat,
                 onVoiceStart = events.voiceStart,
@@ -217,7 +233,8 @@ private fun Landscape(
                 onInput = events.input,
                 onVoiceStart = events.voiceStart,
                 onVoiceStop = events.voiceStop,
-                blocked = blocked,
+                blocked = blocked || ConflictGroup.CONTEXT in busyGroups ||
+                    ConflictGroup.VOICE in busyGroups,
                 height = layout.voice,
             )
         }
@@ -229,6 +246,7 @@ private fun Context(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    operation: Operation?,
     blocked: Boolean,
     events: Events,
     layout: Layout,
@@ -260,7 +278,7 @@ private fun Context(
             horizontalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
             Stage(
-                snapshot.state(),
+                snapshot.state(operation),
                 Modifier.weight(1f).fillMaxHeight().focusRequester(nextFocus).focusable(),
             )
             RailAction(
@@ -337,6 +355,7 @@ private fun ActionsRow(
     snapshot: Snapshot,
     catalog: Catalog,
     inFlightIds: Set<String>,
+    busyGroups: Set<ConflictGroup>,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
     events: Events,
@@ -349,6 +368,7 @@ private fun ActionsRow(
         snapshot = snapshot,
         hidNavigationAvailable = hidNavigationAvailable,
         inFlightIds = inFlightIds,
+        busyGroups = busyGroups,
         onInput = events.input,
         onNavigationRepeat = events.repeat,
         onVoiceStart = events.voiceStart,
