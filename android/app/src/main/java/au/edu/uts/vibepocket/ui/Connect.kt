@@ -35,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -96,100 +97,106 @@ internal fun Connect(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.safeContent)
-            .imePadding(),
-        contentAlignment = Alignment.TopCenter,
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .widthIn(max = 560.dp)
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 28.dp, vertical = 32.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .windowInsetsPadding(WindowInsets.safeContent)
+                .imePadding(),
+            contentAlignment = Alignment.TopCenter,
         ) {
-            Box(
-                modifier = Modifier.size(72.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
-            }
-            Spacer(Modifier.height(20.dp))
-            Text("Vibe Pocket", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Scan the code shown on your Mac",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(24.dp))
-            Button(
-                onClick = ::startScan,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                enabled = !isConnecting && !isScanning,
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                if (isScanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.dp,
-                    )
-                } else {
-                    Icon(Icons.Default.QrCodeScanner, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Scan QR code")
-                }
-            }
             Column(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp),
+                modifier = Modifier
+                    .widthIn(max = 560.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 28.dp, vertical = 32.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (isConnecting) CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
-                (scanError ?: error)?.let {
-                    if (isConnecting) Spacer(Modifier.height(12.dp))
-                    ErrorNotice(it)
+                Box(
+                    modifier = Modifier.size(72.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
                 }
-            }
-            TextButton(onClick = { advanced = !advanced }) {
-                Icon(
-                    if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("Paste invitation")
-            }
-            if (advanced) {
+                Spacer(Modifier.height(20.dp))
+                Text("Vibe Pocket", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = invitation,
-                    onValueChange = {
-                        invitation = it
-                        scanError = null
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2,
-                    maxLines = 4,
-                    label = { Text("Pairing invitation") },
-                    leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
+                Text(
+                    "Scan the code shown on your Mac",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
                 )
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(24.dp))
                 Button(
-                    onClick = {
-                        scanError = null
-                        onInvitation(invitation)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isConnecting && invitation.isNotBlank(),
+                    onClick = ::startScan,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    enabled = !isConnecting && !isScanning,
                     shape = RoundedCornerShape(8.dp),
                 ) {
-                    Text("Continue")
+                    if (isScanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Scan QR code")
+                    }
+                }
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (isConnecting) CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                    (scanError ?: error)?.let {
+                        if (isConnecting) Spacer(Modifier.height(12.dp))
+                        ErrorNotice(it)
+                    }
+                }
+                TextButton(onClick = { advanced = !advanced }) {
+                    Icon(
+                        if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Paste invitation")
+                }
+                if (advanced) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = invitation,
+                        onValueChange = {
+                            invitation = it
+                            scanError = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4,
+                        label = { Text("Pairing invitation") },
+                        leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        onClick = {
+                            scanError = null
+                            onInvitation(invitation)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isConnecting && invitation.isNotBlank(),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text("Continue")
+                    }
                 }
             }
         }
