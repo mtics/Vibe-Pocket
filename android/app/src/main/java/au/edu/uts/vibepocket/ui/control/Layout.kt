@@ -72,24 +72,65 @@ internal data class Layout(
             )
         }
 
-        fun landscape(): Layout = Layout(
-            maxWidth = 860.dp,
-            horizontalPadding = 12.dp,
-            gap = 6.dp,
-            agents = 54.dp,
-            agentAction = 54.dp,
-            contextGap = 4.dp,
-            status = 54.dp,
-            focusAction = 54.dp,
-            layers = 56.dp,
-            workflows = 76.dp,
-            pad = 204.dp,
-            direction = 68.dp,
-            center = 54.dp,
-            actionGap = 8.dp,
-            safety = 54.dp,
-            selectors = 62.dp,
-            voice = 54.dp,
-        )
+        fun landscape(availableWidth: Dp = 860.dp, availableHeight: Dp = 324.dp): Layout {
+            val base = Layout(
+                maxWidth = 860.dp,
+                horizontalPadding = 12.dp,
+                gap = 6.dp,
+                agents = 54.dp,
+                agentAction = 54.dp,
+                contextGap = 4.dp,
+                status = 54.dp,
+                focusAction = 54.dp,
+                layers = 56.dp,
+                workflows = 76.dp,
+                pad = 204.dp,
+                direction = 68.dp,
+                center = 54.dp,
+                actionGap = 8.dp,
+                safety = 54.dp,
+                selectors = 62.dp,
+                voice = 54.dp,
+            )
+            val extra = (availableHeight - base.landscapeRight).coerceIn(0.dp, 72.dp)
+            if (extra == 0.dp) return base
+
+            val agentExtra = extra * 0.12f
+            val statusExtra = extra * 0.12f
+            val layerExtra = extra * 0.18f
+            val workflowExtra = extra * 0.29f
+            val selectorExtra = extra - agentExtra - statusExtra - layerExtra - workflowExtra
+            val columnWidth = (
+                availableWidth.coerceAtMost(base.maxWidth) -
+                    base.horizontalPadding * 2f - LandscapeColumnGap
+                ) / 2f
+            val minimumActionGrid = MinimumTarget * 2f + base.gap
+            val widthLimitedPad = columnWidth - base.actionGap - minimumActionGrid
+            val expandedPad = (base.pad + extra * 0.5f)
+                .coerceAtMost(widthLimitedPad)
+                .coerceAtLeast(MinimumPad)
+            val bottomHeight = base.landscapeRight + extra - base.gap * 2f - expandedPad
+            val bottomExtra = bottomHeight - base.safety - base.voice
+            val safetyExtra = bottomExtra * 0.35f
+            val voiceExtra = bottomExtra - safetyExtra
+            val expandedDirection = expandedPad / 3f
+
+            return base.copy(
+                agents = base.agents + agentExtra,
+                status = base.status + statusExtra,
+                layers = base.layers + layerExtra,
+                workflows = base.workflows + workflowExtra,
+                pad = expandedPad,
+                direction = expandedDirection,
+                center = (base.center + extra * 0.1f).coerceAtMost(expandedDirection),
+                safety = base.safety + safetyExtra,
+                selectors = base.selectors + selectorExtra,
+                voice = base.voice + voiceExtra,
+            )
+        }
+
+        private val LandscapeColumnGap = 12.dp
+        private val MinimumTarget = 48.dp
+        private val MinimumPad = MinimumTarget * 3f
     }
 }

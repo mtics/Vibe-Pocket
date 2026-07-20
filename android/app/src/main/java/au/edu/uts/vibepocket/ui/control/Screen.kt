@@ -97,7 +97,7 @@ internal fun Screen(
         if (maxWidth > maxHeight) {
             Landscape(
                 snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked,
-                voiceInput, events, Layout.landscape(), onSettings, hand,
+                voiceInput, events, Layout.landscape(maxWidth, maxHeight), onSettings, hand,
             )
         } else {
             val layout = Layout.of(maxHeight)

@@ -31,8 +31,8 @@ class LayoutTest {
     }
 
     @Test
-    fun landscapeUsesTheFullBoardForControls() {
-        val layout = Layout.landscape()
+    fun compactLandscapeKeepsTheMinimumControlGeometry() {
+        val layout = Layout.landscape(860.dp, 324.dp)
 
         assertEquals(324.dp, layout.landscapeLeft)
         assertEquals(324.dp, layout.information)
@@ -43,5 +43,28 @@ class LayoutTest {
         assertTrue(layout.landscapeRight <= 324.dp)
         assertTrue(layout.direction >= 48.dp)
         assertTrue(layout.voice >= 48.dp)
+    }
+
+    @Test
+    fun tallerLandscapeInvestsTheAvailableHeightInControls() {
+        val layout = Layout.landscape(873.dp, 393.dp)
+
+        assertEquals(393.dp, layout.landscapeLeft)
+        assertEquals(393.dp, layout.landscapeRight)
+        assertTrue(layout.pad > 204.dp)
+        assertTrue(layout.direction > 68.dp)
+        assertTrue(layout.workflows > 76.dp)
+        assertTrue(layout.voice > 54.dp)
+    }
+
+    @Test
+    fun narrowLandscapeProtectsTheTwoColumnActionTargets() {
+        val layout = Layout.landscape(640.dp, 360.dp)
+        val columnWidth = (640.dp - layout.horizontalPadding * 2f - 12.dp) / 2f
+        val actionSlotWidth = (columnWidth - layout.pad - layout.actionGap - layout.gap) / 2f
+
+        assertTrue(actionSlotWidth >= 48.dp)
+        assertTrue(layout.direction >= 48.dp)
+        assertEquals(360.dp, layout.landscapeRight)
     }
 }
