@@ -57,7 +57,11 @@ internal fun Layers(
             Box(
                 Modifier.weight(1f).fillMaxSize().clip(RoundedCornerShape(8.dp))
                     .background(background)
-                    .border(1.dp, if (selected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
+                    .border(
+                        1.dp,
+                        if (selected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.58f),
+                        RoundedCornerShape(8.dp),
+                    )
                     .semantics {
                         role = Role.Button
                         this.selected = selected
@@ -65,7 +69,6 @@ internal fun Layers(
                         if (loading) stateDescription = "Changing to ${compactLayerName(layer.name, index)}"
                     }
                     .clickable(enabled = enabled && !selected && !loading) { onLayer(layer.id) }
-                    .alpha(if (enabled || selected) 1f else 0.58f)
                     .padding(horizontal = 5.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -75,7 +78,13 @@ internal fun Layers(
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                    modifier = Modifier.alpha(if (loading) 0.52f else 1f),
+                    modifier = Modifier.alpha(
+                        when {
+                            loading -> 0.52f
+                            enabled || selected -> 1f
+                            else -> 0.58f
+                        },
+                    ),
                 )
                 if (showProgress) {
                     CircularProgressIndicator(
