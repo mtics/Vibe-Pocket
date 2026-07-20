@@ -10,6 +10,7 @@ import au.edu.uts.vibepocket.ui.control.actions.Actions
 import au.edu.uts.vibepocket.ui.control.actions.LandscapeActions
 import au.edu.uts.vibepocket.ui.control.stage.Stage
 import au.edu.uts.vibepocket.ui.control.state.state
+import au.edu.uts.vibepocket.ui.preference.Hand
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -74,6 +75,7 @@ internal fun Screen(
     onLayer: (String) -> Boolean,
     voiceInput: Input,
     onSettings: () -> Unit,
+    hand: Hand,
 ) {
     val catalog = Catalog.from(snapshot)
     val blocked = contextTransitionPending || !snapshot.transportFresh
@@ -92,14 +94,14 @@ internal fun Screen(
         if (maxWidth > maxHeight) {
             Landscape(
                 snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked,
-                voiceInput, events, Layout.landscape(), onSettings,
+                voiceInput, events, Layout.landscape(), onSettings, hand,
             )
         } else {
             val layout = Layout.of(maxHeight)
             if (maxHeight < layout.content) {
-                Short(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
+                Short(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
             } else {
-                Portrait(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
+                Portrait(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
             }
         }
     }
@@ -114,6 +116,7 @@ private fun Portrait(
     blocked: Boolean,
     events: Events,
     layout: Layout,
+    hand: Hand,
 ) {
     Column(
         board(layout),
@@ -122,7 +125,7 @@ private fun Portrait(
         Context(snapshot, catalog, inFlightIds, blocked, events, layout)
         LayersRow(snapshot, inFlightIds, blocked, events, layout)
         WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
-        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
+        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
         Selectors(snapshot, inFlightIds, blocked, events, layout)
     }
 }
@@ -136,6 +139,7 @@ private fun Short(
     blocked: Boolean,
     events: Events,
     layout: Layout,
+    hand: Hand,
 ) {
     Column(board(layout)) {
         Column(
@@ -147,7 +151,7 @@ private fun Short(
             WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
         }
         Spacer(Modifier.height(layout.gap))
-        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout)
+        ActionsRow(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
         Spacer(Modifier.height(layout.gap))
         Selectors(snapshot, inFlightIds, blocked, events, layout)
     }
@@ -164,6 +168,7 @@ private fun Landscape(
     events: Events,
     layout: Layout,
     onSettings: () -> Unit,
+    hand: Hand,
 ) {
     Row(
         Modifier.widthIn(max = layout.maxWidth).fillMaxWidth().fillMaxHeight()
@@ -197,6 +202,7 @@ private fun Landscape(
                 onMode = events.mode,
                 blocked = blocked,
                 layout = layout,
+                hand = hand,
             )
             Voice(
                 input = voiceInput,
@@ -322,6 +328,7 @@ private fun ActionsRow(
     blocked: Boolean,
     events: Events,
     layout: Layout,
+    hand: Hand,
 ) {
     Actions(
         catalog = catalog,
@@ -336,6 +343,7 @@ private fun ActionsRow(
         onMode = events.mode,
         blocked = blocked,
         layout = layout,
+        hand = hand,
     )
 }
 

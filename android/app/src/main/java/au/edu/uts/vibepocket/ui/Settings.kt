@@ -11,6 +11,9 @@ import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.profile.Workflow
+import au.edu.uts.vibepocket.ui.preference.Hand
+import au.edu.uts.vibepocket.ui.preference.Palette
+import au.edu.uts.vibepocket.ui.preference.State as Display
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Tune
@@ -53,6 +57,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -127,8 +134,10 @@ internal fun Settings(
     inFlightIds: Set<String>,
     contextTransitionPending: Boolean,
     connectionError: String?,
+    display: Display,
     onDismiss: () -> Unit,
     onSaveConnection: (String, String) -> Boolean,
+    onDisplay: (Display) -> Boolean,
     onDisconnect: () -> Unit,
     onResetProfile: () -> Unit,
     onPairHid: () -> Unit,
@@ -150,6 +159,8 @@ internal fun Settings(
     var layerName by rememberSaveable(layer?.id, layer?.name) { mutableStateOf(layer?.name.orEmpty()) }
     var confirmDisconnect by remember { mutableStateOf(false) }
     var recoveryExpanded by rememberSaveable { mutableStateOf(false) }
+    var selectedPalette by rememberSaveable(display.palette) { mutableStateOf(display.palette) }
+    var selectedHand by rememberSaveable(display.hand) { mutableStateOf(display.hand) }
     val errorHost = remember { SnackbarHostState() }
     val busy = inFlightIds.any { pending ->
         pending.startsWith("mapping:")
@@ -163,6 +174,8 @@ internal fun Settings(
     }
     val validConfig = candidate.getOrNull()
     val connectionDirty = validConfig != null && validConfig.normalizedUrl != config.normalizedUrl
+    val displayDraft = Display(palette = selectedPalette, hand = selectedHand)
+    val appearanceDirty = displayDraft != display
     val savingConnection = inFlightIds.any { it.startsWith("connection:") }
     val hasPendingActions = contextTransitionPending || inFlightIds.any { !it.startsWith("connection:") }
 
@@ -208,12 +221,21 @@ internal fun Settings(
                             FilledTonalButton(
                                 onClick = {
                                     validConfig?.let { candidateConfig ->
-                                        if (onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.credential)) {
-                                            saveTarget = candidateConfig
+                                        val connectionAccepted = !connectionDirty ||
+                                            onSaveConnection(candidateConfig.normalizedUrl, candidateConfig.credential)
+                                        if (connectionAccepted) {
+                                            val appearanceAccepted = !appearanceDirty || onDisplay(displayDraft)
+                                            if (appearanceAccepted) {
+                                                if (connectionDirty) saveTarget = candidateConfig else onDismiss()
+                                            }
                                         }
                                     }
                                 },
-                                enabled = connectionDirty && inFlightIds.isEmpty(),
+                                enabled = validConfig != null && settingsHaveChanges(
+                                    connectionDirty,
+                                    display,
+                                    displayDraft,
+                                ) && inFlightIds.isEmpty(),
                                 modifier = Modifier.padding(end = 8.dp).heightIn(min = 40.dp),
                                 shape = RoundedCornerShape(6.dp),
                                 contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
@@ -296,6 +318,33 @@ internal fun Settings(
                 onConnect = onConnectHid,
                 onRefresh = onRefreshHid,
             )
+            Text("Control layout", style = MaterialTheme.typography.labelLarge)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                Hand.entries.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = selectedHand == option,
+                        onClick = { selectedHand = option },
+                        shape = SegmentedButtonDefaults.itemShape(index, Hand.entries.size),
+                        modifier = Modifier.weight(1f),
+                        label = { Text(option.label) },
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+            SectionHeader(Icons.Default.Palette, "Appearance")
+            Text("Theme", style = MaterialTheme.typography.labelLarge)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                Palette.entries.forEachIndexed { index, option ->
+                    SegmentedButton(
+                        selected = selectedPalette == option,
+                        onClick = { selectedPalette = option },
+                        shape = SegmentedButtonDefaults.itemShape(index, Palette.entries.size),
+                        modifier = Modifier.weight(1f),
+                        label = { Text(option.label) },
+                    )
+                }
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
             SectionHeader(Icons.Default.Tune, "Controller profile")
@@ -463,6 +512,12 @@ internal fun Settings(
         )
     }
 }
+
+internal fun settingsHaveChanges(
+    connectionDirty: Boolean,
+    display: Display,
+    draft: Display,
+): Boolean = connectionDirty || display != draft
 
 @Composable
 private fun SectionHeader(icon: ImageVector, label: String) {

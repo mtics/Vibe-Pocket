@@ -9,11 +9,13 @@ import au.edu.uts.vibepocket.ui.control.InputButton
 import au.edu.uts.vibepocket.ui.control.LabelPlacement
 import au.edu.uts.vibepocket.ui.control.Layout
 import au.edu.uts.vibepocket.ui.control.Mode
+import au.edu.uts.vibepocket.ui.preference.Hand
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +32,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 
 @Composable
 internal fun Actions(
@@ -45,56 +48,60 @@ internal fun Actions(
     onMode: (String) -> Boolean,
     blocked: Boolean,
     layout: Layout,
+    hand: Hand,
     modifier: Modifier = Modifier,
 ) {
     val directions = listOf("up", "down", "left", "right")
         .associateWith { catalog.find("navigate", direction = it) }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(layout.gap)) {
-        Row(
-            Modifier.fillMaxWidth().height(layout.pad),
-            horizontalArrangement = Arrangement.spacedBy(layout.actionGap),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Pad(
-                directions = directions,
-                snapshot = snapshot,
-                hidNavigationAvailable = hidNavigationAvailable,
-                inFlightIds = inFlightIds,
-                onInput = onInput,
-                onNavigationRepeat = onNavigationRepeat,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                blocked = blocked,
-                directionSize = layout.direction,
-                centerSize = layout.center,
-                modifier = Modifier.size(layout.pad),
-            )
-            Column(
-                modifier = Modifier.weight(1f).fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(layout.gap),
-            ) {
-                Mode(
-                    state = mode,
+        ControlPair(
+            hand = hand,
+            modifier = Modifier.fillMaxWidth().height(layout.pad),
+            gap = layout.actionGap,
+            pad = {
+                Pad(
+                    directions = directions,
                     snapshot = snapshot,
+                    hidNavigationAvailable = hidNavigationAvailable,
                     inFlightIds = inFlightIds,
-                    onMode = onMode,
+                    onInput = onInput,
+                    onNavigationRepeat = onNavigationRepeat,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
                     blocked = blocked,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    directionSize = layout.direction,
+                    centerSize = layout.center,
+                    modifier = Modifier.size(layout.pad),
                 )
-                Slot(
-                    catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
-                    onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
-                )
-                Slot(
-                    catalog.find("new_task"), "New task", snapshot, inFlightIds,
-                    onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
-                )
-                Slot(
-                    catalog.find("approve"), "Accept", snapshot, inFlightIds,
-                    onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
-                )
-            }
-        }
+            },
+            actions = {
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(layout.gap),
+                ) {
+                    Mode(
+                        state = mode,
+                        snapshot = snapshot,
+                        inFlightIds = inFlightIds,
+                        onMode = onMode,
+                        blocked = blocked,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                    Slot(
+                        catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
+                        onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
+                    )
+                    Slot(
+                        catalog.find("new_task"), "New task", snapshot, inFlightIds,
+                        onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
+                    )
+                    Slot(
+                        catalog.find("approve"), "Accept", snapshot, inFlightIds,
+                        onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
+            },
+        )
         Row(
             Modifier.fillMaxWidth().height(layout.safety),
             horizontalArrangement = Arrangement.spacedBy(layout.gap),
@@ -127,62 +134,67 @@ internal fun LandscapeActions(
     onMode: (String) -> Boolean,
     blocked: Boolean,
     layout: Layout,
+    hand: Hand,
     modifier: Modifier = Modifier,
 ) {
     val directions = listOf("up", "down", "left", "right")
         .associateWith { catalog.find("navigate", direction = it) }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(layout.gap)) {
-        Row(
-            Modifier.fillMaxWidth().height(layout.pad),
-            horizontalArrangement = Arrangement.spacedBy(layout.actionGap),
-        ) {
-            Pad(
-                directions = directions,
-                snapshot = snapshot,
-                hidNavigationAvailable = hidNavigationAvailable,
-                inFlightIds = inFlightIds,
-                onInput = onInput,
-                onNavigationRepeat = onNavigationRepeat,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                blocked = blocked,
-                directionSize = layout.direction,
-                centerSize = layout.center,
-                modifier = Modifier.size(layout.pad),
-            )
-            Column(
-                Modifier.weight(1f).fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(layout.gap),
-            ) {
-                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(layout.gap)) {
-                    Mode(
-                        state = mode,
-                        snapshot = snapshot,
-                        inFlightIds = inFlightIds,
-                        onMode = onMode,
-                        blocked = blocked,
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    Slot(
-                        catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
-                        onInput, onVoiceStart, onVoiceStop, blocked,
-                        Modifier.weight(1f).fillMaxHeight(),
-                    )
+        ControlPair(
+            hand = hand,
+            modifier = Modifier.fillMaxWidth().height(layout.pad),
+            gap = layout.actionGap,
+            pad = {
+                Pad(
+                    directions = directions,
+                    snapshot = snapshot,
+                    hidNavigationAvailable = hidNavigationAvailable,
+                    inFlightIds = inFlightIds,
+                    onInput = onInput,
+                    onNavigationRepeat = onNavigationRepeat,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
+                    blocked = blocked,
+                    directionSize = layout.direction,
+                    centerSize = layout.center,
+                    modifier = Modifier.size(layout.pad),
+                )
+            },
+            actions = {
+                Column(
+                    Modifier.weight(1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(layout.gap),
+                ) {
+                    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(layout.gap)) {
+                        Mode(
+                            state = mode,
+                            snapshot = snapshot,
+                            inFlightIds = inFlightIds,
+                            onMode = onMode,
+                            blocked = blocked,
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        Slot(
+                            catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
+                            onInput, onVoiceStart, onVoiceStop, blocked,
+                            Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
+                    Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(layout.gap)) {
+                        Slot(
+                            catalog.find("new_task"), "New task", snapshot, inFlightIds,
+                            onInput, onVoiceStart, onVoiceStop, blocked,
+                            Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        Slot(
+                            catalog.find("approve"), "Accept", snapshot, inFlightIds,
+                            onInput, onVoiceStart, onVoiceStop, blocked,
+                            Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
                 }
-                Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(layout.gap)) {
-                    Slot(
-                        catalog.find("new_task"), "New task", snapshot, inFlightIds,
-                        onInput, onVoiceStart, onVoiceStop, blocked,
-                        Modifier.weight(1f).fillMaxHeight(),
-                    )
-                    Slot(
-                        catalog.find("approve"), "Accept", snapshot, inFlightIds,
-                        onInput, onVoiceStart, onVoiceStop, blocked,
-                        Modifier.weight(1f).fillMaxHeight(),
-                    )
-                }
-            }
-        }
+            },
+        )
         Row(
             Modifier.fillMaxWidth().height(layout.safety),
             horizontalArrangement = Arrangement.spacedBy(layout.gap),
@@ -200,6 +212,31 @@ internal fun LandscapeActions(
         }
     }
 }
+
+@Composable
+private fun ControlPair(
+    hand: Hand,
+    modifier: Modifier,
+    gap: Dp,
+    pad: @Composable RowScope.() -> Unit,
+    actions: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(gap),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (padFirst(hand)) {
+            pad()
+            actions()
+        } else {
+            actions()
+            pad()
+        }
+    }
+}
+
+internal fun padFirst(hand: Hand): Boolean = hand == Hand.LEFT
 
 @Composable
 private fun Pad(

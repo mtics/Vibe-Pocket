@@ -9,6 +9,8 @@ import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.ui.control.modelSelectionAllowed
 import au.edu.uts.vibepocket.ui.control.inputInteractive
 import au.edu.uts.vibepocket.ui.control.voiceControlAvailable
+import au.edu.uts.vibepocket.ui.preference.Hand
+import au.edu.uts.vibepocket.ui.preference.State as Display
 import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -141,6 +143,14 @@ class UiRobustnessTest {
         )
 
         assertTrue(contrastRatio(content, background) >= 4.5f)
+    }
+
+    @Test
+    fun settingsSaveTracksConnectionAndAppearanceDrafts() {
+        val display = Display()
+        assertFalse(settingsHaveChanges(false, display, display))
+        assertTrue(settingsHaveChanges(true, display, display))
+        assertTrue(settingsHaveChanges(false, display, display.copy(hand = Hand.LEFT)))
     }
 
     @Test

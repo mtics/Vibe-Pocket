@@ -216,9 +216,12 @@ The main Control screen keeps the complete working surface in one place:
 Delete uses two gestures on the default layer: tap removes one character and
 hold clears the full visible draft.
 
-Settings is a modal surface for Bluetooth host selection, layer names and
-colors, gesture mappings, workflow prompts, and advanced connection recovery.
-Normal pairing does not expose or require credentials.
+Settings is a full-screen configuration surface for Bluetooth host selection,
+right- or left-handed control layout, Light/System/Dark appearance, layer names
+and colors, gesture mappings, workflow prompts, and advanced connection
+recovery. Changes to local appearance and connection recovery are committed by
+the persistent Save action. Normal pairing does not expose or require
+credentials.
 
 ## Configuration
 

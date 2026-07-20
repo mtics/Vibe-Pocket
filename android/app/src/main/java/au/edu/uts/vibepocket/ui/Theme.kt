@@ -68,9 +68,9 @@ internal val LayerColors = listOf(
 )
 
 @Composable
-internal fun Theme(content: @Composable () -> Unit) {
+internal fun Theme(dark: Boolean = false, content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = LightColors,
+        colorScheme = if (dark) DarkColors else LightColors,
         content = content,
     )
 }

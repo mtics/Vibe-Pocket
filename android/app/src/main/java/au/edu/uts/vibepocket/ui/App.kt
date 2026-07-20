@@ -16,6 +16,7 @@ import au.edu.uts.vibepocket.session.Session
 import au.edu.uts.vibepocket.ui.control.Screen
 import au.edu.uts.vibepocket.ui.control.Voice
 import au.edu.uts.vibepocket.ui.control.dedicatedVoiceInput
+import au.edu.uts.vibepocket.ui.preference.State as Display
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -83,7 +84,12 @@ internal fun voiceStopTarget(ownerInputId: String?, visibleInputId: String): Str
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-internal fun App(viewModel: Session, hidController: Keyboard) {
+internal fun App(
+    viewModel: Session,
+    hidController: Keyboard,
+    display: Display,
+    onDisplay: (Display) -> Boolean,
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val snackbar = remember { SnackbarHostState() }
@@ -357,6 +363,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                     onLayer = onLayer,
                     voiceInput = dedicatedVoiceInput(snapshot, voiceOwnerInputId),
                     onSettings = { showSettings = true },
+                    hand = display.hand,
                 )
             }
         }
@@ -388,8 +395,14 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
             inFlightIds = state.inFlightIds,
             contextTransitionPending = state.contextTransitionPending,
             connectionError = state.error,
+            display = display,
             onDismiss = { showSettings = false },
             onSaveConnection = viewModel::connect,
+            onDisplay = { selected ->
+                onDisplay(selected).also { saved ->
+                    if (!saved) viewModel.reportLocalError("Vibe Pocket could not save the appearance setting.")
+                }
+            },
             onDisconnect = viewModel::disconnect,
             onResetProfile = { confirmReset = true },
             onPairHid = onPairHid,
