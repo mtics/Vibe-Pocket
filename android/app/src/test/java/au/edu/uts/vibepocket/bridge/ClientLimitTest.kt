@@ -31,6 +31,20 @@ class ClientLimitTest {
     }
 
     @Test
+    fun incompatibleClaimNamesBothProtocolsAndTheRecoveryAction() {
+        val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
+        val response = JSONObject().put("protocolVersion", ProtocolVersion - 2)
+
+        val failure = assertThrows(Failure::class.java) { decodePairingClaim(invitation, response) }
+
+        assertEquals(
+            "The Bridge uses pairing protocol ${ProtocolVersion - 2}, but this app requires " +
+                "$ProtocolVersion. Update Vibe Pocket Bridge Host and try again.",
+            failure.message,
+        )
+    }
+
+    @Test
     fun currentProtocolClaimRejectsActiveOrIncompleteCapabilities() {
         val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
         val response = JSONObject()

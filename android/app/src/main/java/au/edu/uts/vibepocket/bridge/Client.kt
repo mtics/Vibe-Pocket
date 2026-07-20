@@ -208,8 +208,14 @@ class Http(
 }
 
 internal fun decodePairingClaim(invitation: Invitation, response: JSONObject): IssuedCredential {
-    if (response.optInt("protocolVersion", -1) != ProtocolVersion) {
-        throw Failure("The Bridge uses an incompatible pairing protocol.")
+    val bridgeProtocol = response.optInt("protocolVersion", -1)
+    if (bridgeProtocol != ProtocolVersion) {
+        val problem = if (bridgeProtocol > 0) {
+            "The Bridge uses pairing protocol $bridgeProtocol, but this app requires $ProtocolVersion."
+        } else {
+            "The Bridge did not report a valid pairing protocol; this app requires $ProtocolVersion."
+        }
+        throw Failure("$problem Update Vibe Pocket Bridge Host and try again.")
     }
     val capabilities = response.optJSONArray("capabilities")
     val values = if (capabilities == null) emptySet() else (0 until capabilities.length())
