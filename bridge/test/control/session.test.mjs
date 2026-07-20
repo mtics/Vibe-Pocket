@@ -33,8 +33,8 @@ class FakeDesktop {
     options: [{ id: "gpt-test", label: "Codex", selected: true }],
   };
   agents = [
-    { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true },
-    { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false },
+    { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true, freshness: "fresh", actionable: true },
+    { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false, freshness: "fresh", actionable: true },
   ];
 
   async status() {
@@ -60,6 +60,7 @@ class FakeDesktop {
         workflow: true,
       },
       agents: this.agents,
+      tasks: { availability: "fresh", message: null },
       voice: this.voice,
       mode: { available: true, label: "Codex" },
       access: { available: true, label: "Workspace" },
@@ -157,9 +158,10 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controller.activeLayerId, "layer-1");
   assert.equal(snapshot.controller.taskState, "waiting");
   assert.deepEqual(snapshot.controller.agents, [
-    { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true },
-    { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false },
+    { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true, freshness: "fresh", actionable: true },
+    { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false, freshness: "fresh", actionable: true },
   ]);
+  assert.deepEqual(snapshot.controller.tasks, { availability: "fresh", message: null });
   assert.equal(snapshot.controller.focusedAgentId, "agent-111111111111111111111111");
   assert.equal(snapshot.controller.foreground, true);
   assert.deepEqual(snapshot.controller.voice, { available: true, active: false });
@@ -258,6 +260,30 @@ test("keeps more than six visible agents up to the bounded controller limit", as
   const agents = (await service.snapshot()).controller.agents;
   assert.equal(agents.length, 24);
   assert.equal(agents.filter(({ focused }) => focused).length, 1);
+});
+
+test("retains a stale task catalog without advertising Agent focus", async () => {
+  const desktop = new FakeDesktop();
+  desktop.agents = desktop.agents.map((agent) => ({
+    ...agent,
+    focused: false,
+    freshness: "stale",
+    actionable: false,
+  }));
+  const status = desktop.status.bind(desktop);
+  desktop.status = async () => ({
+    ...await status(),
+    tasks: { availability: "stale", message: "Task catalog refresh failed." },
+  });
+  const service = makeService(desktop);
+  await service.start();
+
+  const snapshot = await service.snapshot();
+
+  assert.equal(snapshot.controller.tasks.availability, "stale");
+  assert.equal(snapshot.controller.agents.length, 2);
+  assert.ok(snapshot.controller.agents.every((agent) => agent.actionable === false));
+  assert.equal(snapshot.controls["focus-agent"], false);
 });
 
 test("clears a stale agent focus when the desktop no longer reports a selected task", async () => {

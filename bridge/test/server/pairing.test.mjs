@@ -39,7 +39,7 @@ test("a lost claim response retries the same credential only for the same phone 
     token: DEVICE_TOKEN,
     credentialState: "pending",
     credentialExpiresAt: "1970-01-01T00:05:01.000Z",
-    protocolVersion: 10,
+    protocolVersion: 11,
     capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results", "binding_context"],
   };
   assert.deepEqual(pairing.claim(CODE, NONCE), expected);

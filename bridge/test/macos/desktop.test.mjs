@@ -563,6 +563,12 @@ test("retains the last task catalog across a transient catalog refresh failure",
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
+      get freshness() {
+        return {
+          state: failCatalog ? "stale" : "fresh",
+          error: failCatalog ? "temporary app-server failure" : null,
+        };
+      },
       async resolveVisibleAgents() {
         if (failCatalog) throw new Error("temporary app-server failure");
         return agents;
@@ -576,12 +582,20 @@ test("retains the last task catalog across a transient catalog refresh failure",
     }),
   });
 
-  assert.deepEqual((await controller.status()).agents, agents);
+  const initial = await controller.status();
+  assert.deepEqual(initial.agents, agents);
+  assert.deepEqual(initial.tasks, { availability: "fresh", message: null });
   failCatalog = true;
   const recovered = await controller.status();
 
-  assert.deepEqual(recovered.agents, agents);
-  assert.equal(recovered.controls["focus-agent"], true);
+  assert.deepEqual(recovered.agents, agents.map((agent) => ({
+    ...agent,
+    focused: false,
+    freshness: "stale",
+    actionable: false,
+  })));
+  assert.deepEqual(recovered.tasks, { availability: "stale", message: "temporary app-server failure" });
+  assert.equal(recovered.controls["focus-agent"], false);
 });
 
 test("serializes native Agent navigation behind an in-flight Accessibility scan", async () => {

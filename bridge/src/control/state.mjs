@@ -81,12 +81,17 @@ export class State {
   apply(result) {
     this.#observedAt = Date.now();
     this.#observationFresh = true;
+    const desktop = normalizeDesktop(result);
+    const controls = normalizeControls(result.controls);
+    controls["focus-agent"] = controls["focus-agent"]
+      && desktop.tasks.availability === "fresh"
+      && desktop.agents.some((agent) => agent.actionable);
     this.#status = {
       state: "ready",
       message: result.message ?? null,
-      controls: normalizeControls(result.controls),
+      controls,
     };
-    this.#desktop = normalizeDesktop(result);
+    this.#desktop = desktop;
     this.#task.state = this.#desktop.taskState === "error" ? "error" : "active";
     this.#task.canInterrupt = this.#status.controls.stop;
     this.#task.terminalTail = result.message ?? "Ready to control Vibe Pocket Codex tasks.";
@@ -201,6 +206,7 @@ function emptyDesktop() {
     foreground: false,
     taskState: "idle",
     agents: [],
+    tasks: { availability: "unavailable", message: null },
     focusedAgentIndex: -1,
     focusedAgentId: null,
     voice: { available: false, active: false },
@@ -232,6 +238,8 @@ function normalizeDesktop(result) {
         label: agent.label.slice(0, 64),
         state: TASK_STATES.has(agent.state) ? agent.state : "idle",
         focused: agent.focused === true,
+        freshness: agent.freshness === "stale" ? "stale" : "fresh",
+        actionable: agent.actionable !== false && agent.freshness !== "stale",
       }))
     : [];
   const focusedAgentId = agents.find((agent) => agent.focused)?.id ?? null;
@@ -240,6 +248,7 @@ function normalizeDesktop(result) {
     foreground: result.foreground === true,
     taskState: TASK_STATES.has(result.taskState) ? result.taskState : "idle",
     agents: focusedAgents,
+    tasks: normalizeTasks(result.tasks, focusedAgents),
     focusedAgentIndex: focusedAgentId ? focusedAgents.findIndex((agent) => agent.id === focusedAgentId) : -1,
     focusedAgentId,
     voice: normalizeVoice(result.voice),
@@ -248,6 +257,18 @@ function normalizeDesktop(result) {
     model: normalizeModel(result.model, result.reasoning?.modelLabel),
     reasoning: normalizeReasoning(result.reasoning),
     userInput: normalizeUserInput(result.userInput),
+  };
+}
+
+function normalizeTasks(value, agents) {
+  const availability = value?.availability === "fresh"
+    ? "fresh"
+    : value?.availability === "stale" || agents.some((agent) => agent.freshness === "stale")
+      ? "stale"
+      : "unavailable";
+  return {
+    availability,
+    message: typeof value?.message === "string" ? value.message.slice(0, 500) : null,
   };
 }
 

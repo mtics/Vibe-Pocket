@@ -137,7 +137,7 @@ test("requires every HTTP server call site to supply readiness", () => {
 });
 
 test("health remains live while readiness waits for service startup", async () => {
-  assert.equal(PROTOCOL_VERSION, 10);
+  assert.equal(PROTOCOL_VERSION, 11);
   const readiness = readyReadiness({ ready: false });
   assert.equal(readiness.state, NOT_READY);
   await withServer(async ({ baseUrl }) => {
@@ -296,7 +296,7 @@ test("pairing claims stay gated until a bodyless, repeatable commit", async () =
       token: DEVICE_TOKEN,
       credentialState: "pending",
       credentialExpiresAt: invitation.expiresAt,
-      protocolVersion: 10,
+      protocolVersion: 11,
       capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results", "binding_context"],
     });
 

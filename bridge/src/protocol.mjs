@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 export const PAIRING_CAPABILITIES = Object.freeze([
   "device_credentials",

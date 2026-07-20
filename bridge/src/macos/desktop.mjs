@@ -40,8 +40,8 @@ export class Desktop {
   }
 
   async #statusNow() {
-    const { result, agents } = await this.#observeAgentsNow();
-    if (!this.#threadCatalog) return result;
+    const { result, agents, tasks } = await this.#observeAgentsNow();
+    if (!this.#threadCatalog) return { ...result, agents, tasks };
     let settings = null;
     try {
       settings = await this.#threadCatalog.settings({
@@ -62,6 +62,7 @@ export class Desktop {
     const view = {
       ...result,
       agents,
+      tasks,
       mode: settings?.mode ? { ...settings.mode, available: modeAvailable } : result.mode,
       model: settings?.model ? { ...settings.model, available: modelAvailable } : undefined,
       reasoning: settings?.reasoning ? {
@@ -72,7 +73,7 @@ export class Desktop {
       } : result.reasoning,
       controls: {
         ...result.controls,
-        "focus-agent": agents.some((agent) => !agent.focused),
+        "focus-agent": agents.some((agent) => agent.actionable !== false && !agent.focused),
         "mode-cycle": modeAvailable,
         model: modelAvailable,
         reasoning: reasoningAvailable,
@@ -263,16 +264,30 @@ export class Desktop {
 
   async #observeAgentsNow({ allowCached = true } = {}) {
     const result = await this.#invokeNow("status", [], "");
-    if (!this.#threadCatalog) return { result, agents: result.agents ?? [] };
+    if (!this.#threadCatalog) {
+      return {
+        result,
+        agents: result.agents ?? [],
+        tasks: { availability: "fresh", message: null },
+      };
+    }
     let agents;
+    let tasks;
     try {
       agents = await this.#threadCatalog.resolveVisibleAgents(result.agents);
-      this.#lastAgents = agents;
+      tasks = taskObservation(this.#threadCatalog.freshness);
+      if (tasks.availability === "fresh") this.#lastAgents = agents;
     } catch (error) {
       if (!allowCached) throw error;
-      agents = this.#lastAgents;
+      agents = this.#lastAgents.map((agent) => ({
+        ...agent,
+        focused: false,
+        freshness: "stale",
+        actionable: false,
+      }));
+      tasks = { availability: "stale", message: error.message ?? "The Codex task list is unavailable." };
     }
-    return { result: { ...result, agents }, agents };
+    return { result: { ...result, agents, tasks }, agents, tasks };
   }
 
   async #confirmFocus(agentId) {
@@ -323,6 +338,16 @@ export class Desktop {
     return binding;
   }
 
+}
+
+function taskObservation(value) {
+  const availability = value?.state === "fresh"
+    ? "fresh"
+    : value?.state === "stale" ? "stale" : "unavailable";
+  return {
+    availability,
+    message: typeof value?.error === "string" ? value.error : null,
+  };
 }
 
 function mutationBinding(result, settings, agents) {
