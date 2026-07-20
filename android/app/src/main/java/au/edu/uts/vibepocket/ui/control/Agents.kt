@@ -1,6 +1,8 @@
 package au.edu.uts.vibepocket.ui.control
 
+import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.agentSlots
 import au.edu.uts.vibepocket.ui.colorFor
 import au.edu.uts.vibepocket.ui.iconFor
@@ -43,6 +45,7 @@ import androidx.compose.ui.semantics.collectionInfo
 import androidx.compose.ui.semantics.collectionItemInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -78,9 +81,13 @@ internal fun Agents(
                 modifier = Modifier.size(18.dp),
             )
             Spacer(Modifier.width(8.dp))
-            Text("No active Codex tasks", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                emptyTasksLabel(snapshot.desktop?.tasks ?: Tasks.Unavailable),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     } else {
+        val catalogStale = snapshot.desktop?.tasks?.availability != Tasks.Availability.FRESH
         BoxWithConstraints(
             modifier = modifier
                 .fillMaxWidth()
@@ -103,7 +110,9 @@ internal fun Agents(
                     key = { _, slot -> requireNotNull(slot.agent).id },
                 ) { index, slot ->
                     val agent = requireNotNull(slot.agent)
-                    val color = colorFor(agent.activity)
+                    val stale = catalogStale || agent.freshness != Agent.Freshness.FRESH || !agent.actionable
+                    val color = if (stale) MaterialTheme.colorScheme.onSurfaceVariant else colorFor(agent.activity)
+                    val status = agentStatusLabel(agent)
                     val loading = "agent:${agent.id}" in inFlightIds
                     val showProgress = progressVisible(loading)
                     Row(
@@ -126,8 +135,13 @@ internal fun Agents(
                                     columnIndex = index,
                                     columnSpan = 1,
                                 )
-                                contentDescription = "${agent.label}, ${labelFor(agent.activity)}"
+                                contentDescription = listOfNotNull(
+                                    agent.label,
+                                    status,
+                                    "unavailable".takeIf { stale },
+                                ).joinToString(", ")
                                 stateDescription = agentPositionDescription(slot.focused, index, slots.size)
+                                if (stale) disabled()
                             }
                             .clickable(enabled = slot.canFocus && !loading && !blocked, onClick = { onAgent(agent.id) })
                             .padding(horizontal = 10.dp),
@@ -151,7 +165,7 @@ internal fun Agents(
                                 },
                             )
                             if (!largeText) {
-                                Text(labelFor(agent.activity), color = color, style = MaterialTheme.typography.labelSmall)
+                                Text(status, color = color, style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -166,3 +180,12 @@ internal fun agentChipWidth(available: Dp, gap: Dp = 8.dp, largeText: Boolean = 
 
 internal fun agentPositionDescription(focused: Boolean, index: Int, total: Int): String =
     listOfNotNull(if (focused) "Focused" else null, "${index + 1} of $total").joinToString(", ")
+
+internal fun agentStatusLabel(agent: Agent): String =
+    if (agent.freshness == Agent.Freshness.STALE || !agent.actionable) "Last known" else labelFor(agent.activity)
+
+internal fun emptyTasksLabel(tasks: Tasks): String = when (tasks.availability) {
+    Tasks.Availability.FRESH -> "No active Codex tasks"
+    Tasks.Availability.STALE -> "Last known tasks are unavailable"
+    Tasks.Availability.UNAVAILABLE -> "Codex task list unavailable"
+}

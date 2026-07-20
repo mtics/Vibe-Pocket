@@ -1,12 +1,14 @@
 package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Activity
+import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Capabilities
 import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
@@ -171,6 +173,26 @@ class PresentationTest {
         assertEquals(175.dp, agentChipWidth(358.dp))
         assertEquals(240.dp, agentChipWidth(240.dp))
         assertEquals(298.dp, agentChipWidth(298.dp, largeText = true))
+    }
+
+    @Test
+    fun taskCatalogLabelsDistinguishEmptyFromUnavailable() {
+        val stale = Agent(
+            id = "agent-aaaaaaaaaaaaaaaaaaaaaaaa",
+            label = "Last task",
+            activity = Activity.IDLE,
+            focused = false,
+            freshness = Agent.Freshness.STALE,
+            actionable = false,
+        )
+
+        assertEquals("Last known", agentStatusLabel(stale))
+        assertEquals("No active Codex tasks", emptyTasksLabel(Tasks.Fresh))
+        assertEquals(
+            "Last known tasks are unavailable",
+            emptyTasksLabel(Tasks(Tasks.Availability.STALE, null)),
+        )
+        assertEquals("Codex task list unavailable", emptyTasksLabel(Tasks.Unavailable))
     }
 
     @Test

@@ -5,6 +5,7 @@ import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.MaxAgents
 import au.edu.uts.vibepocket.control.Reasoning
+import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.control.agentSlots
 import au.edu.uts.vibepocket.control.commandFor
@@ -82,6 +83,9 @@ class JsonTest {
         assertFalse(snapshot.desktop?.agents?.first()?.focused == true)
         assertEquals(Activity.THINKING, snapshot.desktop?.agents?.first()?.activity)
         assertEquals(Activity.UNREAD, snapshot.desktop?.agents?.last()?.activity)
+        assertEquals(Agent.Freshness.FRESH, snapshot.desktop?.agents?.first()?.freshness)
+        assertTrue(snapshot.desktop?.agents?.first()?.actionable == true)
+        assertEquals(Tasks.Availability.FRESH, snapshot.desktop?.tasks?.availability)
         assertEquals(6, snapshot.desktop?.profile?.layers?.size)
         assertEquals(5, snapshot.desktop?.profile?.inputs?.size)
         assertEquals("Review this change.", snapshot.desktop?.profile?.workflows?.first()?.prompt)
@@ -96,6 +100,24 @@ class JsonTest {
         assertEquals(3, snapshot.desktop?.gestures?.size)
         assertTrue(snapshot.agentFocusEnabled("agent-0123456789abcdef01234567"))
         assertFalse(snapshot.agentFocusEnabled("agent-ffffffffffffffffffffffff"))
+    }
+
+    @Test
+    fun staleTaskCatalogRemainsVisibleButCannotFocusAgents() {
+        val root = JSONObject(CONTROLLER_SNAPSHOT)
+        root.getJSONObject("controller")
+            .put("tasks", JSONObject().put("availability", "stale").put("message", "Catalog offline"))
+            .getJSONArray("agents")
+            .getJSONObject(0)
+            .put("freshness", "stale")
+            .put("actionable", false)
+
+        val snapshot = decode(root)
+
+        assertEquals(Tasks.Availability.STALE, snapshot.desktop?.tasks?.availability)
+        assertEquals("Catalog offline", snapshot.desktop?.tasks?.message)
+        assertEquals(Agent.Freshness.STALE, snapshot.desktop?.agents?.first()?.freshness)
+        assertFalse(snapshot.agentFocusEnabled("agent-0123456789abcdef01234567"))
     }
 
     @Test
@@ -146,7 +168,9 @@ class JsonTest {
                     .put("id", "agent-${index.toString(16).padStart(24, '0')}")
                     .put("label", "Task $index")
                     .put("state", if (index == 12) "waiting" else "idle")
-                    .put("focused", index == 23),
+                    .put("focused", index == 23)
+                    .put("freshness", "fresh")
+                    .put("actionable", true),
             )
         }
         root.getJSONObject("controller")
@@ -244,7 +268,7 @@ class JsonTest {
                     "focusedAgentIndex":99,
                     "focusedAgentId":"agent-bbbbbbbbbbbbbbbbbbbbbbbb",
                     "agents":[
-                      {"id":"agent-aaaaaaaaaaaaaaaaaaaaaaaa","label":"A","state":"unknown","focused":false},
+                      {"id":"agent-aaaaaaaaaaaaaaaaaaaaaaaa","label":"A","state":"unknown","focused":false,"freshness":"fresh","actionable":true},
                       {"id":"agent-not-hex","label":"Invalid ID","state":"complete"}
                     ],
                     "mode":{"available":"yes","label":null}
@@ -346,10 +370,11 @@ class JsonTest {
                 "taskState":"waiting",
                 "focusedAgentIndex":0,
                 "focusedAgentId":"agent-0123456789abcdef01234567",
+                "tasks":{"availability":"fresh","message":null},
                 "voice":{"available":true,"active":false},
                 "agents":[
-                  {"id":"agent-0123456789abcdef01234567","label":"Turing","state":"thinking","focused":false},
-                  {"id":"agent-89abcdef0123456789abcdef","label":"Dalton","state":"unread","focused":false}
+                  {"id":"agent-0123456789abcdef01234567","label":"Turing","state":"thinking","focused":false,"freshness":"fresh","actionable":true},
+                  {"id":"agent-89abcdef0123456789abcdef","label":"Dalton","state":"unread","focused":false,"freshness":"fresh","actionable":true}
                 ],
                 "mode":{"available":true,"label":"Codex"},
                 "access":{"available":true,"label":"Workspace"},

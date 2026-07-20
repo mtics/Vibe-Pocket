@@ -9,6 +9,7 @@ import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.Voice
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -62,6 +63,22 @@ class StateTest {
 
         assertEquals(State.Kind.STALE, state.kind)
         assertEquals("Connection stale", state.title)
+    }
+
+    @Test
+    fun staleTaskCatalogNeverLooksReady() {
+        val snapshot = snapshot(Activity.IDLE)
+        val desktop = requireNotNull(snapshot.desktop)
+
+        val state = snapshot.copy(
+            desktop = desktop.copy(
+                tasks = Tasks(Tasks.Availability.STALE, "Catalog refresh failed."),
+            ),
+        ).state()
+
+        assertEquals(State.Kind.STALE, state.kind)
+        assertEquals("Task list stale", state.title)
+        assertEquals("Catalog refresh failed.", state.detail)
     }
 
     private fun snapshot(

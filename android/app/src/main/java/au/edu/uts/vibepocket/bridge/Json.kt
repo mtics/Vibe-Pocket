@@ -13,6 +13,7 @@ import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.control.decodeAction
 import au.edu.uts.vibepocket.control.encode
@@ -90,6 +91,12 @@ private fun decodeDesktop(value: JSONObject?): Desktop? {
             label = label,
             activity = Activity.fromWire(agent.safeString("state").orEmpty()),
             focused = agent.optBoolean("focused", false),
+            freshness = if (agent.safeString("freshness") == "fresh") {
+                Agent.Freshness.FRESH
+            } else {
+                Agent.Freshness.STALE
+            },
+            actionable = agent.opt("actionable") == true,
         )
     }.take(MaxAgents)
     val focused = value.optInt("focusedAgentIndex", -1).takeIf { it in agents.indices } ?: -1
@@ -114,7 +121,18 @@ private fun decodeDesktop(value: JSONObject?): Desktop? {
         model = decodeModel(value.optJSONObject("model")),
         reasoning = decodeReasoning(value.optJSONObject("reasoning")),
         question = decodeQuestion(value.optJSONObject("userInput")),
+        tasks = decodeTasks(value.optJSONObject("tasks")),
     )
+}
+
+private fun decodeTasks(value: JSONObject?): Tasks {
+    value ?: return Tasks.Unavailable
+    val availability = when (value.safeString("availability")) {
+        "fresh" -> Tasks.Availability.FRESH
+        "stale" -> Tasks.Availability.STALE
+        else -> Tasks.Availability.UNAVAILABLE
+    }
+    return Tasks(availability, value.safeString("message")?.take(500))
 }
 
 private fun decodeQuestion(value: JSONObject?): Question? {

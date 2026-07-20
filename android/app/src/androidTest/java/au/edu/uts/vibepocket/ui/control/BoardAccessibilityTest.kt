@@ -1,8 +1,10 @@
 package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Activity
+import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.Tasks
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -12,6 +14,7 @@ import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasStateDescription
@@ -70,6 +73,28 @@ class BoardAccessibilityTest {
         rule.runOnIdle { assertTrue(skip.action()) }
 
         rule.onNode(hasStateDescription("Ready. Vibe Pocket UI")).assertIsFocused()
+    }
+
+    @Test
+    fun staleTaskRemainsVisibleButCannotReceiveAnAgentAction() {
+        val snapshot = Fixtures.snapshot()
+        val desktop = requireNotNull(snapshot.desktop)
+        val stale = snapshot.copy(
+            desktop = desktop.copy(
+                tasks = Tasks(Tasks.Availability.STALE, "Catalog offline"),
+                agents = desktop.agents.map { agent ->
+                    agent.copy(
+                        freshness = Agent.Freshness.STALE,
+                        actionable = false,
+                    )
+                },
+            ),
+        )
+        rule.setContent { BoardPreview(stale) }
+
+        rule.onNodeWithContentDescription("Vibe Pocket UI, Last known, unavailable")
+            .assertIsDisplayed()
+            .assertIsNotEnabled()
     }
 
     @Test

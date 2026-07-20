@@ -43,8 +43,16 @@ data class Snapshot(
 
     fun agentFocusEnabled(agentId: String): Boolean {
         val state = desktop ?: return false
-        return capabilities.focusAgent && state.agents.any { it.id == agentId }
+        return canFocusAgents() && state.agents.any {
+                it.id == agentId && it.freshness == Agent.Freshness.FRESH && it.actionable
+            }
     }
+
+    private fun canFocusAgents(): Boolean = desktop?.let { state ->
+        capabilities.focusAgent &&
+            state.tasks.availability == Tasks.Availability.FRESH &&
+            state.agents.any { it.freshness == Agent.Freshness.FRESH && it.actionable }
+    } == true
 
     private fun actionEnabled(action: Action): Boolean = when (action.type) {
         "approve" -> desktop?.let {
@@ -61,7 +69,7 @@ data class Snapshot(
             desktop?.foreground == true && desktop.question == null
         "access_cycle" -> capabilities.accessCycle && desktop?.foreground == true
         "delete_backward", "clear_input" -> capabilities.clearInput
-        "focus_next", "focus_agent" -> capabilities.focusAgent
+        "focus_next", "focus_agent" -> canFocusAgents()
         "select_layer" -> desktop?.profile?.layers?.any { it.id == action.layerId } == true
         "navigate" -> capabilities.navigate && desktop?.foreground == true
         "reasoning_depth" -> desktop?.let {
@@ -128,6 +136,7 @@ data class Desktop(
     val model: Model = Model.Unavailable,
     val reasoning: Reasoning,
     val question: Question? = null,
+    val tasks: Tasks = Tasks.Fresh,
 )
 
 data class Question(
@@ -151,12 +160,35 @@ data class Agent(
     val label: String,
     val activity: Activity,
     val focused: Boolean,
+    val freshness: Freshness = Freshness.FRESH,
+    val actionable: Boolean = true,
 ) {
+    enum class Freshness {
+        FRESH,
+        STALE,
+    }
+
     internal data class Slot(
         val agent: Agent?,
         val canFocus: Boolean,
         val focused: Boolean,
     )
+}
+
+data class Tasks(
+    val availability: Availability,
+    val message: String?,
+) {
+    enum class Availability {
+        FRESH,
+        STALE,
+        UNAVAILABLE,
+    }
+
+    companion object {
+        val Fresh = Tasks(Availability.FRESH, null)
+        val Unavailable = Tasks(Availability.UNAVAILABLE, null)
+    }
 }
 
 internal const val MaxAgents = 24

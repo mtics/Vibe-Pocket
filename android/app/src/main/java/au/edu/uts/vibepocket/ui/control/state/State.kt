@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.ui.control.state
 
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.Tasks
 
 internal data class State(
     val kind: Kind,
@@ -40,6 +41,20 @@ internal fun Snapshot.state(): State {
             title = "Bridge unavailable",
             task = null,
             detail = status.message?.takeIf(String::isNotBlank),
+        )
+    }
+
+    if (desktop.tasks.availability != Tasks.Availability.FRESH) {
+        return State(
+            kind = State.Kind.STALE,
+            activity = desktop.activity,
+            title = if (desktop.tasks.availability == Tasks.Availability.STALE) {
+                "Task list stale"
+            } else {
+                "Task list unavailable"
+            },
+            task = desktop.agents.firstOrNull()?.label,
+            detail = desktop.tasks.message ?: "Showing the last confirmed Codex tasks.",
         )
     }
 
