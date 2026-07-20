@@ -293,7 +293,8 @@ Vibe-Pocket/
 |   |-- src/profile/          Profile validation and persistence
 |   |-- src/server/           Authenticated HTTP and event server
 |   `-- src/task/             Task discovery, activity, settings, and links
-`-- CONTROL_TRANSPORT.md      Transport decision and compatibility boundary
+|-- CONTROL_TRANSPORT.md      Transport decision and compatibility boundary
+`-- UI_PLAN.md                Fixed-board UI contract and verification gates
 ```
 
 Directory context carries domain meaning, so local types intentionally use
