@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.bridge
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.control.Command
+import au.edu.uts.vibepocket.control.encode
 import au.edu.uts.vibepocket.control.Snapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

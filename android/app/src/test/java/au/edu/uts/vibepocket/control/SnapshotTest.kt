@@ -17,6 +17,8 @@ class SnapshotTest {
 
         assertTrue(snapshot(action).inputEnabled(InputId))
         assertFalse(snapshot(action, foreground = false).inputEnabled(InputId))
+        assertFalse(snapshot(action, activity = Activity.EXECUTING).inputEnabled(InputId))
+        assertFalse(snapshot(action, activity = Activity.THINKING).inputEnabled(InputId))
         assertFalse(
             snapshot(
                 action,
@@ -40,10 +42,33 @@ class SnapshotTest {
         )
     }
 
+    @Test
+    fun approvalIsDisabledWhileTheTaskIsRunning() {
+        val action = Action("approve")
+        val capabilities = Capabilities(approve = true)
+
+        assertTrue(snapshot(action, capabilities = capabilities).inputEnabled(InputId))
+        assertFalse(
+            snapshot(
+                action,
+                capabilities = capabilities,
+                activity = Activity.THINKING,
+            ).inputEnabled(InputId),
+        )
+        assertFalse(
+            snapshot(
+                action,
+                capabilities = capabilities,
+                activity = Activity.EXECUTING,
+            ).inputEnabled(InputId),
+        )
+    }
+
     private fun snapshot(
         action: Action,
         capabilities: Capabilities = Capabilities(reasoning = true),
         foreground: Boolean = true,
+        activity: Activity = Activity.IDLE,
         question: Question? = null,
     ): Snapshot {
         val input = Input(InputId, Input.Kind.KEY, "Mapped action", "action")
@@ -65,7 +90,7 @@ class SnapshotTest {
                 choices = emptyList(),
                 activeLayerId = layer.id,
                 foreground = foreground,
-                activity = Activity.IDLE,
+                activity = activity,
                 agents = emptyList(),
                 focusedAgentIndex = -1,
                 focusedAgentId = null,

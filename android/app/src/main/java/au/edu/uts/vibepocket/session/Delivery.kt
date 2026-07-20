@@ -27,7 +27,7 @@ internal class Delivery(
     private val dispatcher: CoroutineDispatcher,
     private val client: Client,
     private val store: Store,
-    restored: LoadOutcome<PendingCommand>,
+    restored: LoadOutcome<List<PendingCommand>>,
     private val pending: Pending,
     private val publishPending: () -> Unit,
     private val accepted: (PendingCommand) -> Unit,
@@ -40,25 +40,17 @@ internal class Delivery(
         val epoch: Long,
     )
 
-    private data class Outbound(
-        val command: Command,
-        val uiId: String,
-        val owner: Owner,
-        val family: String?,
-        val transition: ContextTransition?,
-    )
-
     private val lock = Any()
-    private val queue = ArrayDeque<Outbound>()
     private var owner = Owner(config = null, epoch = 0)
-    private var active: Outbound? = null
-    private var outbox = (restored as? LoadOutcome.Loaded)?.value
-    private var outboxUnreadable = restored is LoadOutcome.RecoverableError
+    private val outbox = ArrayDeque((restored as? LoadOutcome.Loaded)?.value.orEmpty())
+    private var outboxUnreadable =
+        restored is LoadOutcome.RecoverableError && !restored.settled
+    private val fresh = mutableMapOf<String, Owner>()
     private var worker: Job? = null
     private var launchRequested = false
 
     init {
-        outbox?.uiId?.let(pending::add)
+        outbox.forEach { pending.add(it.uiId) }
     }
 
     fun bind(config: Config?) {
@@ -67,32 +59,70 @@ internal class Delivery(
     }
 
     fun recover() {
-        val canRecover = synchronized(lock) {
-            owner.config != null && (outbox != null || outboxUnreadable)
-        }
-        if (canRecover) requestWorker()
+        if (synchronized(lock) { canWorkLocked() }) requestWorker()
     }
 
     fun hasPendingResult(): Boolean = synchronized(lock) {
-        outbox != null || outboxUnreadable
+        outbox.isNotEmpty() || outboxUnreadable
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun send(
         command: Command,
         id: String,
         family: String? = null,
         transition: ContextTransition? = null,
     ): Boolean {
-        val shouldLaunch = synchronized(lock) {
-            val currentOwner = owner.takeIf { it.config != null } ?: return false
-            if (outboxUnreadable || outbox != null && active?.owner != currentOwner) return false
-            if (!pending.add(id)) return false
-            if (family != null) coalesce(family, currentOwner)
-            queue.addLast(Outbound(command, id, currentOwner, family, transition))
-            worker == null
+        var saveError: Throwable? = null
+        var saveConfig: Config? = null
+        val saved = synchronized(lock) {
+            val currentOwner = owner.takeIf { it.config != null } ?: return@synchronized false
+            if (outboxUnreadable) return@synchronized false
+            if (transition != null && outbox.isNotEmpty()) return@synchronized false
+            if (outbox.any { it.transition != null }) return@synchronized false
+            if (!pending.add(id)) return@synchronized false
+
+            val persisted = try {
+                PendingCommand(
+                    config = requireNotNull(currentOwner.config),
+                    command = command,
+                    operationId = operationId(),
+                    uiId = id,
+                    transition = transition,
+                )
+            } catch (error: Throwable) {
+                pending.remove(id)
+                saveConfig = currentOwner.config
+                saveError = error
+                return@synchronized false
+            }
+
+            val reserved = try {
+                store.trySavePendingCommand(persisted)
+            } catch (error: Throwable) {
+                pending.remove(id)
+                saveConfig = currentOwner.config
+                saveError = error
+                return@synchronized false
+            }
+            if (!reserved) {
+                pending.remove(id)
+                return@synchronized false
+            }
+
+            outbox.addLast(persisted)
+            fresh[persisted.operationId] = currentOwner
+            true
         }
+
+        if (!saved) {
+            saveError?.let { rejected(requireNotNull(saveConfig), id, null, it) }
+            publishPending()
+            return false
+        }
+
         publishPending()
-        if (shouldLaunch) requestWorker()
+        requestWorker()
         return true
     }
 
@@ -103,7 +133,7 @@ internal class Delivery(
 
     fun clearRetainedTransition(command: PendingCommand): Boolean {
         val retained = synchronized(lock) {
-            outbox?.takeIf {
+            outbox.firstOrNull()?.takeIf {
                 it.operationId == command.operationId &&
                     it.uiId == command.uiId &&
                     it.transition == command.transition &&
@@ -116,12 +146,12 @@ internal class Delivery(
             }
         }.exceptionOrNull()
         if (clearError != null) {
-            retainUnconfirmed(retained, clearError)
+            retain(retained, clearError)
             return false
         }
         synchronized(lock) {
-            if (outbox?.operationId == retained.operationId) outbox = null
-            active = null
+            if (outbox.firstOrNull()?.operationId == retained.operationId) outbox.removeFirst()
+            fresh.remove(retained.operationId)
         }
         pending.remove(retained.uiId)
         publishPending()
@@ -132,35 +162,19 @@ internal class Delivery(
     private fun replaceOwner(config: Config?) {
         val cancelled = synchronized(lock) {
             owner = Owner(config, owner.epoch + 1)
-            val durableUiId = outbox?.uiId
-            val ids = queue.mapTo(mutableSetOf()) { it.uiId }
-            active?.uiId?.takeIf { it != durableUiId }?.let(ids::add)
-            queue.clear()
-            worker to ids
+            fresh.clear()
+            if (config == null) launchRequested = false
+            worker
         }
-        cancelled.first?.cancel()
-        cancelled.second.forEach(pending::remove)
+        cancelled?.cancel()
         publishPending()
-    }
-
-    private fun coalesce(family: String, currentOwner: Owner) {
-        for (index in queue.lastIndex downTo 0) {
-            val queued = queue[index]
-            if (queued.owner != currentOwner || queued.family == null) return
-            if (queued.family == family) {
-                queue.removeAt(index)
-                pending.remove(queued.uiId)
-                return
-            }
-        }
     }
 
     private fun requestWorker() {
         val candidate = scope.launch(dispatcher, start = CoroutineStart.LAZY) { drain() }
         val installed = synchronized(lock) {
-            val hasWork = queue.isNotEmpty() || outbox != null || outboxUnreadable
             when {
-                owner.config == null || !hasWork -> false
+                !canWorkLocked() -> false
                 worker != null -> {
                     launchRequested = true
                     false
@@ -179,6 +193,12 @@ internal class Delivery(
         candidate.start()
     }
 
+    private fun canWorkLocked(): Boolean {
+        val current = owner.config ?: return false
+        if (outboxUnreadable) return true
+        return outbox.firstOrNull()?.config == current
+    }
+
     private suspend fun drain() {
         while (currentCoroutineContext().isActive) {
             if (isOutboxUnreadable()) {
@@ -186,88 +206,84 @@ internal class Delivery(
                 continue
             }
 
-            val persisted = synchronized(lock) { outbox }
-            if (persisted != null) {
-                if (!queryAndSettle(persisted)) return
-                continue
+            val work = synchronized(lock) {
+                val persisted = outbox.firstOrNull() ?: return
+                if (owner.config != persisted.config) return
+                val shouldPost = fresh.remove(persisted.operationId) == owner
+                persisted to shouldPost
             }
-
-            val outbound = synchronized(lock) {
-                queue.removeFirstOrNull()?.also { active = it }
-            } ?: return
-            if (!dispatch(outbound)) return
+            val settled = if (work.second) {
+                postAndSettle(work.first)
+            } else {
+                queryAndSettle(work.first, replayNotFound = true)
+            }
+            if (!settled) return
         }
     }
 
     private fun isOutboxUnreadable(): Boolean = synchronized(lock) { outboxUnreadable }
 
     private fun reloadOutbox(): Boolean {
-        return when (val loaded = store.loadPendingCommandRecord()) {
+        return when (val loaded = store.loadPendingCommandsRecord()) {
             LoadOutcome.Absent -> {
-                synchronized(lock) { outboxUnreadable = false }
+                synchronized(lock) {
+                    outbox.clear()
+                    outboxUnreadable = false
+                }
                 publishPending()
                 true
             }
             is LoadOutcome.Loaded -> {
                 synchronized(lock) {
-                    outbox = loaded.value
+                    outbox.clear()
+                    outbox.addAll(loaded.value)
                     outboxUnreadable = false
+                    fresh.clear()
                 }
-                pending.add(loaded.value.uiId)
+                loaded.value.forEach { pending.add(it.uiId) }
                 publishPending()
                 true
             }
             is LoadOutcome.RecoverableError -> {
+                if (loaded.settled) synchronized(lock) { outboxUnreadable = false }
                 publishPending()
                 false
             }
         }
     }
 
-    private suspend fun dispatch(outbound: Outbound): Boolean {
-        val config = requireNotNull(outbound.owner.config)
-        val persisted = try {
-            PendingCommand(
-                config = config,
-                operationId = operationId(),
-                uiId = outbound.uiId,
-                transition = outbound.transition,
-            ).also(store::savePendingCommand)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            failBeforeDispatch(outbound, error)
-            return false
-        }
-        synchronized(lock) { outbox = persisted }
-        publishPending()
-
+    private suspend fun postAndSettle(persisted: PendingCommand): Boolean {
         currentCoroutineContext().ensureActive()
         return try {
-            client.command(config, outbound.command, persisted.operationId)
+            client.command(persisted.config, persisted.command, persisted.operationId)
             currentCoroutineContext().ensureActive()
             completeSuccess(persisted)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: IOException) {
-            queryAndSettle(persisted)
+            queryAndSettle(persisted, replayNotFound = false)
         } catch (error: Throwable) {
             if ((error as? Failure)?.errorCode == CommandOutcomeIndeterminate) {
-                retainUnconfirmed(persisted, error)
-                false
+                settleAmbiguous(persisted)
             } else {
-                settle(persisted) { rejected(config, persisted.uiId, persisted, error) }
+                settle(persisted) {
+                    rejected(persisted.config, persisted.uiId, persisted, error)
+                }
             }
         }
     }
 
-    private suspend fun queryAndSettle(persisted: PendingCommand): Boolean {
+    private suspend fun queryAndSettle(
+        persisted: PendingCommand,
+        replayNotFound: Boolean,
+    ): Boolean {
+        currentCoroutineContext().ensureActive()
         val result = try {
             client.commandResult(persisted.config, persisted.operationId)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
-            retainUnconfirmed(persisted, null)
+            retain(persisted, null)
             return false
         }
 
@@ -276,49 +292,47 @@ internal class Delivery(
                 CommandStatus.ACCEPTED,
                 CommandStatus.RUNNING,
                 -> {
-                    retainUnconfirmed(persisted, null)
+                    retain(persisted, null)
                     false
                 }
                 CommandStatus.SUCCEEDED -> completeSuccess(persisted)
                 CommandStatus.FAILED -> {
-                    val failure = Failure(
-                        result.error?.message ?: "The Bridge reported that the command failed.",
-                        errorCode = result.error?.code,
-                    )
                     if (result.error?.code == CommandOutcomeIndeterminate) {
-                        retainUnconfirmed(persisted, failure)
-                        false
+                        settleAmbiguous(persisted)
                     } else {
+                        val failure = Failure(
+                            result.error?.message ?: "The Bridge reported that the command failed.",
+                            errorCode = result.error?.code,
+                        )
                         settle(persisted) {
                             rejected(persisted.config, persisted.uiId, persisted, failure)
                         }
                     }
                 }
-                CommandStatus.UNKNOWN -> {
-                    retainUnconfirmed(
-                        persisted,
-                        Failure(
-                            result.error?.message ?: "The Bridge can no longer determine this command's result.",
-                            errorCode = result.error?.code ?: CommandOutcomeIndeterminate,
-                        ),
-                    )
-                    false
+                CommandStatus.UNKNOWN -> settleAmbiguous(persisted)
+            }
+            CommandResult.NotFound -> {
+                if (replayNotFound) {
+                    postAndSettle(persisted)
+                } else {
+                    settleAmbiguous(persisted)
                 }
             }
-            CommandResult.NotFound -> settle(persisted) {
-                rejected(
-                    persisted.config,
-                    persisted.uiId,
-                    persisted,
-                    Failure("The Bridge did not receive this command."),
-                )
-            }
+        }
+    }
+
+    private fun settleAmbiguous(persisted: PendingCommand): Boolean {
+        val failure = Failure(
+            AmbiguousOutcome,
+            errorCode = CommandOutcomeIndeterminate,
+        )
+        return settle(persisted) {
+            rejected(persisted.config, persisted.uiId, persisted, failure)
         }
     }
 
     private fun completeSuccess(persisted: PendingCommand): Boolean {
         if (persisted.transition == null) return settle(persisted) { accepted(persisted) }
-        synchronized(lock) { active = null }
         accepted(persisted)
         publishPending()
         return false
@@ -331,13 +345,13 @@ internal class Delivery(
             }
         }.exceptionOrNull()
         if (clearError != null) {
-            retainUnconfirmed(persisted, clearError)
+            retain(persisted, clearError)
             return false
         }
 
         synchronized(lock) {
-            if (outbox?.operationId == persisted.operationId) outbox = null
-            active = null
+            if (outbox.firstOrNull()?.operationId == persisted.operationId) outbox.removeFirst()
+            fresh.remove(persisted.operationId)
         }
         pending.remove(persisted.uiId)
         notify()
@@ -345,23 +359,10 @@ internal class Delivery(
         return true
     }
 
-    private fun failBeforeDispatch(outbound: Outbound, error: Throwable) {
-        val dropped = synchronized(lock) {
-            active = null
-            queue.mapTo(mutableSetOf()) { it.uiId }.also { queue.clear() }
+    private fun retain(persisted: PendingCommand, error: Throwable?) {
+        synchronized(lock) {
+            fresh.remove(persisted.operationId)
         }
-        dropped.forEach(pending::remove)
-        pending.remove(outbound.uiId)
-        rejected(requireNotNull(outbound.owner.config), outbound.uiId, null, error)
-        publishPending()
-    }
-
-    private fun retainUnconfirmed(persisted: PendingCommand, error: Throwable?) {
-        val dropped = synchronized(lock) {
-            active = null
-            queue.mapTo(mutableSetOf()) { it.uiId }.also { queue.clear() }
-        }
-        dropped.forEach(pending::remove)
         unconfirmed(persisted, error)
         publishPending()
     }
@@ -370,17 +371,14 @@ internal class Delivery(
         val shouldLaunch = synchronized(lock) {
             if (worker !== completed) return
             worker = null
-            active = null
             val requested = launchRequested
             launchRequested = false
-            owner.config != null && (
-                requested || queue.isNotEmpty() && outbox == null && !outboxUnreadable
-            )
+            requested && canWorkLocked()
         }
         if (shouldLaunch) requestWorker()
     }
-
-    private companion object {
-        const val CommandOutcomeIndeterminate = "command_outcome_indeterminate"
-    }
 }
+
+internal const val CommandOutcomeIndeterminate = "command_outcome_indeterminate"
+internal const val AmbiguousOutcome =
+    "The command may have completed, but its outcome could not be confirmed."

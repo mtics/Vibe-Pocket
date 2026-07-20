@@ -21,7 +21,7 @@ internal class Refresh(
     private val reconciled: (Snapshot, Long) -> Unit,
     private val persistentError: () -> String? = { null },
 ) {
-    private data class Lease(
+    private class Lease(
         val config: Config,
         val generation: Long,
     )
@@ -31,10 +31,16 @@ internal class Refresh(
         val version: Long,
     )
 
+    private class Flight(
+        val first: Request,
+        var job: Job? = null,
+    )
+
     private val lock = Any()
     private var lease: Lease? = null
     private var version = 0L
-    private var job: Job? = null
+    private var flight: Flight? = null
+    private var queued: Request? = null
 
     fun activate(config: Config, generation: Long) {
         invalidate(Lease(config, generation))
@@ -49,18 +55,21 @@ internal class Refresh(
         stale: Boolean = false,
         onPrepared: (Long) -> Unit = {},
     ): Long? {
+        var launch: Flight? = null
         val request = synchronized(lock) {
             val current = lease ?: return null
             if (generation != null && current.generation != generation) return null
             val request = Request(current, ++version)
-            val previous = job
-            job = null
-            request to previous
+            if (flight == null) {
+                launch = Flight(request).also { flight = it }
+            } else {
+                queued = request
+            }
+            request
         }
-        request.second?.cancel()
-        onPrepared(request.first.version)
+        onPrepared(request.version)
         state.update { current ->
-            if (current.config != request.first.lease.config) {
+            if (current.config != request.lease.config || !isCurrent(request.lease)) {
                 current
             } else {
                 current.copy(
@@ -69,44 +78,24 @@ internal class Refresh(
                 )
             }
         }
+        launch?.let(::start)
+        return request.version
+    }
 
+    private fun start(owner: Flight) {
         lateinit var candidate: Job
         candidate = scope.launch(dispatcher, start = CoroutineStart.LAZY) {
-            val result = runCatching { client.snapshot(request.first.lease.config) }
-            if (!isCurrent(request.first)) return@launch
-            result.onSuccess { remote ->
-                state.update { current ->
-                    if (current.config != request.first.lease.config || !isCurrent(request.first)) {
-                        current
-                    } else {
-                        val visible = current.snapshot
-                        val resolved = reconcile(remote.copy(transportFresh = true), visible)
-                        val next = if (visible != null && visible.sameSurface(resolved)) visible else resolved
-                        current.copy(
-                            snapshot = next,
-                            isRefreshing = false,
-                            error = persistentError(),
-                        )
-                    }
-                }
-                if (isCurrent(request.first)) reconciled(remote.copy(transportFresh = true), request.first.version)
-            }.onFailure { error ->
-                state.update { current ->
-                    if (current.config != request.first.lease.config || !isCurrent(request.first)) {
-                        current
-                    } else {
-                        current.copy(
-                            snapshot = current.snapshot?.copy(transportFresh = false),
-                            isRefreshing = false,
-                            error = error.message ?: persistentError(),
-                        )
-                    }
-                }
+            var request: Request? = owner.first
+            while (request != null) {
+                val current = request
+                val result = runCatching { client.snapshot(current.lease.config) }
+                publish(owner, current, result)
+                request = next(owner)
             }
         }
         val installed = synchronized(lock) {
-            if (isCurrentLocked(request.first) && job == null) {
-                job = candidate
+            if (flight === owner && lease === owner.first.lease && owner.job == null) {
+                owner.job = candidate
                 true
             } else {
                 false
@@ -114,31 +103,121 @@ internal class Refresh(
         }
         if (!installed) {
             candidate.cancel()
-            return null
+            return
         }
-        candidate.invokeOnCompletion {
-            synchronized(lock) {
-                if (job === candidate) job = null
+        candidate.invokeOnCompletion { error ->
+            if (error != null && error !is kotlinx.coroutines.CancellationException) {
+                fail(owner, error)
             }
+            finish(owner)
         }
         candidate.start()
-        return request.first.version
+    }
+
+    private fun publish(
+        owner: Flight,
+        request: Request,
+        result: Result<Snapshot>,
+    ) {
+        val applied = synchronized(lock) {
+            if (flight !== owner || lease !== request.lease) return
+            result.fold(
+                onSuccess = { remote ->
+                val fresh = remote.copy(transportFresh = true)
+                val queuedRequest = queued != null
+                var updated = false
+                state.update { current ->
+                    updated = false
+                    if (current.config != request.lease.config) {
+                        current
+                    } else {
+                        updated = true
+                        val visible = current.snapshot
+                        val resolved = reconcile(fresh, visible)
+                        val observed = if (queuedRequest) {
+                            resolved.copy(transportFresh = false)
+                        } else {
+                            resolved
+                        }
+                        val next = if (visible != null && visible.sameSurface(observed)) {
+                            visible.copy(transportFresh = observed.transportFresh)
+                        } else {
+                            observed
+                        }
+                        current.copy(
+                            snapshot = next,
+                            isRefreshing = false,
+                            error = persistentError(),
+                        )
+                    }
+                }
+                updated
+            },
+                onFailure = { error ->
+                state.update { current ->
+                    if (current.config != request.lease.config) {
+                        current
+                    } else {
+                        current.copy(
+                            snapshot = current.snapshot?.copy(transportFresh = false),
+                            isRefreshing = current.snapshot == null && queued != null,
+                            error = error.message ?: persistentError(),
+                        )
+                    }
+                }
+                false
+            },
+            )
+        }
+        if (applied) reconciled(result.getOrThrow().copy(transportFresh = true), request.version)
+    }
+
+    private fun next(owner: Flight): Request? = synchronized(lock) {
+        if (flight !== owner) return@synchronized null
+        queued.also {
+            queued = null
+            if (it == null) flight = null
+        }
+    }
+
+    private fun fail(owner: Flight, error: Throwable) {
+        synchronized(lock) {
+            if (flight !== owner || lease !== owner.first.lease) return
+            state.update { current ->
+                if (current.config != owner.first.lease.config) current else current.copy(
+                    snapshot = current.snapshot?.copy(transportFresh = false),
+                    isRefreshing = false,
+                    error = error.message ?: persistentError(),
+                )
+            }
+        }
+    }
+
+    private fun finish(owner: Flight) {
+        var successor: Flight? = null
+        synchronized(lock) {
+            if (flight !== owner) return
+            val request = queued
+            queued = null
+            if (request == null || lease !== request.lease) {
+                flight = null
+            } else {
+                successor = Flight(request).also { flight = it }
+            }
+        }
+        successor?.let(::start)
     }
 
     private fun invalidate(next: Lease?) {
         val previous = synchronized(lock) {
             lease = next
             version += 1
-            job.also { job = null }
+            queued = null
+            flight?.job.also { flight = null }
         }
         previous?.cancel()
         state.update { it.copy(isRefreshing = false) }
     }
 
-    private fun isCurrent(request: Request): Boolean = synchronized(lock) {
-        isCurrentLocked(request)
-    }
-
-    private fun isCurrentLocked(request: Request): Boolean =
-        lease == request.lease && version == request.version
+    private fun isCurrent(candidate: Lease): Boolean = synchronized(lock) { lease === candidate }
 }

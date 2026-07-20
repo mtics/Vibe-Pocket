@@ -8,6 +8,7 @@ import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.control.agentSlots
 import au.edu.uts.vibepocket.control.commandFor
+import au.edu.uts.vibepocket.control.encode
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import org.json.JSONArray

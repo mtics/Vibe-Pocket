@@ -4,7 +4,10 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.ContextTransition
+import au.edu.uts.vibepocket.control.decodeCommand
+import au.edu.uts.vibepocket.control.encode
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.KeyStore
@@ -43,7 +46,25 @@ interface Store {
     fun loadVoiceStop(): VoiceStop?
     fun clearVoiceStop(idempotencyKey: String): Boolean
     fun savePendingCommand(command: PendingCommand)
+    fun trySavePendingCommand(command: PendingCommand): Boolean {
+        return when (val loaded = loadPendingCommandsRecord()) {
+            LoadOutcome.Absent -> {
+                savePendingCommand(command)
+                true
+            }
+            is LoadOutcome.Loaded -> when {
+                loaded.value.size >= PendingCommandLimit -> false
+                loaded.value.any { it.uiId == command.uiId } -> false
+                else -> {
+                    savePendingCommand(command)
+                    true
+                }
+            }
+            is LoadOutcome.RecoverableError -> throw loaded.asException()
+        }
+    }
     fun loadPendingCommand(): PendingCommand?
+    fun loadPendingCommands(): List<PendingCommand> = listOfNotNull(loadPendingCommand())
     fun clearPendingCommand(operationId: String): Boolean
 
     fun loadConfigRecord(): LoadOutcome<Config> = loadOutcome(LifecycleRecord.CONFIG, ::load)
@@ -56,8 +77,12 @@ interface Store {
             )
     fun loadVoiceStopRecord(): LoadOutcome<VoiceStop> =
         loadOutcome(LifecycleRecord.VOICE_STOP, ::loadVoiceStop)
-    fun loadPendingCommandRecord(): LoadOutcome<PendingCommand> =
-        loadOutcome(LifecycleRecord.COMMAND_OUTBOX, ::loadPendingCommand)
+    fun loadPendingCommandsRecord(): LoadOutcome<List<PendingCommand>> =
+        loadOutcome(LifecycleRecord.COMMAND_OUTBOX, ::loadPendingCommands)
+            .let { loaded ->
+                if (loaded is LoadOutcome.Loaded && loaded.value.isEmpty()) LoadOutcome.Absent else loaded
+            }
+    fun loadPendingCommandRecord(): LoadOutcome<PendingCommand> = loadPendingCommandsRecord().head()
 
     fun commit(config: Config) {
         save(config)
@@ -88,6 +113,7 @@ sealed interface LoadOutcome<out T> {
     data class RecoverableError(
         val record: LifecycleRecord,
         val cause: Throwable,
+        val settled: Boolean = false,
     ) : LoadOutcome<Nothing> {
         val message: String
             get() = "Vibe Pocket could not read the ${record.description}."
@@ -101,11 +127,15 @@ data class LifecycleLoads(
     val claim: LoadOutcome<Claim>,
     val revocations: LoadOutcome<List<Config>>,
     val voiceStop: LoadOutcome<VoiceStop>,
-    val pendingCommand: LoadOutcome<PendingCommand>,
+    val pendingCommands: LoadOutcome<List<PendingCommand>>,
 ) {
+    val pendingCommand: LoadOutcome<PendingCommand>
+        get() = pendingCommands.head()
+
     val errors: List<LoadOutcome.RecoverableError>
-        get() = listOf(config, claim, revocations, voiceStop, pendingCommand)
+        get() = listOf(config, claim, revocations, voiceStop, pendingCommands)
             .filterIsInstance<LoadOutcome.RecoverableError>()
+            .filterNot(LoadOutcome.RecoverableError::settled)
 }
 
 fun Store.loadLifecycle(): LifecycleLoads = LifecycleLoads(
@@ -113,10 +143,16 @@ fun Store.loadLifecycle(): LifecycleLoads = LifecycleLoads(
     claim = loadClaimRecord(),
     revocations = loadRevocationsRecord(),
     voiceStop = loadVoiceStopRecord(),
-    pendingCommand = loadPendingCommandRecord(),
+    pendingCommands = loadPendingCommandsRecord(),
 )
 
 fun <T> LoadOutcome<T>.valueOrNull(): T? = (this as? LoadOutcome.Loaded<T>)?.value
+
+private fun <T> LoadOutcome<List<T>>.head(): LoadOutcome<T> = when (this) {
+    LoadOutcome.Absent -> LoadOutcome.Absent
+    is LoadOutcome.Loaded -> value.firstOrNull()?.let { LoadOutcome.Loaded(it) } ?: LoadOutcome.Absent
+    is LoadOutcome.RecoverableError -> this
+}
 
 private fun <T : Any> loadOutcome(
     record: LifecycleRecord,
@@ -153,6 +189,7 @@ data class VoiceStop(
 
 data class PendingCommand(
     val config: Config,
+    val command: Command,
     val operationId: String,
     val uiId: String,
     val transition: ContextTransition? = null,
@@ -338,30 +375,68 @@ class Vault(context: Context) : Store {
         return true
     }
 
-    @Synchronized
     override fun savePendingCommand(command: PendingCommand) {
-        val payload = encodePendingCommand(command)
-        check(preferences.edit().putString(COMMAND_OUTBOX_KEY, encrypt(payload)).commit()) {
-            "Vibe Pocket could not save the pending command."
+        check(trySavePendingCommand(command)) {
+            "Vibe Pocket could not append the pending command."
         }
     }
 
     @Synchronized
-    override fun loadPendingCommand(): PendingCommand? = loadPendingCommandRecord().valueOrNull()
+    override fun trySavePendingCommand(command: PendingCommand): Boolean {
+        val queued = when (val loaded = loadPendingCommandsRecord()) {
+            LoadOutcome.Absent -> emptyList()
+            is LoadOutcome.Loaded -> loaded.value
+            is LoadOutcome.RecoverableError -> throw loaded.asException()
+        }
+        if (queued.size >= PendingCommandLimit || queued.any { it.uiId == command.uiId }) return false
+        val payload = encodePendingCommands(queued + command)
+        check(preferences.edit().putString(COMMAND_OUTBOX_KEY, encrypt(payload)).commit()) {
+            "Vibe Pocket could not save the pending command."
+        }
+        return true
+    }
+
+    override fun loadPendingCommand(): PendingCommand? = loadPendingCommands().firstOrNull()
 
     @Synchronized
-    override fun loadPendingCommandRecord(): LoadOutcome<PendingCommand> = loadRecord(
-        key = COMMAND_OUTBOX_KEY,
-        record = LifecycleRecord.COMMAND_OUTBOX,
-        decode = ::decodePendingCommand,
-    )
+    override fun loadPendingCommands(): List<PendingCommand> =
+        loadPendingCommandsRecord().valueOrNull().orEmpty()
+
+    @Synchronized
+    override fun loadPendingCommandsRecord(): LoadOutcome<List<PendingCommand>> {
+        val loaded = loadRecord(
+            key = COMMAND_OUTBOX_KEY,
+            record = LifecycleRecord.COMMAND_OUTBOX,
+            decode = ::decodePendingCommands,
+        )
+        val legacy = (loaded as? LoadOutcome.RecoverableError)?.cause as? LegacyPendingCommand
+            ?: return loaded
+        if (!preferences.edit().remove(COMMAND_OUTBOX_KEY).commit()) {
+            return LoadOutcome.RecoverableError(
+                LifecycleRecord.COMMAND_OUTBOX,
+                IllegalStateException("Vibe Pocket could not retire its legacy pending command."),
+            )
+        }
+        return LoadOutcome.RecoverableError(
+            LifecycleRecord.COMMAND_OUTBOX,
+            legacy,
+            settled = true,
+        )
+    }
 
     @Synchronized
     override fun clearPendingCommand(operationId: String): Boolean {
         val encrypted = preferences.getString(COMMAND_OUTBOX_KEY, null) ?: return true
-        val current = decodePendingCommand(decrypt(encrypted))
-        if (current.operationId != operationId) return false
-        check(preferences.edit().remove(COMMAND_OUTBOX_KEY).commit()) {
+        val queued = decodePendingCommands(decrypt(encrypted))
+        if (queued.firstOrNull()?.operationId != operationId) return false
+        val remaining = queued.drop(1)
+        val edit = preferences.edit()
+        if (remaining.isEmpty()) {
+            edit.remove(COMMAND_OUTBOX_KEY)
+        } else {
+            edit.putString(COMMAND_OUTBOX_KEY, encrypt(encodePendingCommands(remaining)))
+        }
+        check(edit.commit()) {
             "Vibe Pocket could not clear the pending command."
         }
         return true
@@ -508,6 +583,8 @@ private fun decodeVoiceStop(value: String): VoiceStop {
 }
 
 internal fun encodePendingCommand(command: PendingCommand): String = JSONObject(command.config.encode())
+    .put("version", PendingCommandVersion)
+    .put("command", command.command.encode())
     .put("operationId", command.operationId)
     .put("uiId", command.uiId)
     .apply { command.transition?.let { put("transition", encodeTransition(it)) } }
@@ -515,11 +592,17 @@ internal fun encodePendingCommand(command: PendingCommand): String = JSONObject(
 
 internal fun decodePendingCommand(value: String): PendingCommand {
     val payload = JSONObject(value)
+    val version = payload.optInt("version", 1)
+    if (version == 1) throw LegacyPendingCommand()
+    require(version == PendingCommandVersion) { "The pending command version is unsupported." }
+    val encodedCommand = payload.optJSONObject("command")
+        ?: throw IllegalArgumentException("The pending command body is invalid.")
     return PendingCommand(
         config = Config(
             baseUrl = payload.getString("baseUrl"),
             credential = payload.getString("token"),
         ),
+        command = decodeCommand(encodedCommand),
         operationId = payload.getString("operationId"),
         uiId = payload.getString("uiId"),
         transition = when {
@@ -529,6 +612,34 @@ internal fun decodePendingCommand(value: String): PendingCommand {
                 ?: throw IllegalArgumentException("The pending command transition target is invalid.")
         },
     )
+}
+
+internal fun encodePendingCommands(commands: List<PendingCommand>): String = JSONObject()
+    .put("version", PendingCommandQueueVersion)
+    .put("commands", JSONArray().apply { commands.forEach { put(JSONObject(encodePendingCommand(it))) } })
+    .toString()
+
+internal fun decodePendingCommands(value: String): List<PendingCommand> {
+    val payload = JSONObject(value)
+    if (!payload.has("commands")) return listOf(decodePendingCommand(value))
+    require(payload.optInt("version") == PendingCommandQueueVersion) {
+        "The pending command queue version is unsupported."
+    }
+    val commands = payload.optJSONArray("commands")
+        ?: throw IllegalArgumentException("The pending command queue is invalid.")
+    require(commands.length() in 1..PendingCommandLimit) {
+        "The pending command queue size is invalid."
+    }
+    return (0 until commands.length()).map { index ->
+        decodePendingCommand(commands.getJSONObject(index).toString())
+    }.also { decoded ->
+        require(decoded.map(PendingCommand::operationId).distinct().size == decoded.size) {
+            "The pending command queue contains a duplicate operation ID."
+        }
+        require(decoded.map(PendingCommand::uiId).distinct().size == decoded.size) {
+            "The pending command queue contains a duplicate UI ID."
+        }
+    }
 }
 
 private fun encodeTransition(transition: ContextTransition): JSONObject = when (transition) {
@@ -553,3 +664,11 @@ private fun decodeTransition(value: JSONObject): ContextTransition = when (value
     "layer" -> ContextTransition.Layer(value.getString("id"))
     else -> throw IllegalArgumentException("The pending command transition target is invalid.")
 }
+
+private const val PendingCommandVersion = 2
+private const val PendingCommandQueueVersion = 3
+internal const val PendingCommandLimit = 32
+
+private class LegacyPendingCommand : IllegalArgumentException(
+    "The legacy pending command has no replayable command body.",
+)

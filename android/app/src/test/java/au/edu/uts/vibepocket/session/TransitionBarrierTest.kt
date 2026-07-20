@@ -7,6 +7,8 @@ import au.edu.uts.vibepocket.bridge.CommandStatus
 import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Config
+import au.edu.uts.vibepocket.connection.LifecycleRecord
+import au.edu.uts.vibepocket.connection.LoadOutcome
 import au.edu.uts.vibepocket.connection.PendingCommand
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.connection.VoiceStop
@@ -149,14 +151,14 @@ class TransitionBarrierTest {
     }
 
     @Test
-    fun definiteFailureClearsWhileUnknownAndNetworkUncertaintyStayFailClosed() = runTest(dispatcher) {
+    fun definiteAndUnknownOutcomesClearWhileNetworkUncertaintyStaysFailClosed() = runTest(dispatcher) {
         val preDispatchStore = MemoryStore().apply {
             savePendingError = IllegalStateException("disk unavailable")
         }
         val preDispatchClient = ImmediateSuccessClient(snapshot())
         val preDispatch = Session(preDispatchStore, preDispatchClient, dispatcher)
         runCurrent()
-        assertTrue(preDispatch.focusAgent(AgentB))
+        assertFalse(preDispatch.focusAgent(AgentB))
         runCurrent()
         assertFalse(preDispatch.state.value.contextTransitionPending)
         assertEquals(0, preDispatchClient.postCalls)
@@ -170,23 +172,22 @@ class TransitionBarrierTest {
         assertNull(definiteStore.pendingCommand)
 
         val unknownStore = MemoryStore()
+        val unknownClient = OutcomeClient(
+            snapshot = snapshot(),
+            postError = IOException("POST response lost"),
+            result = CommandResult.Found(CommandStatus.UNKNOWN),
+        )
         val unknown = Session(
             unknownStore,
-            OutcomeClient(
-                snapshot = snapshot(),
-                postError = Failure(
-                    "The desktop outcome is unknown.",
-                    errorCode = "command_outcome_indeterminate",
-                ),
-            ),
+            unknownClient,
             dispatcher,
         )
         runCurrent()
         assertTrue(unknown.focusAgent(AgentB))
         runCurrent()
-        assertTrue(unknown.state.value.contextTransitionPending)
-        assertNotNull(unknownStore.pendingCommand)
-        assertFalse(unknown.activateInput("key_accept"))
+        assertFalse(unknown.state.value.contextTransitionPending)
+        assertNull(unknownStore.pendingCommand)
+        assertEquals(2, unknownClient.snapshotCalls)
 
         val networkStore = MemoryStore()
         val network = Session(
@@ -203,6 +204,26 @@ class TransitionBarrierTest {
         runCurrent()
         assertTrue(network.state.value.contextTransitionPending)
         assertNotNull(networkStore.pendingCommand)
+    }
+
+    @Test
+    fun settledLegacyOutboxDoesNotRestoreBarrierAndRequestsFreshSnapshot() = runTest(dispatcher) {
+        val store = MemoryStore().apply {
+            pendingLoad = LoadOutcome.RecoverableError(
+                LifecycleRecord.COMMAND_OUTBOX,
+                IllegalArgumentException("Legacy command body unavailable."),
+                settled = true,
+            )
+        }
+        val client = ImmediateSuccessClient(snapshot())
+
+        val session = Session(store, client, dispatcher)
+
+        assertFalse(session.state.value.contextTransitionPending)
+        assertEquals(AmbiguousOutcome, session.state.value.error)
+        runCurrent()
+        assertEquals(1, client.snapshotCalls)
+        assertFalse(session.state.value.contextTransitionPending)
     }
 
     @Test
@@ -261,7 +282,12 @@ class TransitionBarrierTest {
     }
 
     private open class SnapshotClient(private val snapshots: ArrayDeque<Snapshot>) : Client {
-        override suspend fun snapshot(config: Config): Snapshot = snapshots.removeFirst()
+        var snapshotCalls = 0
+
+        override suspend fun snapshot(config: Config): Snapshot {
+            snapshotCalls += 1
+            return snapshots.removeFirst()
+        }
         override suspend fun command(config: Config, command: Command) = error("Explicit operation ID required")
     }
 
@@ -335,8 +361,15 @@ class TransitionBarrierTest {
         var claim: Claim? = null
         var revocation: Config? = null
         var voiceStop: VoiceStop? = null
-        var pendingCommand: PendingCommand? = null
+        val pendingCommands = mutableListOf<PendingCommand>()
+        var pendingCommand: PendingCommand?
+            get() = pendingCommands.firstOrNull()
+            set(value) {
+                pendingCommands.clear()
+                value?.let(pendingCommands::add)
+            }
         var savePendingError: Throwable? = null
+        var pendingLoad: LoadOutcome<List<PendingCommand>>? = null
 
         override fun save(config: Config) { this.config = config }
         override fun load(): Config? = config
@@ -356,13 +389,16 @@ class TransitionBarrierTest {
         }
         override fun savePendingCommand(command: PendingCommand) {
             savePendingError?.let { throw it }
-            pendingCommand = command
+            pendingCommands += command
         }
         override fun loadPendingCommand(): PendingCommand? = pendingCommand
+        override fun loadPendingCommands(): List<PendingCommand> = pendingCommands.toList()
+        override fun loadPendingCommandsRecord(): LoadOutcome<List<PendingCommand>> =
+            pendingLoad ?: super.loadPendingCommandsRecord()
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false
-            pendingCommand = null
+            pendingCommands.removeAt(0)
             return true
         }
     }

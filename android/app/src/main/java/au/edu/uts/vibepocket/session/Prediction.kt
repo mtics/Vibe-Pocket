@@ -56,12 +56,19 @@ internal class Prediction(
             pending = null
             return remote
         }
+        if (
+            !remote.capabilities.reasoning ||
+            !remoteReasoning.available ||
+            desktop.activity == au.edu.uts.vibepocket.control.Activity.THINKING ||
+            desktop.activity == au.edu.uts.vibepocket.control.Activity.EXECUTING
+        ) {
+            return remote
+        }
         val optimistic = visible?.desktop?.reasoning
             ?.takeIf { it.level == expected.status.level }
             ?: expected.status
         return remote.copy(
-            capabilities = remote.capabilities.copy(reasoning = true),
-            desktop = desktop.copy(reasoning = optimistic.copy(available = true)),
+            desktop = desktop.copy(reasoning = optimistic),
         )
     }
 

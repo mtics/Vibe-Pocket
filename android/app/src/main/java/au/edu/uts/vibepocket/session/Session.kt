@@ -7,6 +7,7 @@ import au.edu.uts.vibepocket.bridge.Client
 import au.edu.uts.vibepocket.bridge.EventCallbacks
 import au.edu.uts.vibepocket.bridge.EventFactory
 import au.edu.uts.vibepocket.bridge.EventStream
+import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.bridge.Http
 import au.edu.uts.vibepocket.bridge.NetworkEvents
 import au.edu.uts.vibepocket.connection.Config
@@ -53,19 +54,24 @@ class Session internal constructor(
 
     private val restored = store.loadLifecycle()
     private var lifecycleErrors = restored.errors
+    private val legacyCommandSettled =
+        (restored.pendingCommand as? LoadOutcome.RecoverableError)?.settled == true
     private val transitionLock = Any()
     private var transitionBarrier = restored.pendingCommand.valueOrNull()
         ?.takeIf { it.transition != null }
         ?.let { TransitionBarrier(it.uiId, requireNotNull(it.transition), command = it) }
-    private var transitionStateUnreadable = restored.pendingCommand is LoadOutcome.RecoverableError
+    private var transitionStateUnreadable = restored.pendingCommand.let {
+        it is LoadOutcome.RecoverableError && !it.settled
+    }
     private val pending = Pending().apply {
-        restored.pendingCommand.valueOrNull()?.uiId?.let(::add)
+        restored.pendingCommands.valueOrNull().orEmpty().forEach { add(it.uiId) }
     }
     private val _state = MutableStateFlow(
         State(
             inFlightIds = pending.snapshot(),
             contextTransitionPending = transitionPending(),
             error = lifecycleErrorMessage()
+                ?: AmbiguousOutcome.takeIf { legacyCommandSettled }
                 ?: restored.pendingCommand.valueOrNull()?.let { CommandResultUnconfirmed },
         ),
     )
@@ -104,7 +110,7 @@ class Session internal constructor(
         dispatcher = dispatcher,
         client = client,
         store = store,
-        restored = restored.pendingCommand,
+        restored = restored.pendingCommands,
         pending = pending,
         publishPending = ::publishPending,
         accepted = ::deliveryAccepted,
@@ -390,10 +396,12 @@ class Session internal constructor(
         command: PendingCommand?,
         error: Throwable,
     ) {
+        val ambiguous = (error as? Failure)?.errorCode == CommandOutcomeIndeterminate
         synchronized(transitionLock) {
             clearTransitionLocked(uiId, command?.transition)
         }
         commandRejected(config, error)
+        if (ambiguous && _state.value.config == config) refresh.request(stale = true)
     }
 
     private fun commandUnconfirmed(command: PendingCommand, error: Throwable?) {
@@ -445,6 +453,7 @@ class Session internal constructor(
                 },
                 snapshotChanged = {
                     if (isCurrentEvent(config, generation)) {
+                        delivery.recover()
                         refresh.request(generation, stale = true)
                     }
                 },
@@ -498,8 +507,10 @@ class Session internal constructor(
         val current = store.loadLifecycle()
         lifecycleErrors = current.errors
         synchronized(transitionLock) {
-            transitionStateUnreadable = current.pendingCommand is LoadOutcome.RecoverableError
-            current.pendingCommand.valueOrNull()?.takeIf { it.transition != null }?.let { command ->
+            val pendingCommand = current.pendingCommand
+            transitionStateUnreadable = pendingCommand is LoadOutcome.RecoverableError &&
+                !pendingCommand.settled
+            pendingCommand.valueOrNull()?.takeIf { it.transition != null }?.let { command ->
                 if (transitionBarrier == null) {
                     transitionBarrier = TransitionBarrier(
                         command.uiId,

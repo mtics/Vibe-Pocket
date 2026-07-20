@@ -47,7 +47,11 @@ data class Snapshot(
     }
 
     private fun actionEnabled(action: Action): Boolean = when (action.type) {
-        "approve" -> capabilities.approve
+        "approve" -> desktop?.let {
+            capabilities.approve &&
+                it.activity != Activity.THINKING &&
+                it.activity != Activity.EXECUTING
+        } ?: capabilities.approve
         "reject" -> capabilities.reject
         "voice" -> desktop?.voice?.available ?: capabilities.voice
         "stop" -> capabilities.stop
@@ -61,7 +65,11 @@ data class Snapshot(
         "select_layer" -> desktop?.profile?.layers?.any { it.id == action.layerId } == true
         "navigate" -> capabilities.navigate && desktop?.foreground == true
         "reasoning_depth" -> desktop?.let {
-            capabilities.reasoning && it.foreground && it.reasoning.allows(action.delta)
+            capabilities.reasoning &&
+                it.foreground &&
+                it.activity != Activity.THINKING &&
+                it.activity != Activity.EXECUTING &&
+                it.reasoning.allows(action.delta)
         } == true
         "workflow" -> capabilities.workflow && desktop?.foreground == true
         "attach" -> status.state == "ready"

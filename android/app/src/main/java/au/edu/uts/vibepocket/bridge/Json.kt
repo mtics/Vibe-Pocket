@@ -14,6 +14,8 @@ import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
 import au.edu.uts.vibepocket.control.Voice
+import au.edu.uts.vibepocket.control.decodeAction
+import au.edu.uts.vibepocket.control.encode
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
 import au.edu.uts.vibepocket.profile.Choice
@@ -187,32 +189,6 @@ private fun decodeChoices(value: JSONArray?): List<Choice> = value.objects().map
     Choice(id, entry.safeString("label")?.take(48) ?: id, action)
 }.distinctBy(Choice::id).take(64)
 
-private fun decodeAction(value: JSONObject?): Action? {
-    value ?: return null
-    val type = value.safeString("type") ?: return null
-    return when (type) {
-        "approve", "reject", "voice", "new_task", "stop", "mode_cycle", "model_picker", "access_cycle",
-        "delete_backward", "clear_input", "focus_next", "attach" ->
-            Action(type)
-        "navigate" -> value.safeString("direction")
-            ?.takeIf { it in setOf("up", "down", "left", "right") }
-            ?.let { Action(type, direction = it) }
-        "reasoning_depth" -> value.optInt("delta", 0)
-            .takeIf { it == -1 || it == 1 }
-            ?.let { Action(type, delta = it) }
-        "focus_agent" -> value.optInt("index", -1)
-            .takeIf { it in 0..5 }
-            ?.let { Action(type, index = it) }
-        "select_layer" -> value.safeString("layerId")
-            ?.take(64)
-            ?.let { Action(type, layerId = it) }
-        "workflow" -> value.safeString("workflowId")
-            ?.take(64)
-            ?.let { Action(type, workflowId = it) }
-        else -> null
-    }
-}
-
 private fun decodeSelector(value: JSONObject?): Selector = Selector(
     available = value?.optBoolean("available", false) == true,
     label = value?.safeString("label")?.take(64).orEmpty(),
@@ -269,56 +245,3 @@ private fun JSONArray?.objects(): List<JSONObject> {
 
 private fun JSONObject.safeString(key: String): String? =
     optString(key, "").trim().takeUnless { it.isEmpty() || it == "null" }
-
-internal fun Action.encode(): JSONObject = JSONObject().put("type", type).also { root ->
-    direction?.let { root.put("direction", it) }
-    delta?.let { root.put("delta", it) }
-    index?.let { root.put("index", it) }
-    workflowId?.let { root.put("workflowId", it) }
-    layerId?.let { root.put("layerId", it) }
-}
-
-internal fun Command.encode(): JSONObject = when (this) {
-    is Command.Binding -> JSONObject()
-        .put("kind", "binding")
-        .put("inputId", inputId)
-        .put("gesture", gesture.wireValue)
-        .put("layerId", layerId)
-        .put("action", action.encode())
-    is Command.SelectLayer -> JSONObject().put("kind", "select_layer").put("layerId", layerId)
-    is Command.FocusAgent -> JSONObject().put("kind", "focus_agent").put("agentId", agentId)
-    is Command.SelectModel -> JSONObject().put("kind", "select_model").put("modelId", modelId)
-    is Command.UpdateBinding -> JSONObject()
-        .put("kind", "update_binding")
-        .put("layerId", layerId)
-        .put("inputId", inputId)
-        .put("gesture", gesture.wireValue)
-        .put("action", action.encode())
-    is Command.ClearBinding -> JSONObject()
-        .put("kind", "clear_binding")
-        .put("layerId", layerId)
-        .put("inputId", inputId)
-        .put("gesture", gesture.wireValue)
-    is Command.RenameLayer -> JSONObject()
-        .put("kind", "rename_layer")
-        .put("layerId", layerId)
-        .put("name", name)
-    is Command.UpdateLayerColor -> JSONObject()
-        .put("kind", "update_layer_color")
-        .put("layerId", layerId)
-        .put("color", color)
-    is Command.UpdateWorkflowPrompt -> JSONObject()
-        .put("kind", "update_workflow")
-        .put("workflowId", workflowId)
-        .put("prompt", prompt)
-    Command.ResetProfile -> JSONObject().put("kind", "reset_profile")
-    Command.Attach -> JSONObject().put("kind", "attach")
-    Command.Voice -> JSONObject().put("kind", "voice")
-    Command.VoiceStart -> JSONObject().put("kind", "voice_start")
-    Command.VoiceStop -> JSONObject().put("kind", "voice_stop")
-    Command.Stop -> JSONObject().put("kind", "stop")
-    Command.NewTask -> JSONObject().put("kind", "new_task")
-    Command.ModelPicker -> JSONObject().put("kind", "model_picker")
-    Command.Approve -> JSONObject().put("kind", "approve")
-    Command.Reject -> JSONObject().put("kind", "reject")
-}

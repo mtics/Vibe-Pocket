@@ -39,6 +39,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -67,7 +68,7 @@ class SessionTest {
     }
 
     @Test
-    fun duplicateTapIsRejectedWhileDistinctCommandsCanQueue() = runTest(dispatcher) {
+    fun duplicateTapIsRejectedWhileDistinctCommandsQueueDurably() = runTest(dispatcher) {
         val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
         val client = BlockingClient()
         val viewModel = Session(
@@ -98,8 +99,8 @@ class SessionTest {
         )
 
         client.commandRelease.complete(Unit)
-        runCurrent()
-        assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+        advanceUntilIdle()
+        assertEquals(emptySet<String>(), viewModel.state.value.inFlightIds)
     }
 
     @Test
@@ -169,7 +170,7 @@ class SessionTest {
     }
 
     @Test
-    fun repeatableControlsQueueEveryPhysicalStep() = runTest(dispatcher) {
+    fun repeatableControlsQueueEveryDurablePhysicalStep() = runTest(dispatcher) {
         val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
         val client = BlockingClient()
         val viewModel = Session(
@@ -279,7 +280,7 @@ class SessionTest {
     }
 
     @Test
-    fun deliveredReasoningStepSurvivesATransientMissingSelector() = runTest(dispatcher) {
+    fun transientMissingSelectorNeverReEnablesReasoningFromPrediction() = runTest(dispatcher) {
         val transient = REASONING_SNAPSHOT.copy(
             revision = "r_transient",
             capabilities = REASONING_SNAPSHOT.capabilities.copy(reasoning = false),
@@ -299,13 +300,13 @@ class SessionTest {
         runCurrent()
 
         val visible = viewModel.state.value.snapshot
-        assertTrue(visible?.capabilities?.reasoning == true)
-        assertTrue(visible?.desktop?.reasoning?.available == true)
-        assertEquals(Reasoning.Level.HIGH, visible?.desktop?.reasoning?.level)
+        assertFalse(visible?.capabilities?.reasoning == true)
+        assertFalse(visible?.desktop?.reasoning?.available == true)
+        assertEquals(null, visible?.desktop?.reasoning?.level)
     }
 
     @Test
-    fun executingTaskKeepsAReasoningPredictionUntilDesktopConfirmation() = runTest(dispatcher) {
+    fun executingTaskCannotBeMadeAdjustableByAReasoningPrediction() = runTest(dispatcher) {
         val executing = REASONING_SNAPSHOT.copy(
             revision = "r_executing",
             capabilities = REASONING_SNAPSHOT.capabilities.copy(reasoning = false),
@@ -328,9 +329,9 @@ class SessionTest {
         runCurrent()
 
         val visible = viewModel.state.value.snapshot
-        assertTrue(visible?.capabilities?.reasoning == true)
-        assertTrue(visible?.desktop?.reasoning?.available == true)
-        assertEquals(Reasoning.Level.HIGH, visible?.desktop?.reasoning?.level)
+        assertFalse(visible?.capabilities?.reasoning == true)
+        assertFalse(visible?.desktop?.reasoning?.available == true)
+        assertEquals(null, visible?.desktop?.reasoning?.level)
     }
 
     @Test
@@ -1130,7 +1131,13 @@ class SessionTest {
         var claim: Claim? = null
         var revocation: Config? = null
         var voiceStop: VoiceStop? = null
-        var pendingCommand: PendingCommand? = null
+        val pendingCommands = mutableListOf<PendingCommand>()
+        var pendingCommand: PendingCommand?
+            get() = pendingCommands.firstOrNull()
+            set(value) {
+                pendingCommands.clear()
+                value?.let(pendingCommands::add)
+            }
         var pendingLoadFailure: Throwable? = null
         val lifecycleEvents = mutableListOf<String>()
 
@@ -1183,7 +1190,7 @@ class SessionTest {
         }
 
         override fun savePendingCommand(command: PendingCommand) {
-            pendingCommand = command
+            pendingCommands += command
         }
 
         override fun loadPendingCommand(): PendingCommand? {
@@ -1191,10 +1198,15 @@ class SessionTest {
             return pendingCommand
         }
 
+        override fun loadPendingCommands(): List<PendingCommand> {
+            pendingLoadFailure?.let { throw it }
+            return pendingCommands.toList()
+        }
+
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false
-            pendingCommand = null
+            pendingCommands.removeAt(0)
             return true
         }
 
@@ -1209,7 +1221,7 @@ class SessionTest {
             it.claim = claim
             it.revocation = revocation
             it.voiceStop = voiceStop
-            it.pendingCommand = pendingCommand
+            it.pendingCommands.addAll(pendingCommands)
             it.pendingLoadFailure = pendingLoadFailure
         }
     }
