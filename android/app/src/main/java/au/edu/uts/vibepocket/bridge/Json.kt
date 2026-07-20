@@ -33,6 +33,7 @@ internal fun decode(root: JSONObject): Snapshot {
     }
     val status = root.optJSONObject("status") ?: JSONObject()
     val controls = root.optJSONObject("controls") ?: JSONObject()
+    val observation = decodeObservation(root.optJSONObject("observation"))
     return Snapshot(
         revision = root.safeString("revision") ?: "r_0",
         status = Status(
@@ -56,6 +57,25 @@ internal fun decode(root: JSONObject): Snapshot {
             workflow = controls.optBoolean("workflow", false),
         ),
         desktop = decodeDesktop(root.optJSONObject("controller")),
+        observedAtMillis = observation.observedAtMillis,
+        transportFresh = observation.fresh,
+    )
+}
+
+private data class Observation(
+    val fresh: Boolean,
+    val observedAtMillis: Long?,
+)
+
+private fun decodeObservation(value: JSONObject?): Observation {
+    value ?: return Observation(fresh = false, observedAtMillis = null)
+    val raw = value.opt("observedAt") as? Number
+    val observedAt = raw?.toLong()?.takeIf {
+        it > 0L && raw.toDouble().isFinite() && raw.toDouble() == it.toDouble()
+    }
+    return Observation(
+        fresh = value.opt("fresh") == true && observedAt != null,
+        observedAtMillis = observedAt,
     )
 }
 

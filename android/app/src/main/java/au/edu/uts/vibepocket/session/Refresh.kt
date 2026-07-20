@@ -124,7 +124,6 @@ internal class Refresh(
                 false
             } else result.fold(
                 onSuccess = { remote ->
-                    val fresh = remote.copy(transportFresh = true)
                     var updated = false
                     state.update { current ->
                         updated = false
@@ -133,7 +132,7 @@ internal class Refresh(
                         } else {
                             updated = true
                             current.copy(
-                                snapshot = reconcile(fresh, current.snapshot),
+                                snapshot = reconcile(remote, current.snapshot),
                                 isRefreshing = false,
                                 error = persistentError(),
                             )
@@ -157,7 +156,7 @@ internal class Refresh(
                 },
             )
         }
-        if (applied) reconciled(result.getOrThrow().copy(transportFresh = true), request.version)
+        if (applied) reconciled(result.getOrThrow(), request.version)
     }
 
     private fun next(owner: Flight): Request? = synchronized(lock) {

@@ -482,7 +482,7 @@ class Failure(
     val errorCode: String? = null,
 ) : IllegalStateException(message)
 
-internal const val ProtocolVersion = 9
+internal const val ProtocolVersion = 10
 internal const val MaxResponseBytes = 1_048_576
 internal const val MaxEventLineBytes = 8_192
 private const val MaxEventFieldChars = 128

@@ -11,7 +11,7 @@ data class Snapshot(
     val status: Status,
     val capabilities: Capabilities,
     val desktop: Desktop? = null,
-    /** Local transport metadata. It is not part of the Bridge snapshot payload. */
+    val observedAtMillis: Long? = null,
     val transportFresh: Boolean = true,
 ) {
     val activeLayer: Layer?

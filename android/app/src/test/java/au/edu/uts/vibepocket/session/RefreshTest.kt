@@ -198,24 +198,53 @@ class RefreshTest {
         assertEquals(listOf("r_2" to request), harness.reconciled)
     }
 
+    @Test
+    fun successfulTransportPreservesAStaleBridgeObservation() = runTest(dispatcher) {
+        val client = ControlledClient()
+        val harness = harness(client, snapshot("base"))
+        harness.refresh.activate(ConfigA, 1)
+        val request = requireNotNull(harness.refresh.request())
+        runCurrent()
+
+        client.succeed(
+            0,
+            snapshot("retained").copy(
+                observedAtMillis = 1_699_999_999_000L,
+                transportFresh = false,
+            ),
+        )
+        runCurrent()
+
+        assertEquals("retained", harness.state.value.snapshot?.revision)
+        assertEquals(1_699_999_999_000L, harness.state.value.snapshot?.observedAtMillis)
+        assertFalse(harness.state.value.snapshot?.transportFresh == true)
+        assertEquals(listOf("retained" to request), harness.reconciled)
+        assertEquals(listOf(false), harness.reconciledFreshness)
+    }
+
     private fun TestScope.harness(client: Client, initial: Snapshot?): Harness {
         val state = MutableStateFlow(State(config = ConfigA, snapshot = initial))
         val reconciled = mutableListOf<Pair<String, Long>>()
+        val reconciledFreshness = mutableListOf<Boolean>()
         val refresh = Refresh(
             scope = this,
             dispatcher = dispatcher,
             client = client,
             state = state,
             reconcile = { remote, _ -> remote },
-            reconciled = { value, version -> reconciled += value.revision to version },
+            reconciled = { value, version ->
+                reconciled += value.revision to version
+                reconciledFreshness += value.transportFresh
+            },
         )
-        return Harness(refresh, state, reconciled)
+        return Harness(refresh, state, reconciled, reconciledFreshness)
     }
 
     private data class Harness(
         val refresh: Refresh,
         val state: MutableStateFlow<State>,
         val reconciled: MutableList<Pair<String, Long>>,
+        val reconciledFreshness: MutableList<Boolean>,
     )
 
     private class ControlledClient : Client {
@@ -266,6 +295,7 @@ class RefreshTest {
             revision = revision,
             status = Status("ready", message),
             capabilities = Capabilities(),
+            observedAtMillis = 1_700_000_000_000L,
         )
     }
 }

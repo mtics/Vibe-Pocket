@@ -53,6 +53,8 @@ class JsonTest {
         val snapshot = decode(JSONObject(CONTROLLER_SNAPSHOT))
 
         assertEquals("r_42", snapshot.revision)
+        assertTrue(snapshot.transportFresh)
+        assertEquals(1_700_000_000_000L, snapshot.observedAtMillis)
         assertEquals(Activity.WAITING, snapshot.desktop?.activity)
         assertTrue(snapshot.desktop?.foreground == true)
         assertEquals("agent-0123456789abcdef01234567", snapshot.desktop?.focusedAgentId)
@@ -94,6 +96,31 @@ class JsonTest {
         assertEquals(3, snapshot.desktop?.gestures?.size)
         assertTrue(snapshot.agentFocusEnabled("agent-0123456789abcdef01234567"))
         assertFalse(snapshot.agentFocusEnabled("agent-ffffffffffffffffffffffff"))
+    }
+
+    @Test
+    fun missingOrInvalidObservationIsNeverTreatedAsFresh() {
+        val missing = JSONObject(CONTROLLER_SNAPSHOT).apply { remove("observation") }
+        val invalid = JSONObject(CONTROLLER_SNAPSHOT).put(
+            "observation",
+            JSONObject().put("fresh", true).put("observedAt", "now"),
+        )
+
+        assertFalse(decode(missing).transportFresh)
+        assertNull(decode(missing).observedAtMillis)
+        assertFalse(decode(invalid).transportFresh)
+        assertNull(decode(invalid).observedAtMillis)
+    }
+
+    @Test
+    fun retainedObservationKeepsItsTimestampButBecomesStale() {
+        val root = JSONObject(CONTROLLER_SNAPSHOT)
+        root.getJSONObject("observation").put("fresh", false)
+
+        val snapshot = decode(root)
+
+        assertFalse(snapshot.transportFresh)
+        assertEquals(1_700_000_000_000L, snapshot.observedAtMillis)
     }
 
     @Test
@@ -181,6 +208,7 @@ class JsonTest {
                 {
                   "protocolVersion":$ProtocolVersion,
                   "revision":"r_old",
+                  "observation":{"fresh":true,"observedAt":1700000000000},
                   "status":{"state":"ready","message":null},
                   "controls":{"voice":true,"stop":false,"new-task":true,"approve":false,"reject":true}
                 }
@@ -208,6 +236,7 @@ class JsonTest {
                 """
                 {
                   "protocolVersion":$ProtocolVersion,
+                  "observation":{"fresh":true,"observedAt":1700000000000},
                   "status":{"state":"ready"},
                   "controller":{
                     "profile":{"version":-2,"inputs":[],"layers":[]},
@@ -304,6 +333,7 @@ class JsonTest {
             {
               "protocolVersion":$ProtocolVersion,
               "revision":"r_42",
+              "observation":{"fresh":true,"observedAt":1700000000000},
               "status":{"state":"ready","message":"Current desktop task"},
               "controls":{
                 "voice":true,"stop":false,"new-task":true,"approve":true,"reject":true,

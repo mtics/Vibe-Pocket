@@ -11,10 +11,10 @@ import org.junit.Test
 
 class ClientLimitTest {
     @Test
-    fun protocolNineClaimRequiresCommandRecoveryAndBindingContext() {
+    fun currentProtocolClaimRequiresCommandRecoveryAndBindingContext() {
         val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
         val response = JSONObject()
-            .put("protocolVersion", 9)
+            .put("protocolVersion", ProtocolVersion)
             .put(
                 "capabilities",
                 JSONArray(listOf("device_credentials", "pairing_commit", "command_results", "binding_context")),
@@ -31,10 +31,10 @@ class ClientLimitTest {
     }
 
     @Test
-    fun protocolNineClaimRejectsActiveOrIncompleteCapabilities() {
+    fun currentProtocolClaimRejectsActiveOrIncompleteCapabilities() {
         val invitation = Invitation("https://bridge.example.test", "a".repeat(43))
         val response = JSONObject()
-            .put("protocolVersion", 9)
+            .put("protocolVersion", ProtocolVersion)
             .put("capabilities", JSONArray(listOf("device_credentials")))
             .put("credentialState", "active")
             .put("credentialExpiresAt", "2099-01-01T00:05:00Z")
