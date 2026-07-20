@@ -48,10 +48,9 @@ internal data class Layout(
                 actionGap = 12.dp,
                 safety = 56.dp,
                 selectors = 64.dp,
-                voice = 84.dp,
+                voice = 96.dp,
             )
-            if (availableHeight >= expanded.content) return expanded
-            return Layout(
+            val compact = Layout(
                 maxWidth = 393.dp,
                 horizontalPadding = 12.dp,
                 gap = 6.dp,
@@ -68,7 +67,28 @@ internal data class Layout(
                 actionGap = 8.dp,
                 safety = 52.dp,
                 selectors = 60.dp,
-                voice = 84.dp,
+                voice = 96.dp,
+            )
+            if (availableHeight < compact.content) return compact
+            if (availableHeight < expanded.content) {
+                val progress = (availableHeight - compact.content).value /
+                    (expanded.content - compact.content).value
+                return compact.interpolate(expanded, progress)
+            }
+
+            val extra = (availableHeight - expanded.content).coerceIn(0.dp, MaximumPortraitGrowth)
+            if (extra < MinimumPortraitGrowth) return expanded
+
+            val padExtra = (extra * 0.46f).coerceAtMost(MaximumPortraitPad - expanded.pad)
+            val safetyExtra = extra * 0.12f
+            val selectorExtra = extra * 0.10f
+            val workflowExtra = extra - padExtra - safetyExtra - selectorExtra
+            return expanded.copy(
+                workflows = expanded.workflows + workflowExtra,
+                pad = expanded.pad + padExtra,
+                direction = expanded.direction + padExtra / 3f,
+                safety = expanded.safety + safetyExtra,
+                selectors = expanded.selectors + selectorExtra,
             )
         }
 
@@ -132,5 +152,30 @@ internal data class Layout(
         private val LandscapeColumnGap = 12.dp
         private val MinimumTarget = 48.dp
         private val MinimumPad = MinimumTarget * 3f
+        private val MinimumPortraitGrowth = 12.dp
+        private val MaximumPortraitGrowth = 72.dp
+        private val MaximumPortraitPad = 270.dp
+
+        private fun Layout.interpolate(target: Layout, fraction: Float): Layout = copy(
+            horizontalPadding = interpolate(horizontalPadding, target.horizontalPadding, fraction),
+            gap = interpolate(gap, target.gap, fraction),
+            agents = interpolate(agents, target.agents, fraction),
+            agentAction = interpolate(agentAction, target.agentAction, fraction),
+            contextGap = interpolate(contextGap, target.contextGap, fraction),
+            status = interpolate(status, target.status, fraction),
+            focusAction = interpolate(focusAction, target.focusAction, fraction),
+            layers = interpolate(layers, target.layers, fraction),
+            workflows = interpolate(workflows, target.workflows, fraction),
+            pad = interpolate(pad, target.pad, fraction),
+            direction = interpolate(direction, target.direction, fraction),
+            center = interpolate(center, target.center, fraction),
+            actionGap = interpolate(actionGap, target.actionGap, fraction),
+            safety = interpolate(safety, target.safety, fraction),
+            selectors = interpolate(selectors, target.selectors, fraction),
+            voice = interpolate(voice, target.voice, fraction),
+        )
+
+        private fun interpolate(start: Dp, end: Dp, fraction: Float): Dp =
+            start + (end - start) * fraction
     }
 }

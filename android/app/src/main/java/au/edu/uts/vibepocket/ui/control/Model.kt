@@ -6,6 +6,7 @@ import au.edu.uts.vibepocket.ui.control.sheet.Handle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +45,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selectableGroup
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,7 +63,11 @@ internal fun Model(
     modifier: Modifier = Modifier,
 ) {
     val largeText = largeText(LocalDensity.current.fontScale)
-    val pending = inFlightIds.any { it.startsWith("model:") }
+    val pendingId = pendingSelectionId("model", inFlightIds)
+    val pending = pendingId != null
+    val confirmed = state.label.ifBlank { "Choose" }
+    val target = state.options.firstOrNull { it.id == pendingId }?.label ?: pendingId
+    val display = selectionDisplay(confirmed, target)
     val showProgress = progressVisible(pending)
     val enabled = modelSelectionAllowed(
         blocked = blocked,
@@ -87,11 +93,11 @@ internal fun Model(
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
             .semantics {
                 role = Role.Button
-                contentDescription = "Model, ${state.label.ifBlank { "Choose" }}"
+                contentDescription = selectionDescription("Model", confirmed, target)
                 if (!enabled) disabled()
             }
             .clickable(enabled = enabled) { if (enabled) showOptions = true }
-            .alpha(if (enabled) 1f else 0.62f)
+            .alpha(if (enabled || pending) 1f else 0.62f)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -109,8 +115,8 @@ internal fun Model(
                 Text("Model", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
             Text(
-                state.label.ifBlank { "Choose" },
-                maxLines = 1,
+                if (largeText) "Model: $display" else display,
+                maxLines = if (largeText) 2 else 1,
                 overflow = TextOverflow.Ellipsis,
                 style = if (largeText) {
                     MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp)
@@ -136,7 +142,8 @@ internal fun Model(
                 Modifier
                     .fillMaxWidth()
                     .heightIn(max = 480.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .semantics { selectableGroup() },
             ) {
                 Text(
                     "Choose model",
@@ -146,18 +153,22 @@ internal fun Model(
                 )
                 state.options.forEach { option ->
                     val optionPending = inFlightIds.contains("model:${option.id}")
-                    val optionEnabled = enabled && !optionPending && !option.selected
+                    val optionEnabled = enabled && !optionPending
                     ListItem(
                         headlineContent = { Text(option.label) },
-                        supportingContent = if (option.selected) ({ Text("Current model") }) else null,
                         trailingContent = when {
                             optionPending -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
-                            option.selected -> ({ Icon(Icons.Default.Check, contentDescription = "Selected") })
+                            option.selected -> ({ Icon(Icons.Default.Check, contentDescription = null) })
                             else -> null
                         },
-                        modifier = Modifier.fillMaxWidth().clickable(enabled = optionEnabled) {
-                            if (optionEnabled && onModel(option.id)) showOptions = false
-                        },
+                        modifier = Modifier.fillMaxWidth().selectable(
+                            selected = option.selected,
+                            enabled = optionEnabled,
+                            role = Role.RadioButton,
+                            onClick = {
+                                if (!option.selected && onModel(option.id)) showOptions = false
+                            },
+                        ),
                     )
                 }
                 Spacer(Modifier.height(16.dp))

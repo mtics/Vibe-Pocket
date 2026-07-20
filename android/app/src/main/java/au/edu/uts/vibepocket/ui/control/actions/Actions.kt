@@ -113,7 +113,7 @@ internal fun Actions(
             horizontalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
             listOf(
-                catalog.find("clear_input") to "Clear",
+                catalog.find("clear_input") to "Hold clear",
                 catalog.find("reject") to "Reject",
                 catalog.find("stop") to "Stop",
             ).forEach { (control, label) ->
@@ -207,7 +207,7 @@ internal fun LandscapeActions(
             horizontalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
             listOf(
-                catalog.find("clear_input") to "Clear",
+                catalog.find("clear_input") to "Hold clear",
                 catalog.find("reject") to "Reject",
                 catalog.find("stop") to "Stop",
             ).forEach { (control, label) ->

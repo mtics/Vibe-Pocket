@@ -6,6 +6,7 @@ import au.edu.uts.vibepocket.ui.control.sheet.Handle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,10 +40,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selectableGroup
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,7 +59,11 @@ internal fun Mode(
 ) {
     val largeText = largeText(LocalDensity.current.fontScale)
     var showOptions by remember(snapshot.desktop?.focusedAgentId) { mutableStateOf(false) }
-    val pending = inFlightIds.any { it.startsWith("mode:") }
+    val pendingId = pendingSelectionId("mode", inFlightIds)
+    val pending = pendingId != null
+    val confirmed = state.label.ifBlank { "Unavailable" }
+    val target = state.options.firstOrNull { it.id == pendingId }?.label ?: pendingId
+    val display = selectionDisplay(confirmed, target)
     val showProgress = progressVisible(pending)
     val enabled = !blocked && !pending && snapshot.transportFresh &&
         snapshot.capabilities.modeCycle && state.available && state.options.isNotEmpty() &&
@@ -71,7 +78,7 @@ internal fun Mode(
             .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.34f), RoundedCornerShape(8.dp))
             .semantics {
                 role = Role.Button
-                contentDescription = "Mode, ${state.label.ifBlank { "Unavailable" }}"
+                contentDescription = selectionDescription("Mode", confirmed, target)
                 if (!enabled) disabled()
             }
             .clickable(enabled = enabled) { showOptions = true }
@@ -79,33 +86,35 @@ internal fun Mode(
             .padding(horizontal = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (showProgress) {
-            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-        } else {
-            Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                Column(
-                    Modifier.weight(1f),
-                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
-                ) {
-                    if (!largeText) {
-                        Text("Mode", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-                    }
-                    Text(
-                        state.label.ifBlank { "Unavailable" },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = if (largeText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                Modifier.weight(1f),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+            ) {
                 if (!largeText) {
-                    Icon(
-                        Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
+                    Text("Mode", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
+                Text(
+                    if (largeText) "Mode: $display" else display,
+                    maxLines = if (largeText) 2 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = if (largeText) {
+                        MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, lineHeight = 10.sp)
+                    } else {
+                        MaterialTheme.typography.labelMedium
+                    },
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            if (showProgress) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else if (!largeText) {
+                Icon(
+                    Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
             }
         }
     }
@@ -115,25 +124,32 @@ internal fun Mode(
             onDismissRequest = { showOptions = false },
             dragHandle = { Handle() },
         ) {
-            Text(
-                "Mode",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-            )
-            state.options.forEach { option ->
-                val selected = option.id == state.id
-                ListItem(
-                    headlineContent = { Text(option.label) },
-                    supportingContent = { Text(option.id) },
-                    trailingContent = {
-                        if (selected) Icon(Icons.Default.Check, contentDescription = "Selected")
-                    },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
-                        .clickable(enabled = enabled && !selected) {
-                            if (onMode(option.id)) showOptions = false
-                        },
+            Column(Modifier.semantics { selectableGroup() }) {
+                Text(
+                    "Mode",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 )
+                state.options.forEach { option ->
+                    val selected = option.id == state.id
+                    ListItem(
+                        headlineContent = { Text(option.label) },
+                        supportingContent = { Text(option.id) },
+                        trailingContent = {
+                            if (selected) Icon(Icons.Default.Check, contentDescription = null)
+                        },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                            .selectable(
+                                selected = selected,
+                                enabled = enabled,
+                                role = Role.RadioButton,
+                                onClick = {
+                                    if (!selected && onMode(option.id)) showOptions = false
+                                },
+                            ),
+                    )
+                }
             }
         }
     }

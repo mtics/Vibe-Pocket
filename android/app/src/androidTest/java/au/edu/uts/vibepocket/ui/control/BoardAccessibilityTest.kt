@@ -31,6 +31,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Before
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -59,6 +60,19 @@ class BoardAccessibilityTest {
         rule.onNodeWithContentDescription("Up", substring = true)
             .assertIsEnabled()
             .assertHasClickAction()
+    }
+
+    @Test
+    fun holdOnlyClearDoesNotAdvertiseAnEmptyClick() {
+        rule.setContent { BoardPreview(Fixtures.snapshot()) }
+
+        val clear = rule.onNodeWithContentDescription("Hold clear", substring = true)
+            .fetchSemanticsNode().config
+        assertFalse(clear.contains(SemanticsActions.OnClick))
+        assertTrue(
+            clear.getOrElse(SemanticsActions.CustomActions) { emptyList() }
+                .any { it.label == "Run hold mapping" },
+        )
     }
 
     @Test

@@ -45,7 +45,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -65,6 +64,7 @@ private data class Events(
 @Composable
 internal fun Screen(
     snapshot: Snapshot,
+    landscape: Boolean,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
     busyGroups: Set<ConflictGroup>,
@@ -103,15 +103,14 @@ internal fun Screen(
         layer = onLayer,
     )
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-        val largeText = largeText(LocalDensity.current.fontScale)
-        if (maxWidth > maxHeight) {
+        if (landscape) {
             Landscape(
                 snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked,
                 voiceInput, events, Layout.landscape(maxWidth, maxHeight), onSettings, hand,
             )
         } else {
             val layout = Layout.of(maxHeight)
-            if (maxHeight < layout.content || largeText) {
+            if (maxHeight < layout.content) {
                 Short(snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
             } else {
                 Portrait(snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)

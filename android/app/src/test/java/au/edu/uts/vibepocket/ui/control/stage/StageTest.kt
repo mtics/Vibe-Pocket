@@ -29,9 +29,10 @@ class StageTest {
 
     @Test
     fun plainReadyStatusDoesNotPretendToHaveMoreContent() {
-        val state = State(State.Kind.READY, Activity.IDLE, "Ready", null, null)
+        val state = State(State.Kind.READY, Activity.IDLE, "Ready", "Vibe Pocket", null)
 
         assertFalse(stageCanExpand(state))
-        assertEquals("Ready", stageDescription(state))
+        assertEquals(null, stageSupportingText(state))
+        assertEquals("Ready. Vibe Pocket", stageDescription(state))
     }
 }

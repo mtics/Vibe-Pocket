@@ -2,7 +2,6 @@ package au.edu.uts.vibepocket.ui
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
-import android.content.res.Configuration
 import android.content.Intent
 import android.os.Build
 import android.view.HapticFeedbackConstants
@@ -83,6 +82,9 @@ import kotlinx.coroutines.launch
 internal fun voiceStopTarget(ownerInputId: String?, visibleInputId: String): String =
     ownerInputId ?: visibleInputId
 
+internal fun useLandscapeBoard(widthDp: Int, heightDp: Int): Boolean =
+    widthDp > heightDp && widthDp >= 544 && heightDp >= 324
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun App(
@@ -92,7 +94,8 @@ internal fun App(
     onDisplay: (Display) -> Boolean,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val configuration = LocalConfiguration.current
+    val landscape = useLandscapeBoard(configuration.screenWidthDp, configuration.screenHeightDp)
     val snackbar = remember { SnackbarHostState() }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var voiceOwnerInputId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -355,6 +358,7 @@ internal fun App(
             } else {
                 Screen(
                     snapshot = snapshot,
+                    landscape = landscape,
                     hidNavigationAvailable = hidState.connected,
                     inFlightIds = state.inFlightIds,
                     busyGroups = state.busyGroups,

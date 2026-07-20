@@ -62,6 +62,20 @@ class PresentationTest {
     }
 
     @Test
+    fun selectorFeedbackKeepsConfirmedAndRequestedValuesDistinct() {
+        val pending = setOf("input:key_accept:tap", "model:gpt-5.4")
+
+        assertEquals("gpt-5.4", pendingSelectionId("model", pending))
+        assertNull(pendingSelectionId("mode", pending))
+        assertEquals("GPT-5.3 -> GPT-5.4", selectionDisplay("GPT-5.3", "GPT-5.4"))
+        assertEquals(
+            "Model, GPT-5.3, changing to GPT-5.4",
+            selectionDescription("Model", "GPT-5.3", "GPT-5.4"),
+        )
+        assertEquals("Model, GPT-5.4", selectionDescription("Model", "GPT-5.4", "GPT-5.4"))
+    }
+
+    @Test
     fun voiceMappingIdentitySurvivesAvailabilityAndActiveRefreshes() {
         val input = Input("touch_primary", Input.Kind.TOUCH, "Touch", "touch")
         val idle = snapshot(

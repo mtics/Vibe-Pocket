@@ -50,6 +50,7 @@ internal fun Stage(state: State, modifier: Modifier = Modifier) {
     val accent = colorFor(state.activity)
     val largeText = au.edu.uts.vibepocket.ui.control.largeText(LocalDensity.current.fontScale)
     val expandable = stageCanExpand(state)
+    val supporting = stageSupportingText(state)
     var showDetails by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.kind, state.task) { showDetails = false }
     Box(
@@ -84,9 +85,9 @@ internal fun Stage(state: State, modifier: Modifier = Modifier) {
                     style = if (largeText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
-                if (!largeText) {
+                if (!largeText && supporting != null) {
                     Text(
-                        state.task ?: state.selection ?: state.detail.orEmpty(),
+                        supporting,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -132,7 +133,10 @@ internal fun Stage(state: State, modifier: Modifier = Modifier) {
 }
 
 internal fun stageCanExpand(state: State): Boolean =
-    listOf(state.task, state.detail, state.selection, state.meta).any { !it.isNullOrBlank() }
+    listOf(state.detail, state.selection, state.meta).any { !it.isNullOrBlank() }
+
+internal fun stageSupportingText(state: State): String? =
+    state.selection?.takeIf(String::isNotBlank) ?: state.detail?.takeIf(String::isNotBlank)
 
 internal fun stageDescription(state: State): String =
     listOfNotNull(state.title, state.task, state.detail, state.selection, state.meta)

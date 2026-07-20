@@ -67,6 +67,15 @@ class UiRobustnessTest {
     }
 
     @Test
+    fun landscapeBoardRequiresRoomForBothControlColumns() {
+        assertTrue(useLandscapeBoard(widthDp = 873, heightDp = 393))
+        assertTrue(useLandscapeBoard(widthDp = 544, heightDp = 324))
+        assertFalse(useLandscapeBoard(widthDp = 543, heightDp = 324))
+        assertFalse(useLandscapeBoard(widthDp = 640, heightDp = 300))
+        assertFalse(useLandscapeBoard(widthDp = 393, heightDp = 873))
+    }
+
+    @Test
     fun activeVoiceKeepsTheDedicatedControlAvailableAfterRemapping() {
         assertTrue(voiceControlAvailable("key_voice", mapped = false, active = true))
         assertTrue(voiceControlAvailable("key_delete", mapped = true, active = true))

@@ -11,6 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -195,9 +196,6 @@ internal fun InputButton(
                     }
                     if (voiceToggleEnabled) {
                         onClick(label = voiceActionLabel) { toggleVoice() }
-                        customActions = listOf(
-                            CustomAccessibilityAction(voiceActionLabel) { toggleVoice() },
-                        )
                     } else {
                         disabled()
                     }
@@ -254,6 +252,23 @@ internal fun InputButton(
                         onClick = { toggleVoice() },
                     )
                 } else if (voiceMapping != null || repeat) {
+                    Modifier
+                } else if (gestures.isNotEmpty() && Gesture.Kind.TAP !in gestures && !pending && !blocked) {
+                    Modifier.pointerInput(input.id, gestures) {
+                        detectTapGestures(
+                            onDoubleTap = if (Gesture.Kind.DOUBLE_TAP in gestures) {
+                                { currentInput(input.id, Gesture.Kind.DOUBLE_TAP) }
+                            } else {
+                                null
+                            },
+                            onLongPress = if (Gesture.Kind.HOLD in gestures) {
+                                { currentInput(input.id, Gesture.Kind.HOLD) }
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                } else if (Gesture.Kind.TAP !in gestures) {
                     Modifier
                 } else {
                     Modifier.combinedClickable(
@@ -341,8 +356,8 @@ private fun Label(
     Text(
         value,
         modifier = modifier,
-        maxLines = if (largeText) 1 else 2,
-        softWrap = !largeText,
+        maxLines = 2,
+        softWrap = true,
         overflow = TextOverflow.Ellipsis,
         style = when {
             largeText -> MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, lineHeight = 10.sp)

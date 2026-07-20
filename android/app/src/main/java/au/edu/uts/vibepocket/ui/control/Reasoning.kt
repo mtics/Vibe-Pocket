@@ -6,6 +6,7 @@ import au.edu.uts.vibepocket.ui.control.sheet.Handle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selectableGroup
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -104,8 +106,8 @@ internal fun Reasoning(
                 Text("Reasoning", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
             Text(
-                display,
-                maxLines = 1,
+                if (largeText) "Reasoning: $display" else display,
+                maxLines = if (largeText) 2 else 1,
                 overflow = TextOverflow.Ellipsis,
                 style = if (largeText) {
                     MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, lineHeight = 10.sp)
@@ -130,7 +132,10 @@ internal fun Reasoning(
             onDismissRequest = { showOptions = false },
             dragHandle = { Handle() },
         ) {
-            Column(Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()).semantics { selectableGroup() },
+            ) {
                 Text(
                     "Choose reasoning",
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
@@ -144,12 +149,17 @@ internal fun Reasoning(
                         headlineContent = { Text(level.displayLabel) },
                         trailingContent = when {
                             optionPending -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
-                            selected -> ({ Icon(Icons.Default.Check, contentDescription = "Selected") })
+                            selected -> ({ Icon(Icons.Default.Check, contentDescription = null) })
                             else -> null
                         },
-                        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled && !selected && !optionPending) {
-                            if (onReasoning(level)) showOptions = false
-                        },
+                        modifier = Modifier.fillMaxWidth().selectable(
+                            selected = selected,
+                            enabled = enabled && !optionPending,
+                            role = Role.RadioButton,
+                            onClick = {
+                                if (!selected && onReasoning(level)) showOptions = false
+                            },
+                        ),
                     )
                 }
                 Spacer(Modifier.height(16.dp))

@@ -19,7 +19,7 @@ internal fun Voice(
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
     blocked: Boolean,
-    height: Dp = 84.dp,
+    height: Dp = 96.dp,
     modifier: Modifier = Modifier,
 ) {
     InputButton(

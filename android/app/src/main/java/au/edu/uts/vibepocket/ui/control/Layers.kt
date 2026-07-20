@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +30,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,21 +62,25 @@ internal fun Layers(
                         role = Role.Button
                         this.selected = selected
                         contentDescription = layerSemanticsLabel(index, layer.name)
+                        if (loading) stateDescription = "Changing to ${compactLayerName(layer.name, index)}"
                     }
                     .clickable(enabled = enabled && !selected && !loading) { onLayer(layer.id) }
                     .alpha(if (enabled || selected) 1f else 0.58f)
                     .padding(horizontal = 5.dp),
                 contentAlignment = Alignment.Center,
             ) {
+                Text(
+                    if (largeText) "${index + 1}" else compactLayerName(layer.name, index),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    modifier = Modifier.alpha(if (loading) 0.52f else 1f),
+                )
                 if (showProgress) {
-                    CircularProgressIndicator(strokeWidth = 2.dp)
-                } else {
-                    Text(
-                        if (largeText) "${index + 1}" else compactLayerName(layer.name, index),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    CircularProgressIndicator(
+                        Modifier.align(Alignment.TopEnd).size(14.dp),
+                        strokeWidth = 2.dp,
                     )
                 }
             }

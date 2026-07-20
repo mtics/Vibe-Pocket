@@ -80,6 +80,7 @@ internal fun BoardPreview(
                 Box(Modifier.weight(1f)) {
                     Screen(
                         snapshot = snapshot,
+                        landscape = landscape,
                         hidNavigationAvailable = true,
                         inFlightIds = inFlightIds,
                         busyGroups = busyGroups,

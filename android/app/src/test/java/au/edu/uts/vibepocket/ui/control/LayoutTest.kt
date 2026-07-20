@@ -19,15 +19,31 @@ class LayoutTest {
     }
 
     @Test
-    fun shorterMainSurfaceKeepsTheCompactGeometryStable() {
-        val first = Layout.of(620.dp)
-        val second = Layout.of(600.dp)
+    fun compactPortraitContinuouslyAbsorbsAvailableHeight() {
+        val floor = Layout.of(590.dp)
+        val middle = Layout.of(620.dp)
+        val ceiling = Layout.of(642.dp)
 
-        assertEquals(first, second)
-        assertEquals(228.dp, first.pad)
-        assertEquals(76.dp, first.direction)
-        assertEquals(590.dp, first.content)
-        assertTrue(first.content <= 600.dp)
+        assertEquals(590.dp, floor.content)
+        assertEquals(620f, middle.content.value, 0.01f)
+        assertEquals(642f, ceiling.content.value, 0.01f)
+        assertTrue(floor.pad < middle.pad)
+        assertTrue(middle.pad < ceiling.pad)
+    }
+
+    @Test
+    fun tallerPortraitInvestsSpareHeightInFrequentControls() {
+        val layout = Layout.of(715.dp)
+        val boardWidth = 393.dp - layout.horizontalPadding * 2f
+        val actionWidth = boardWidth - layout.pad - layout.actionGap
+
+        assertEquals(715f, layout.content.value, 0.01f)
+        assertEquals(270.dp, layout.pad)
+        assertTrue(layout.direction > 81.dp)
+        assertTrue(layout.workflows > 72.dp)
+        assertTrue(layout.safety > 56.dp)
+        assertTrue(layout.selectors > 64.dp)
+        assertTrue(actionWidth >= 72.dp)
     }
 
     @Test

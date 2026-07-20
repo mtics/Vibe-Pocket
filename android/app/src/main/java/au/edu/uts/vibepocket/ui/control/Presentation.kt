@@ -81,3 +81,16 @@ internal fun reasoningInput(
 
 internal fun voiceAccessibilityAction(active: Boolean): String =
     if (active) "Stop listening" else "Start listening"
+
+internal fun pendingSelectionId(prefix: String, inFlightIds: Set<String>): String? = inFlightIds
+    .firstNotNullOfOrNull { id ->
+        id.removePrefix("$prefix:").takeIf { it != id && it.isNotBlank() }
+    }
+
+internal fun selectionDisplay(confirmed: String, target: String?): String =
+    target?.takeIf { it != confirmed }?.let { "$confirmed -> $it" } ?: confirmed
+
+internal fun selectionDescription(name: String, confirmed: String, target: String?): String =
+    target?.takeIf { it != confirmed }
+        ?.let { "$name, $confirmed, changing to $it" }
+        ?: "$name, $confirmed"
