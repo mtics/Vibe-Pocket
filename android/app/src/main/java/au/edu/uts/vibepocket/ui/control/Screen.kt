@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -91,6 +92,7 @@ internal fun Screen(
         layer = onLayer,
     )
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        val largeText = largeText(LocalDensity.current.fontScale)
         if (maxWidth > maxHeight) {
             Landscape(
                 snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked,
@@ -98,7 +100,7 @@ internal fun Screen(
             )
         } else {
             val layout = Layout.of(maxHeight)
-            if (maxHeight < layout.content) {
+            if (maxHeight < layout.content || largeText) {
                 Short(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)
             } else {
                 Portrait(snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked, events, layout, hand)

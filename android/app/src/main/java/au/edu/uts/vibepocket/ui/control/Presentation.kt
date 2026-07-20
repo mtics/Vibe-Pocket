@@ -12,6 +12,8 @@ internal data class VoiceMappingIdentity(
     val inputId: String,
 )
 
+internal fun largeText(fontScale: Float): Boolean = fontScale >= 1.5f
+
 internal fun Snapshot.voiceMappingIdentity(inputId: String): VoiceMappingIdentity? {
     val profile = desktop?.profile
     if (profile == null) {

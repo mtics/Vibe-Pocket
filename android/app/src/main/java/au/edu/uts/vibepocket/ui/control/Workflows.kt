@@ -16,8 +16,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 internal fun Workflows(
@@ -30,6 +32,7 @@ internal fun Workflows(
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val largeText = largeText(LocalDensity.current.fontScale)
     val items = listOf(
         "review-pr" to "Review",
         "debug" to "Debug",
@@ -44,7 +47,17 @@ internal fun Workflows(
                     Modifier.weight(1f).fillMaxSize().clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant).alpha(0.52f),
                     contentAlignment = Alignment.Center,
-                ) { Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium) }
+                ) {
+                    Text(
+                        label,
+                        style = if (largeText) {
+                            MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                        } else {
+                            MaterialTheme.typography.labelMedium
+                        },
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
             } else {
                 InputButton(
                     input = control.input,

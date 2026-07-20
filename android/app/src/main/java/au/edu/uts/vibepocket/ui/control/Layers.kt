@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.ui.control
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.ui.compositedBackground
 import au.edu.uts.vibepocket.ui.contrastingColor
+import au.edu.uts.vibepocket.ui.layerSemanticsLabel
 import au.edu.uts.vibepocket.ui.profileColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,7 +23,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -39,6 +42,7 @@ internal fun Layers(
     onLayer: (String) -> Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val largeText = largeText(LocalDensity.current.fontScale)
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         layers.take(6).forEachIndexed { index, layer ->
             val selected = layer.id == active
@@ -51,7 +55,11 @@ internal fun Layers(
                 Modifier.weight(1f).fillMaxSize().clip(RoundedCornerShape(8.dp))
                     .background(background)
                     .border(1.dp, if (selected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
-                    .semantics { role = Role.Button; this.selected = selected }
+                    .semantics {
+                        role = Role.Button
+                        this.selected = selected
+                        contentDescription = layerSemanticsLabel(index, layer.name)
+                    }
                     .clickable(enabled = enabled && !selected && !loading) { onLayer(layer.id) }
                     .alpha(if (enabled || selected) 1f else 0.58f)
                     .padding(horizontal = 5.dp),
@@ -61,7 +69,7 @@ internal fun Layers(
                     CircularProgressIndicator(strokeWidth = 2.dp)
                 } else {
                     Text(
-                        compactLayerName(layer.name, index),
+                        if (largeText) "${index + 1}" else compactLayerName(layer.name, index),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelSmall,

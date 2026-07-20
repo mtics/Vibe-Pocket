@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
@@ -63,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 internal enum class LabelPlacement {
     HIDDEN,
@@ -105,6 +107,7 @@ internal fun InputButton(
     shape: Shape = RoundedCornerShape(8.dp),
     modifier: Modifier,
 ) {
+    val largeText = largeText(LocalDensity.current.fontScale)
     val gestures = Gesture.Kind.entries.filter { candidate ->
         (gesture == null || gesture == candidate) && snapshot.inputEnabled(input.id, candidate)
     }
@@ -261,10 +264,15 @@ internal fun InputButton(
             .padding(
                 horizontal = when (labelPlacement) {
                     LabelPlacement.HIDDEN -> 0.dp
+                    LabelPlacement.BELOW -> if (largeText) 2.dp else 8.dp
                     LabelPlacement.TEXT -> 4.dp
-                    else -> 8.dp
+                    LabelPlacement.BESIDE -> 8.dp
                 },
-                vertical = if (labelPlacement == LabelPlacement.HIDDEN) 0.dp else 7.dp,
+                vertical = when {
+                    labelPlacement == LabelPlacement.HIDDEN -> 0.dp
+                    largeText -> 2.dp
+                    else -> 7.dp
+                },
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -281,8 +289,10 @@ internal fun InputButton(
                     Icon(icon, contentDescription = null, tint = visualAccent, modifier = Modifier.size(27.dp))
                 }
                 LabelPlacement.BELOW -> {
-                    Icon(icon, contentDescription = null, tint = visualAccent, modifier = Modifier.size(23.dp))
-                    Spacer(Modifier.height(5.dp))
+                    if (!largeText) {
+                        Icon(icon, contentDescription = null, tint = visualAccent, modifier = Modifier.size(23.dp))
+                        Spacer(Modifier.height(5.dp))
+                    }
                     Label(label, modifier = Modifier.fillMaxWidth())
                 }
                 LabelPlacement.BESIDE -> {
@@ -319,12 +329,18 @@ private fun Label(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
+    val largeText = largeText(LocalDensity.current.fontScale)
     Text(
         value,
         modifier = modifier,
-        maxLines = 2,
+        maxLines = if (largeText) 1 else 2,
+        softWrap = !largeText,
         overflow = TextOverflow.Ellipsis,
-        style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
+        style = when {
+            largeText -> MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, lineHeight = 10.sp)
+            compact -> MaterialTheme.typography.labelSmall
+            else -> MaterialTheme.typography.labelMedium
+        },
         fontWeight = FontWeight.Medium,
         textAlign = TextAlign.Center,
     )

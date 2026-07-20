@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -33,6 +34,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun Stage(state: State, modifier: Modifier = Modifier) {
     val accent = colorFor(state.activity)
+    val largeText = au.edu.uts.vibepocket.ui.control.largeText(LocalDensity.current.fontScale)
     Box(
         modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
@@ -53,18 +55,20 @@ internal fun Stage(state: State, modifier: Modifier = Modifier) {
                     state.title,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = if (largeText) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Text(
-                    state.task ?: state.selection ?: state.detail.orEmpty(),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                if (!largeText) {
+                    Text(
+                        state.task ?: state.selection ?: state.detail.orEmpty(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
             }
-            state.meta?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+            if (!largeText) state.meta?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
         }
     }
 }

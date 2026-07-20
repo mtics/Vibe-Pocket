@@ -34,12 +34,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.CollectionInfo
 import androidx.compose.ui.semantics.CollectionItemInfo
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.collectionInfo
 import androidx.compose.ui.semantics.collectionItemInfo
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -59,6 +61,7 @@ internal fun Agents(
     onSkip: () -> Boolean = { false },
 ) {
     val slots = snapshot.agentSlots().filter { it.agent != null }
+    val largeText = largeText(LocalDensity.current.fontScale)
     if (slots.isEmpty()) {
         Row(
             modifier = modifier
@@ -103,7 +106,7 @@ internal fun Agents(
                     val loading = "agent:${agent.id}" in inFlightIds
                     Row(
                         modifier = Modifier
-                            .width(agentChipWidth(maxWidth))
+                            .width(agentChipWidth(maxWidth, largeText = largeText))
                             .heightIn(min = 48.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(if (slot.focused) color.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surface)
@@ -121,6 +124,7 @@ internal fun Agents(
                                     columnIndex = index,
                                     columnSpan = 1,
                                 )
+                                contentDescription = "${agent.label}, ${labelFor(agent.activity)}"
                                 stateDescription = agentPositionDescription(slot.focused, index, slots.size)
                             }
                             .clickable(enabled = slot.canFocus && !loading && !blocked, onClick = { onAgent(agent.id) })
@@ -138,9 +142,15 @@ internal fun Agents(
                                 agent.label,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.labelLarge,
+                                style = if (largeText) {
+                                    MaterialTheme.typography.labelSmall
+                                } else {
+                                    MaterialTheme.typography.labelLarge
+                                },
                             )
-                            Text(labelFor(agent.activity), color = color, style = MaterialTheme.typography.labelSmall)
+                            if (!largeText) {
+                                Text(labelFor(agent.activity), color = color, style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
@@ -149,8 +159,8 @@ internal fun Agents(
     }
 }
 
-internal fun agentChipWidth(available: Dp, gap: Dp = 8.dp): Dp =
-    if (available >= 280.dp) (available - gap) / 2f else available
+internal fun agentChipWidth(available: Dp, gap: Dp = 8.dp, largeText: Boolean = false): Dp =
+    if (!largeText && available >= 280.dp) (available - gap) / 2f else available
 
 internal fun agentPositionDescription(focused: Boolean, index: Int, total: Int): String =
     listOfNotNull(if (focused) "Focused" else null, "${index + 1} of $total").joinToString(", ")

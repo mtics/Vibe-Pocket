@@ -38,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
@@ -46,6 +47,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -57,6 +59,7 @@ internal fun Reasoning(
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val largeText = largeText(LocalDensity.current.fontScale)
     val pending = inFlightIds.any { it.startsWith("reasoning:") }
     val options = state.options.ifEmpty {
         listOfNotNull(state.decreaseTo, state.level, state.increaseTo).distinct()
@@ -75,16 +78,28 @@ internal fun Reasoning(
     ) {
         Step(state.decreaseTo, "Decrease reasoning", Icons.Default.Remove, enabled, pending, onReasoning)
         Column(
-            Modifier.weight(1f).clickable(enabled = enabled) { showOptions = true },
+            Modifier.weight(1f)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "Reasoning, ${state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" }}"
+                    if (!enabled) disabled()
+                }
+                .clickable(enabled = enabled) { showOptions = true },
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text("Reasoning", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            if (!largeText) {
+                Text("Reasoning", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            }
             Text(
                 state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.labelMedium,
+                style = if (largeText) {
+                    MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, lineHeight = 10.sp)
+                } else {
+                    MaterialTheme.typography.labelMedium
+                },
                 fontWeight = FontWeight.SemiBold,
             )
         }

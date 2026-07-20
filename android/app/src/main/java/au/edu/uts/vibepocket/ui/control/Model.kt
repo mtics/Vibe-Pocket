@@ -38,9 +38,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,6 +59,7 @@ internal fun Model(
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val largeText = largeText(LocalDensity.current.fontScale)
     val pending = inFlightIds.any { it.startsWith("model:") }
     val enabled = modelSelectionAllowed(
         blocked = blocked,
@@ -75,31 +83,44 @@ internal fun Model(
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surface)
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+            .semantics {
+                role = Role.Button
+                contentDescription = "Model, ${state.label.ifBlank { "Choose" }}"
+                if (!enabled) disabled()
+            }
             .clickable(enabled = enabled) { if (enabled) showOptions = true }
             .alpha(if (enabled) 1f else 0.62f)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            Icons.Default.SmartToy,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.tertiary,
-            modifier = Modifier.size(20.dp),
-        )
-        Spacer(Modifier.width(6.dp))
+        if (!largeText) {
+            Icon(
+                Icons.Default.SmartToy,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
         Column(Modifier.weight(1f)) {
-            Text("Model", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            if (!largeText) {
+                Text("Model", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+            }
             Text(
                 state.label.ifBlank { "Choose" },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.labelMedium,
+                style = if (largeText) {
+                    MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp)
+                } else {
+                    MaterialTheme.typography.labelMedium
+                },
                 fontWeight = FontWeight.Medium,
             )
         }
         if (pending) {
             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-        } else {
+        } else if (!largeText) {
             Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
         }
     }

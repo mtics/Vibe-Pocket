@@ -148,6 +148,14 @@ class PresentationTest {
         assertEquals(145.dp, agentChipWidth(298.dp))
         assertEquals(175.dp, agentChipWidth(358.dp))
         assertEquals(240.dp, agentChipWidth(240.dp))
+        assertEquals(298.dp, agentChipWidth(298.dp, largeText = true))
+    }
+
+    @Test
+    fun largeTextStartsAtTheDedicatedAccessibilityGeometry() {
+        assertFalse(largeText(1.3f))
+        assertTrue(largeText(1.5f))
+        assertTrue(largeText(2f))
     }
 
     @Test
