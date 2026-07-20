@@ -314,21 +314,23 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
             }
         },
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        "Vibe Pocket",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                },
-                actions = {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Open settings")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
+            if (!landscape) {
+                TopAppBar(
+                    title = {
+                        Text(
+                            "Vibe Pocket",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    },
+                    actions = {
+                        IconButton(onClick = { showSettings = true }) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Open settings")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+            }
         },
     ) { padding ->
         Box(
@@ -354,6 +356,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                     onReasoning = onReasoning,
                     onLayer = onLayer,
                     voiceInput = dedicatedVoiceInput(snapshot, voiceOwnerInputId),
+                    onSettings = { showSettings = true },
                 )
             }
         }

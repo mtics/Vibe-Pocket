@@ -29,6 +29,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.focusable
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -37,6 +42,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 private data class Events(
@@ -67,6 +73,7 @@ internal fun Screen(
     onReasoning: (Reasoning.Level) -> Boolean,
     onLayer: (String) -> Boolean,
     voiceInput: Input,
+    onSettings: () -> Unit,
 ) {
     val catalog = Catalog.from(snapshot)
     val blocked = contextTransitionPending || !snapshot.transportFresh
@@ -85,7 +92,7 @@ internal fun Screen(
         if (maxWidth > maxHeight) {
             Landscape(
                 snapshot, catalog, inFlightIds, hidNavigationAvailable, blocked,
-                voiceInput, events, Layout.landscape(),
+                voiceInput, events, Layout.landscape(), onSettings,
             )
         } else {
             val layout = Layout.of(maxHeight)
@@ -156,6 +163,7 @@ private fun Landscape(
     voiceInput: Input,
     events: Events,
     layout: Layout,
+    onSettings: () -> Unit,
 ) {
     Row(
         Modifier.widthIn(max = layout.maxWidth).fillMaxWidth().fillMaxHeight()
@@ -166,6 +174,7 @@ private fun Landscape(
             Modifier.weight(1f).fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
+            LandscapeHeader(onSettings, Modifier.height(layout.header))
             Context(snapshot, catalog, inFlightIds, blocked, events, layout)
             LayersRow(snapshot, inFlightIds, blocked, events, layout)
             WorkflowsRow(snapshot, catalog, inFlightIds, blocked, events, layout)
@@ -199,6 +208,24 @@ private fun Landscape(
                 blocked = blocked,
                 height = layout.voice,
             )
+        }
+    }
+}
+
+@Composable
+private fun LandscapeHeader(onSettings: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "Vibe Pocket",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onSettings) {
+            Icon(Icons.Filled.Settings, contentDescription = "Open settings")
         }
     }
 }

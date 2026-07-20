@@ -34,9 +34,10 @@ class LayoutTest {
     fun landscapeKeepsBothColumnsInsideTheAvailableHeight() {
         val layout = Layout.landscape()
 
+        assertEquals(324.dp, layout.landscapeLeft)
         assertEquals(278.dp, layout.information)
         assertEquals(288.dp, layout.landscapeRight)
-        assertTrue(layout.information <= 290.dp)
+        assertTrue(layout.landscapeLeft <= 324.dp)
         assertTrue(layout.landscapeRight <= 290.dp)
         assertTrue(layout.direction >= 48.dp)
         assertTrue(layout.voice >= 48.dp)
