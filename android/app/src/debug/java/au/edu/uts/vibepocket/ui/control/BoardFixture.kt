@@ -185,18 +185,28 @@ internal object Fixtures {
         message: String? = null,
         question: Question? = null,
         voiceActive: Boolean = false,
+        agentCount: Int = 8,
+        focusNext: Boolean = true,
     ): Snapshot = Snapshot(
         revision = "preview-${activity.wireValue}",
         status = Status("ready", message),
         capabilities = capabilities,
         desktop = Desktop(
-            profile = profile,
+            profile = if (focusNext) {
+                profile
+            } else {
+                profile.copy(
+                    layers = profile.layers.map { layer ->
+                        layer.copy(bindings = layer.bindings - "key_focus")
+                    },
+                )
+            },
             gestures = Gesture.Kind.entries.map { Gesture(it, it.wireValue.replace('_', ' ')) },
             choices = emptyList(),
             activeLayerId = "layer-1",
             foreground = true,
             activity = activity,
-            agents = (1..8).map { index ->
+            agents = (1..agentCount.coerceIn(0, 24)).map { index ->
                 Agent(
                     id = "agent-${index.toString(16).padStart(24, '0')}",
                     label = if (index == 1) "Vibe Pocket UI" else "Recent task $index",

@@ -247,11 +247,7 @@ private fun Context(
             )
             RailAction(
                 focusNext, snapshot, inFlightIds, events, blocked,
-                Modifier.width(layout.agentAction).fillMaxHeight()
-                    .then(
-                        if (focusNext == null) Modifier
-                        else Modifier.focusRequester(nextFocus).focusable(),
-                    ),
+                Modifier.width(layout.agentAction).fillMaxHeight(),
             )
         }
         Spacer(Modifier.height(layout.contextGap))
@@ -259,7 +255,10 @@ private fun Context(
             Modifier.fillMaxWidth().height(layout.status),
             horizontalArrangement = Arrangement.spacedBy(layout.gap),
         ) {
-            Stage(snapshot.state(), Modifier.weight(1f).fillMaxHeight())
+            Stage(
+                snapshot.state(),
+                Modifier.weight(1f).fillMaxHeight().focusRequester(nextFocus).focusable(),
+            )
             RailAction(
                 catalog.find("attach"), snapshot, inFlightIds, events, blocked,
                 Modifier.width(layout.focusAction).fillMaxHeight(),

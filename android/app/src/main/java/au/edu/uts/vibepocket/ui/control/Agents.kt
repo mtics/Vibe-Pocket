@@ -86,6 +86,7 @@ internal fun Agents(
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .semantics {
+                    contentDescription = "Active Codex tasks"
                     collectionInfo = CollectionInfo(rowCount = 1, columnCount = slots.size)
                     customActions = listOf(CustomAccessibilityAction("Skip agents", onSkip))
                 },

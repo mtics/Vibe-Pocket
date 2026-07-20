@@ -11,8 +11,10 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -21,6 +23,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.tryPerformAccessibilityChecks
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Before
 import org.junit.Assert.assertEquals
@@ -52,6 +55,21 @@ class BoardAccessibilityTest {
         rule.onNodeWithContentDescription("Up", substring = true)
             .assertIsEnabled()
             .assertHasClickAction()
+    }
+
+    @Test
+    fun skipAgentsFocusesStatusWithTwentyFourTasksAndNoNextBinding() {
+        rule.setContent {
+            BoardPreview(Fixtures.snapshot(agentCount = 24, focusNext = false))
+        }
+
+        val skip = rule.onNodeWithContentDescription("Active Codex tasks")
+            .fetchSemanticsNode().config
+            .getOrElse(SemanticsActions.CustomActions) { emptyList() }
+            .first { it.label == "Skip agents" }
+        rule.runOnIdle { assertTrue(skip.action()) }
+
+        rule.onNode(hasStateDescription("Ready. Vibe Pocket UI")).assertIsFocused()
     }
 
     @Test
