@@ -77,6 +77,14 @@ internal fun voiceControlAvailable(
     dedicated: Boolean = false,
 ): Boolean = mapped || active && (dedicated || inputId == "key_voice")
 
+internal fun inputInteractive(
+    voiceActive: Boolean,
+    blocked: Boolean,
+    pending: Boolean,
+    voiceAvailable: Boolean,
+    hasGestures: Boolean,
+): Boolean = voiceActive || !blocked && !pending && (voiceAvailable || hasGestures)
+
 @Composable
 internal fun InputButton(
     input: Input,
@@ -117,7 +125,13 @@ internal fun InputButton(
     val container = container(action, voiceActive)
     val pending = inFlightIds.any { it.startsWith("input:${input.id}:") } &&
         !snapshot.inputAllowsQueuedRepeat(input.id)
-    val interactive = voiceActive || !blocked && (voiceAvailable || gestures.isNotEmpty())
+    val interactive = inputInteractive(
+        voiceActive = voiceActive,
+        blocked = blocked,
+        pending = pending,
+        voiceAvailable = voiceAvailable,
+        hasGestures = gestures.isNotEmpty(),
+    )
     val voicePressEnabled = voiceAvailable && !voiceActive && !pending && !blocked
     val repeat = navigationRepeatEnabled && !pending && !blocked
     val currentInput by rememberUpdatedState(onInput)
@@ -164,7 +178,11 @@ internal fun InputButton(
                 val description = supportingLabel?.let { "$it, $label" } ?: label
                 contentDescription = if (mapped.isEmpty()) description else "$description. Gestures $mapped"
                 if (voiceControl) {
-                    stateDescription = if (voiceActive) "Listening" else "Ready to listen"
+                    stateDescription = when {
+                        voiceActive -> "Listening"
+                        pending -> "Pending"
+                        else -> "Ready to listen"
+                    }
                     if (voiceToggleEnabled) {
                         onClick(label = voiceActionLabel) { toggleVoice() }
                         customActions = listOf(

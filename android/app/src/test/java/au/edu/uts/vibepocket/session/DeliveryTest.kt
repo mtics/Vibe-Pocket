@@ -43,13 +43,14 @@ class DeliveryTest {
         assertEquals(body, saved.command)
         assertEquals(ConfigValue, saved.config)
         assertEquals("workflow:debug", saved.uiId)
+        assertEquals(PendingCommand.Phase.PREPARED, saved.phase)
         UUID.fromString(saved.operationId)
         assertTrue(client.posts.isEmpty())
         assertEquals(setOf("workflow:debug"), harness.pending.snapshot())
     }
 
     @Test
-    fun restoredNotFoundReplaysExactCommandWithSameOperationId() = runTest {
+    fun restoredPreparedCommandDispatchesExactBodyWithSameOperationId() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val operationId = UUID.randomUUID().toString()
         val body = Command.UpdateLayerColor("layer-2", "#55D6A4")
@@ -60,9 +61,12 @@ class DeliveryTest {
 
         runCurrent()
 
-        assertEquals(listOf(Query(ConfigValue, operationId)), client.queries)
+        assertTrue(client.queries.isEmpty())
         assertEquals(listOf(Post(ConfigValue, body, operationId)), client.posts)
-        assertEquals(listOf(restored), harness.accepted)
+        assertEquals(
+            listOf(restored.copy(phase = PendingCommand.Phase.DISPATCH_ATTEMPTED)),
+            harness.accepted,
+        )
         assertNull(store.pendingCommand)
         assertTrue(harness.pending.snapshot().isEmpty())
     }
@@ -88,6 +92,30 @@ class DeliveryTest {
 
         assertEquals(listOf(Command.Approve, Command.Reject), client.posts.map(Post::command))
         assertEquals(Command.Reject, harness.accepted.single().command)
+        assertNull(store.pendingCommand)
+    }
+
+    @Test
+    fun restoredDispatchedCommandNeverRepostsWhenItsResultIsMissing() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val operationId = UUID.randomUUID().toString()
+        val restored = PendingCommand(
+            ConfigValue,
+            Command.Approve,
+            operationId,
+            "approve",
+            phase = PendingCommand.Phase.DISPATCH_ATTEMPTED,
+        )
+        val store = MemoryStore().apply { pendingCommand = restored }
+        val client = ResultClient(CommandResult.NotFound)
+        val harness = delivery(dispatcher, client, store)
+
+        runCurrent()
+
+        assertTrue(client.posts.isEmpty())
+        assertEquals(listOf(Query(ConfigValue, operationId)), client.queries)
+        assertEquals(1, harness.rejected.size)
+        assertEquals(CommandOutcomeIndeterminate, (harness.rejected.single().error as Failure).errorCode)
         assertNull(store.pendingCommand)
     }
 
@@ -190,7 +218,7 @@ class DeliveryTest {
         harness.delivery.bind(OtherConfig)
         runCurrent()
 
-        assertEquals(listOf(Query(OtherConfig, operationId)), client.queries)
+        assertTrue(client.queries.isEmpty())
         assertEquals(listOf(Post(OtherConfig, Command.Approve, operationId)), client.posts)
     }
 
@@ -353,6 +381,15 @@ class DeliveryTest {
 
         override fun loadPendingCommand(): PendingCommand? = pendingCommand
         override fun loadPendingCommands(): List<PendingCommand> = pendingCommands.toList()
+
+        override fun markPendingCommandDispatched(operationId: String): PendingCommand {
+            val current = pendingCommand
+                ?.takeIf { it.operationId == operationId }
+                ?: error("Different pending command")
+            return current.copy(phase = PendingCommand.Phase.DISPATCH_ATTEMPTED).also {
+                pendingCommands[0] = it
+            }
+        }
 
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true

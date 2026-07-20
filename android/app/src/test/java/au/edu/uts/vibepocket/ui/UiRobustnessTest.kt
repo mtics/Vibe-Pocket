@@ -7,6 +7,7 @@ import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.ui.control.modelSelectionAllowed
+import au.edu.uts.vibepocket.ui.control.inputInteractive
 import au.edu.uts.vibepocket.ui.control.voiceControlAvailable
 import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
@@ -72,6 +73,23 @@ class UiRobustnessTest {
     }
 
     @Test
+    fun scannedInvitationRejectsEmptyPayloadAndTrimsQrWhitespace() {
+        assertNull(normalizedScannedInvitation(null))
+        assertNull(normalizedScannedInvitation("  \n"))
+        assertEquals(
+            "vibepocket://pair?code=test",
+            normalizedScannedInvitation("  vibepocket://pair?code=test\n"),
+        )
+    }
+
+    @Test
+    fun pendingInputIsNotReportedAsInteractiveUnlessItCanStopVoice() {
+        assertFalse(inputInteractive(false, false, true, false, true))
+        assertFalse(inputInteractive(false, false, true, true, false))
+        assertTrue(inputInteractive(true, false, true, false, false))
+    }
+
+    @Test
     fun modelSheetGuardRejectsEveryForbiddenParentState() {
         assertTrue(modelSelectionAllowed(false, false, true, true, false, true, true))
         assertFalse(modelSelectionAllowed(true, false, true, true, false, true, true))
@@ -81,6 +99,13 @@ class UiRobustnessTest {
         assertFalse(modelSelectionAllowed(false, false, true, true, true, true, true))
         assertFalse(modelSelectionAllowed(false, false, true, true, false, false, true))
         assertFalse(modelSelectionAllowed(false, false, true, true, false, true, false))
+    }
+
+    @Test
+    fun disconnectWarningMakesPendingOutcomeLossExplicit() {
+        assertTrue(disconnectMessage(hasPendingActions = true).contains("may already have completed"))
+        assertTrue(disconnectMessage(hasPendingActions = true).contains("recovery records"))
+        assertFalse(disconnectMessage(hasPendingActions = false).contains("may already have completed"))
     }
 
     @Test

@@ -3,7 +3,7 @@ package au.edu.uts.vibepocket.input
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
-import java.util.concurrent.atomic.AtomicLong
+import au.edu.uts.vibepocket.profile.allowsQueuedRepeat
 
 enum class HidResult {
     DELIVERED,
@@ -39,6 +39,8 @@ internal interface Bridge {
     fun focusAgent(agentId: String): Boolean = false
     fun selectModel(modelId: String): Boolean = false
     fun selectLayer(layerId: String): Boolean = false
+    fun reportLocalDeliveryFailure(message: String)
+    fun refresh()
 }
 
 internal class Dispatch(
@@ -51,8 +53,23 @@ internal class Dispatch(
         val action: Action,
     )
 
+    private data class HidIdentity(
+        val inputId: String,
+        val gesture: Gesture.Kind?,
+        val action: Action,
+    )
+
+    private data class PendingHid(
+        val identity: HidIdentity,
+        val requestId: Long,
+        val generation: Long,
+    )
+
     private var held: Held? = null
-    private val generation = AtomicLong(0)
+    private val deliveryLock = Any()
+    private val pendingHid = mutableMapOf<HidIdentity, Long>()
+    private var requestSequence = 0L
+    private var generation = 0L
 
     fun activate(
         snapshot: Snapshot?,
@@ -65,7 +82,10 @@ internal class Dispatch(
         return when (plan) {
         Plan.Disabled -> false
         is Plan.Bridge -> deliver(plan)
-        is Plan.HidTap -> deliver(plan.action) { deliver(plan.fallback) }
+        is Plan.HidTap -> deliver(
+            identity = HidIdentity(inputId, gesture, plan.action),
+            action = plan.action,
+        ) { deliver(plan.fallback) }
         is Plan.HidHold -> false
         }
     }
@@ -76,7 +96,12 @@ internal class Dispatch(
         if (!desktop.foreground || desktop.question != null || !snapshot.capabilities.modelPicker) return false
         if (!snapshot.transportFresh) return bridge.openModel()
         if (held != null) return bridge.openModel()
-        return deliver(Action("model_picker"), bridge::openModel)
+        val action = Action("model_picker")
+        return deliver(
+            identity = HidIdentity("model-picker", null, action),
+            action = action,
+            fallback = bridge::openModel,
+        )
     }
 
     fun startRepeat(snapshot: Snapshot?, inputId: String): Boolean {
@@ -87,9 +112,9 @@ internal class Dispatch(
             is Plan.HidTap -> {
                 if (plan.action.type != "navigate") return false
                 if (held != null) return deliver(plan.fallback)
-                val requestGeneration = generation.get()
+                val requestGeneration = currentGeneration()
                 hid.repeat(plan.action) { result ->
-                    if (result.fallbackSafe && generation.get() == requestGeneration) deliver(plan.fallback)
+                    if (result.fallbackSafe && currentGeneration() == requestGeneration) deliver(plan.fallback)
                 } || deliver(plan.fallback)
             }
             is Plan.HidHold -> false
@@ -130,7 +155,7 @@ internal class Dispatch(
     }
 
     fun release() {
-        generation.incrementAndGet()
+        invalidateHidDeliveries()
         hid.stopRepeat()
         held?.also { owner ->
             held = null
@@ -161,16 +186,33 @@ internal class Dispatch(
         return deliverTransition { bridge.selectLayer(layerId) }
     }
 
-    private fun deliver(action: Action, fallback: () -> Boolean): Boolean {
+    private fun deliver(
+        identity: HidIdentity,
+        action: Action,
+        fallback: () -> Boolean,
+    ): Boolean {
         if (held != null) return fallback()
-        val requestGeneration = generation.get()
-        return hid.send(action) { result ->
-            if (generation.get() != requestGeneration) return@send
-            when {
-                result == HidResult.DELIVERED -> onAction(action)
-                result.fallbackSafe -> fallback()
+        if (action.allowsQueuedRepeat()) return deliverQueued(action, fallback)
+        val pending = acquireHid(identity) ?: return false
+        val accepted = hid.send(action) { result ->
+            if (!ownsHid(pending)) return@send
+            try {
+                completeHid(result, action, fallback)
+            } finally {
+                releaseHid(pending)
             }
-        } || fallback()
+        }
+        if (accepted) return true
+        if (!releaseHid(pending)) return true
+        return fallbackOrRecover(HidResult.NOT_DISPATCHED, fallback)
+    }
+
+    private fun deliverQueued(action: Action, fallback: () -> Boolean): Boolean {
+        val requestGeneration = currentGeneration()
+        return hid.send(action) { result ->
+            if (currentGeneration() != requestGeneration) return@send
+            completeHid(result, action, fallback)
+        } || fallbackOrRecover(HidResult.NOT_DISPATCHED, fallback)
     }
 
     private fun deliver(plan: Plan.Bridge): Boolean {
@@ -184,10 +226,66 @@ internal class Dispatch(
 
     private fun deliverTransition(deliver: () -> Boolean): Boolean {
         if (held != null || bridge.contextTransitionPending()) return false
-        generation.incrementAndGet()
+        invalidateHidDeliveries()
         hid.stopRepeat()
         if (!hid.quiesce()) return false
         if (held != null || bridge.contextTransitionPending()) return false
         return deliver()
+    }
+
+    private fun acquireHid(identity: HidIdentity): PendingHid? = synchronized(deliveryLock) {
+        if (pendingHid.containsKey(identity)) return@synchronized null
+        PendingHid(identity, ++requestSequence, generation).also {
+            pendingHid[identity] = it.requestId
+        }
+    }
+
+    private fun ownsHid(pending: PendingHid): Boolean = synchronized(deliveryLock) {
+        pending.generation == generation && pendingHid[pending.identity] == pending.requestId
+    }
+
+    private fun releaseHid(pending: PendingHid): Boolean = synchronized(deliveryLock) {
+        if (pendingHid[pending.identity] != pending.requestId) return@synchronized false
+        pendingHid.remove(pending.identity)
+        true
+    }
+
+    private fun currentGeneration(): Long = synchronized(deliveryLock) { generation }
+
+    private fun invalidateHidDeliveries() = synchronized(deliveryLock) {
+        generation += 1
+        pendingHid.clear()
+    }
+
+    private fun fallbackOrRecover(result: HidResult, fallback: () -> Boolean): Boolean {
+        if (fallback()) return true
+        recover(result)
+        return false
+    }
+
+    private fun completeHid(result: HidResult, action: Action, fallback: () -> Boolean) {
+        when {
+            result == HidResult.DELIVERED -> onAction(action)
+            result.fallbackSafe -> fallbackOrRecover(result, fallback)
+            else -> recover(result)
+        }
+    }
+
+    private fun recover(result: HidResult) {
+        val message = when (result) {
+            HidResult.NOT_DISPATCHED,
+            HidResult.CANCELLED -> HID_DELIVERY_FAILED
+            HidResult.INDETERMINATE,
+            HidResult.TIMED_OUT -> HID_DELIVERY_INDETERMINATE
+            HidResult.DELIVERED -> return
+        }
+        bridge.reportLocalDeliveryFailure(message)
+        bridge.refresh()
+    }
+
+    private companion object {
+        const val HID_DELIVERY_FAILED = "Bluetooth delivery failed."
+        const val HID_DELIVERY_INDETERMINATE =
+            "The Bluetooth action may have completed, but its outcome could not be confirmed."
     }
 }

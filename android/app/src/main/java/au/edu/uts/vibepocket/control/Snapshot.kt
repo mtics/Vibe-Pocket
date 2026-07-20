@@ -90,13 +90,6 @@ data class Snapshot(
     }
 }
 
-/** The control surface need not rebuild for a revision or status-message-only update. */
-internal fun Snapshot.sameSurface(other: Snapshot): Boolean =
-    transportFresh == other.transportFresh &&
-        status.state == other.status.state &&
-        capabilities == other.capabilities &&
-        desktop == other.desktop
-
 data class Status(
     val state: String,
     val message: String?,
@@ -212,6 +205,8 @@ data class Reasoning(
     val level: Level?,
     val canIncrease: Boolean,
     val canDecrease: Boolean,
+    val increaseTo: Level? = null,
+    val decreaseTo: Level? = null,
 ) {
     enum class Level(val wireValue: String) {
         MINIMAL("minimal"),
@@ -255,11 +250,15 @@ data class Reasoning(
 
     fun shifted(delta: Int?): Reasoning? {
         if (!allows(delta)) return null
-        val target = level?.shifted(delta) ?: return null
+        val target = when (delta) {
+            1 -> increaseTo
+            -1 -> decreaseTo
+            else -> null
+        } ?: return null
         return copy(
             level = target,
-            canIncrease = target.canIncrease,
-            canDecrease = target.canDecrease,
+            increaseTo = null,
+            decreaseTo = null,
         )
     }
 
@@ -270,6 +269,8 @@ data class Reasoning(
             level = null,
             canIncrease = false,
             canDecrease = false,
+            increaseTo = null,
+            decreaseTo = null,
         )
     }
 }

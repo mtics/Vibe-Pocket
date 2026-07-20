@@ -9,6 +9,8 @@ import au.edu.uts.vibepocket.bridge.EventFactory
 import au.edu.uts.vibepocket.bridge.EventStream
 import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.bridge.IssuedCredential
+import au.edu.uts.vibepocket.bridge.ProtocolVersion
+import au.edu.uts.vibepocket.bridge.decode
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Invitation
@@ -45,10 +47,11 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -170,6 +173,31 @@ class SessionTest {
     }
 
     @Test
+    fun savedSessionRejectsAnInitialSnapshotWithoutProtocolVersion() = runTest(dispatcher) {
+        val client = object : Client {
+            override suspend fun snapshot(config: Config): Snapshot =
+                decode(JSONObject().put("revision", "r_missing"))
+
+            override suspend fun command(config: Config, command: Command) = Unit
+        }
+        val viewModel = Session(
+            store = FakeStore(DEVICE_CONFIG),
+            client = client,
+            dispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertEquals(DEVICE_CONFIG, viewModel.state.value.config)
+        assertEquals(null, viewModel.state.value.snapshot)
+        assertFalse(viewModel.state.value.isRefreshing)
+        assertEquals(
+            "The Vibe Pocket bridge returned an incompatible snapshot protocol version.",
+            viewModel.state.value.error,
+        )
+        assertFalse(viewModel.activateInput("key_accept"))
+    }
+
+    @Test
     fun repeatableControlsQueueEveryDurablePhysicalStep() = runTest(dispatcher) {
         val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
         val client = BlockingClient()
@@ -223,7 +251,7 @@ class SessionTest {
     }
 
     @Test
-    fun transportOnlyRefreshKeepsTheVisibleControllerSnapshot() = runTest(dispatcher) {
+    fun revisionAndMessageOnlyRefreshReplacesTheVisibleControllerSnapshot() = runTest(dispatcher) {
         val transportOnlyUpdate = VOICE_SNAPSHOT.copy(
             revision = "r_transport",
             status = Status("ready", "Adjusted the visible ChatGPT Codex control."),
@@ -235,12 +263,35 @@ class SessionTest {
             dispatcher = dispatcher,
         )
         runCurrent()
-        val visibleSnapshot = viewModel.state.value.snapshot
-
         viewModel.refresh()
         runCurrent()
 
-        assertSame(visibleSnapshot, viewModel.state.value.snapshot)
+        assertEquals("r_transport", viewModel.state.value.snapshot?.revision)
+        assertEquals(
+            "Adjusted the visible ChatGPT Codex control.",
+            viewModel.state.value.snapshot?.status?.message,
+        )
+    }
+
+    @Test
+    fun successfulManualRefreshRecoversARetainedCommandResult() = runTest(dispatcher) {
+        val store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn"))
+        val client = RecoverableCommandClient(CommandResult.Found(CommandStatus.RUNNING))
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(viewModel.activateInput("key_accept"))
+        runCurrent()
+        val pending = requireNotNull(store.pendingCommand)
+        assertEquals(listOf(pending.operationId), client.queriedOperationIds)
+
+        client.result = CommandResult.Found(CommandStatus.SUCCEEDED)
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(listOf(pending.operationId, pending.operationId), client.queriedOperationIds)
+        assertEquals(null, store.pendingCommand)
+        assertTrue(viewModel.state.value.inFlightIds.isEmpty())
     }
 
     @Test
@@ -491,6 +542,35 @@ class SessionTest {
     }
 
     @Test
+    fun disconnectRetiresPendingCommandsBeforeANewPairingCanDispatch() = runTest(dispatcher) {
+        val original = Config("https://m5.example.test", "0123456789abcdefghijklmn")
+        val replacement = Config("https://bridge.example.test", "zyxwvutsrqponmlkjihgfedc")
+        val store = FakeStore(original)
+        val client = BlockingClient()
+        val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        assertTrue(viewModel.activateInput("key_accept"))
+        runCurrent()
+        assertEquals(1, store.pendingCommands.size)
+
+        viewModel.disconnect()
+
+        assertEquals(null, store.config)
+        assertTrue(store.pendingCommands.isEmpty())
+        assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+        assertFalse(viewModel.state.value.contextTransitionPending)
+
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.credential))
+        runCurrent()
+        assertTrue(viewModel.activateInput("key_voice"))
+        runCurrent()
+
+        assertEquals(2, client.commands.size)
+        assertEquals("voice", (client.commands.last() as Command.Binding).action.type)
+    }
+
+    @Test
     fun resetProfileSubmitsTheProfileResetCommand() = runTest(dispatcher) {
         val client = BlockingClient()
         val viewModel = Session(
@@ -605,6 +685,39 @@ class SessionTest {
         val fresh = requireNotNull(viewModel.state.value.snapshot)
         assertTrue(fresh.transportFresh)
         assertTrue(activation(fresh, "key_accept", Gesture.Kind.TAP) is Plan.HidTap)
+    }
+
+    @Test
+    fun sseRefreshRejectsAProtocolChangeAndDoesNotUseItsCommands() = runTest(dispatcher) {
+        val initial = reasoningSnapshot("agent-a", "model-a").copy(
+            revision = "r_compatible",
+            capabilities = REASONING_SNAPSHOT.capabilities.copy(model = true),
+        )
+        val client = ProtocolChangingClient(initial)
+        val events = FakeEvents()
+        val viewModel = Session(
+            store = FakeStore(DEVICE_CONFIG),
+            client = client,
+            dispatcher = dispatcher,
+            eventFactory = events,
+        )
+        runCurrent()
+        assertTrue(viewModel.state.value.snapshot?.transportFresh == true)
+
+        viewModel.setForeground(true)
+        events.callbacks.snapshotChanged()
+        runCurrent()
+
+        val visible = requireNotNull(viewModel.state.value.snapshot)
+        assertEquals("r_compatible", visible.revision)
+        assertEquals("model-a", visible.desktop?.model?.id)
+        assertFalse(visible.transportFresh)
+        assertEquals(
+            "The Vibe Pocket bridge returned an incompatible snapshot protocol version.",
+            viewModel.state.value.error,
+        )
+        assertFalse(viewModel.selectModel("future-model"))
+        assertTrue(client.commands.isEmpty())
     }
 
     @Test
@@ -916,6 +1029,7 @@ class SessionTest {
     @Test
     fun slowRevocationTimesOutAndRetriesWithoutDroppingTombstone() = runTest(dispatcher) {
         val config = DEVICE_CONFIG
+        val replacement = Config("https://other.example.test", "zyxwvutsrqponmlkjihgfedc")
         val store = FakeStore(config)
         val client = RestartRevocationClient()
         val viewModel = Session(
@@ -930,7 +1044,9 @@ class SessionTest {
         runCurrent()
         assertEquals(config, store.revocation)
         assertEquals(1, client.revokeCalls)
-        assertFalse(viewModel.connect("https://other.example.test", "zyxwvutsrqponmlkjihgfedc"))
+        assertTrue(viewModel.connect(replacement.baseUrl, replacement.credential))
+        runCurrent()
+        assertEquals(replacement, store.config)
         assertEquals(config, store.revocation)
 
         advanceTimeBy(100)
@@ -1203,6 +1319,15 @@ class SessionTest {
             return pendingCommands.toList()
         }
 
+        override fun markPendingCommandDispatched(operationId: String): PendingCommand {
+            val current = pendingCommand
+                ?.takeIf { it.operationId == operationId }
+                ?: error("Different pending command")
+            return current.copy(phase = PendingCommand.Phase.DISPATCH_ATTEMPTED).also {
+                pendingCommands[0] = it
+            }
+        }
+
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false
@@ -1247,7 +1372,7 @@ class SessionTest {
     }
 
     private class RecoverableCommandClient(
-        private val result: CommandResult,
+        var result: CommandResult,
     ) : Client {
         var commandCalls = 0
         val queriedOperationIds = mutableListOf<String>()
@@ -1300,6 +1425,46 @@ class SessionTest {
         override suspend fun snapshot(config: Config): Snapshot = queuedSnapshots.removeFirst()
 
         override suspend fun command(config: Config, command: Command) = Unit
+    }
+
+    private class ProtocolChangingClient(
+        private val initial: Snapshot,
+    ) : Client {
+        private var snapshotCalls = 0
+        val commands = mutableListOf<Command>()
+
+        override suspend fun snapshot(config: Config): Snapshot {
+            snapshotCalls += 1
+            if (snapshotCalls == 1) return initial
+            return decode(
+                JSONObject()
+                    .put("protocolVersion", ProtocolVersion + 1)
+                    .put("revision", "r_incompatible")
+                    .put("status", JSONObject().put("state", "ready"))
+                    .put("controls", JSONObject().put("model", true))
+                    .put(
+                        "controller",
+                        JSONObject()
+                            .put("foreground", true)
+                            .put(
+                                "model",
+                                JSONObject()
+                                    .put("available", true)
+                                    .put("id", "model-a")
+                                    .put(
+                                        "options",
+                                        JSONArray()
+                                            .put(JSONObject().put("id", "model-a").put("selected", true))
+                                            .put(JSONObject().put("id", "future-model")),
+                                    ),
+                            ),
+                    ),
+            )
+        }
+
+        override suspend fun command(config: Config, command: Command) {
+            commands += command
+        }
     }
 
     private class FailingCandidateClient : Client {
@@ -1645,6 +1810,8 @@ class SessionTest {
                     level = Reasoning.Level.MEDIUM,
                     canIncrease = true,
                     canDecrease = true,
+                    increaseTo = Reasoning.Level.HIGH,
+                    decreaseTo = Reasoning.Level.LOW,
                 ),
             ),
         )

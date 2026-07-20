@@ -112,6 +112,12 @@ internal fun resolveMappingTarget(profile: Profile?, target: MappingTarget): Res
 internal fun Binding?.allowsVoiceMapping(): Boolean =
     this?.actions.orEmpty().keys.none { it != Gesture.Kind.TAP }
 
+internal fun disconnectMessage(hasPendingActions: Boolean): String = if (hasPendingActions) {
+    "Pending controller actions may already have completed. Their recovery records will be discarded with this pairing."
+} else {
+    "The saved Bridge address and this phone's device credential will be removed."
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun Settings(
@@ -158,6 +164,7 @@ internal fun Settings(
     val validConfig = candidate.getOrNull()
     val connectionDirty = validConfig != null && validConfig.normalizedUrl != config.normalizedUrl
     val savingConnection = inFlightIds.any { it.startsWith("connection:") }
+    val hasPendingActions = contextTransitionPending || inFlightIds.any { !it.startsWith("connection:") }
 
     LaunchedEffect(config.normalizedUrl, config.credential, saveTarget) {
         val target = saveTarget ?: return@LaunchedEffect
@@ -436,7 +443,7 @@ internal fun Settings(
         AlertDialog(
             onDismissRequest = { confirmDisconnect = false },
             title = { Text("Forget this Bridge?") },
-            text = { Text("The saved Bridge address and this phone's device credential will be removed.") },
+            text = { Text(disconnectMessage(hasPendingActions)) },
             confirmButton = {
                 TextButton(
                     onClick = {

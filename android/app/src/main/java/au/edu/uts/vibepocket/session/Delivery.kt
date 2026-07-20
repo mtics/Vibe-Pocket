@@ -45,7 +45,6 @@ internal class Delivery(
     private val outbox = ArrayDeque((restored as? LoadOutcome.Loaded)?.value.orEmpty())
     private var outboxUnreadable =
         restored is LoadOutcome.RecoverableError && !restored.settled
-    private val fresh = mutableMapOf<String, Owner>()
     private var worker: Job? = null
     private var launchRequested = false
 
@@ -111,7 +110,6 @@ internal class Delivery(
             }
 
             outbox.addLast(persisted)
-            fresh[persisted.operationId] = currentOwner
             true
         }
 
@@ -129,6 +127,18 @@ internal class Delivery(
     fun cancel() {
         val currentConfig = synchronized(lock) { owner.config }
         replaceOwner(currentConfig)
+    }
+
+    fun retireOutbox() {
+        val uiIds = synchronized(lock) {
+            outbox.map(PendingCommand::uiId).also {
+                outbox.clear()
+                outboxUnreadable = false
+                launchRequested = false
+            }
+        }
+        uiIds.forEach(pending::remove)
+        publishPending()
     }
 
     fun clearRetainedTransition(command: PendingCommand): Boolean {
@@ -151,7 +161,6 @@ internal class Delivery(
         }
         synchronized(lock) {
             if (outbox.firstOrNull()?.operationId == retained.operationId) outbox.removeFirst()
-            fresh.remove(retained.operationId)
         }
         pending.remove(retained.uiId)
         publishPending()
@@ -162,7 +171,6 @@ internal class Delivery(
     private fun replaceOwner(config: Config?) {
         val cancelled = synchronized(lock) {
             owner = Owner(config, owner.epoch + 1)
-            fresh.clear()
             if (config == null) launchRequested = false
             worker
         }
@@ -209,13 +217,12 @@ internal class Delivery(
             val work = synchronized(lock) {
                 val persisted = outbox.firstOrNull() ?: return
                 if (owner.config != persisted.config) return
-                val shouldPost = fresh.remove(persisted.operationId) == owner
-                persisted to shouldPost
+                persisted
             }
-            val settled = if (work.second) {
-                postAndSettle(work.first)
-            } else {
-                queryAndSettle(work.first, replayNotFound = true)
+            val settled = when (work.phase) {
+                PendingCommand.Phase.PREPARED -> dispatchAndSettle(work)
+                PendingCommand.Phase.DISPATCH_ATTEMPTED ->
+                    queryAndSettle(work, replayNotFound = false)
             }
             if (!settled) return
         }
@@ -238,7 +245,6 @@ internal class Delivery(
                     outbox.clear()
                     outbox.addAll(loaded.value)
                     outboxUnreadable = false
-                    fresh.clear()
                 }
                 loaded.value.forEach { pending.add(it.uiId) }
                 publishPending()
@@ -252,7 +258,18 @@ internal class Delivery(
         }
     }
 
-    private suspend fun postAndSettle(persisted: PendingCommand): Boolean {
+    private suspend fun dispatchAndSettle(prepared: PendingCommand): Boolean {
+        val persisted = try {
+            store.markPendingCommandDispatched(prepared.operationId)
+        } catch (error: Throwable) {
+            retain(prepared, error)
+            return false
+        }
+        synchronized(lock) {
+            if (outbox.firstOrNull()?.operationId != prepared.operationId) return false
+            outbox.removeFirst()
+            outbox.addFirst(persisted)
+        }
         currentCoroutineContext().ensureActive()
         return try {
             client.command(persisted.config, persisted.command, persisted.operationId)
@@ -313,7 +330,7 @@ internal class Delivery(
             }
             CommandResult.NotFound -> {
                 if (replayNotFound) {
-                    postAndSettle(persisted)
+                    dispatchAndSettle(persisted)
                 } else {
                     settleAmbiguous(persisted)
                 }
@@ -351,7 +368,6 @@ internal class Delivery(
 
         synchronized(lock) {
             if (outbox.firstOrNull()?.operationId == persisted.operationId) outbox.removeFirst()
-            fresh.remove(persisted.operationId)
         }
         pending.remove(persisted.uiId)
         notify()
@@ -360,9 +376,6 @@ internal class Delivery(
     }
 
     private fun retain(persisted: PendingCommand, error: Throwable?) {
-        synchronized(lock) {
-            fresh.remove(persisted.operationId)
-        }
         unconfirmed(persisted, error)
         publishPending()
     }

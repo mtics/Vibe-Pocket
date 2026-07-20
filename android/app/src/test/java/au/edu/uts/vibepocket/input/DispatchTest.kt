@@ -145,6 +145,36 @@ class DispatchTest {
     }
 
     @Test
+    fun rapidRepeatedTapIsGatedUntilItsHidCallbackCompletes() {
+        val hid = FakeHid(deferSend = true)
+        val action = Action("approve")
+        val orchestrator = Dispatch(hid, FakeBridge())
+        val snapshot = snapshot(action)
+
+        assertTrue(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+        assertFalse(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+        assertEquals(listOf(action), hid.sent)
+
+        hid.completeSend(HidResult.DELIVERED)
+
+        assertTrue(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+        assertEquals(listOf(action, action), hid.sent)
+    }
+
+    @Test
+    fun repeatableDirectionTapsRemainQueueableWhileACallbackIsPending() {
+        val hid = FakeHid(deferSend = true)
+        val action = Action("navigate", direction = "down")
+        val orchestrator = Dispatch(hid, FakeBridge())
+        val snapshot = snapshot(action)
+
+        assertTrue(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+        assertTrue(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+
+        assertEquals(listOf(action, action), hid.sent)
+    }
+
+    @Test
     fun queuedTransportFailureFallsBackOnlyAfterCompletion() {
         val hid = FakeHid(deferSend = true)
         val bridge = FakeBridge()
@@ -159,7 +189,21 @@ class DispatchTest {
     }
 
     @Test
-    fun releaseFailureIsConsumedAndNeverFallsBackToBridge() {
+    fun callbackFailureReportsAndRefreshesWhenSafeFallbackIsRejected() {
+        val hid = FakeHid(deferSend = true)
+        val bridge = FakeBridge(activateResult = false)
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(orchestrator.activate(snapshot(Action("approve")), INPUT_ID, Gesture.Kind.TAP))
+
+        hid.completeSend(HidResult.NOT_DISPATCHED)
+
+        assertEquals(listOf("Bluetooth delivery failed."), bridge.deliveryFailures)
+        assertEquals(1, bridge.refreshCount)
+    }
+
+    @Test
+    fun indeterminateDeliveryIsReportedAndRefreshedWithoutBridgeFallback() {
         val hid = FakeHid(deliveryResult = HidResult.INDETERMINATE)
         val bridge = FakeBridge()
         val delivered = mutableListOf<Action>()
@@ -169,6 +213,27 @@ class DispatchTest {
 
         assertTrue(delivered.isEmpty())
         assertTrue(bridge.calls.isEmpty())
+        assertEquals(
+            listOf("The Bluetooth action may have completed, but its outcome could not be confirmed."),
+            bridge.deliveryFailures,
+        )
+        assertEquals(1, bridge.refreshCount)
+    }
+
+    @Test
+    fun timedOutDeliveryIsReportedAsIndeterminateAndRefreshed() {
+        val hid = FakeHid(deliveryResult = HidResult.TIMED_OUT)
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+
+        assertTrue(orchestrator.activate(snapshot(Action("clear_input")), INPUT_ID, Gesture.Kind.TAP))
+
+        assertTrue(bridge.calls.isEmpty())
+        assertEquals(
+            listOf("The Bluetooth action may have completed, but its outcome could not be confirmed."),
+            bridge.deliveryFailures,
+        )
+        assertEquals(1, bridge.refreshCount)
     }
 
     @Test
@@ -186,6 +251,32 @@ class DispatchTest {
         assertTrue(bridge.calls.isEmpty())
         assertEquals(1, hid.stopRepeatCount)
         assertEquals(1, hid.releaseAllCount)
+    }
+
+    @Test
+    fun releaseAllowsANewActionAndLateCallbackCannotClearItsGate() {
+        val hid = FakeHid(deferSend = true)
+        val bridge = FakeBridge()
+        val delivered = mutableListOf<Action>()
+        val action = Action("approve")
+        val snapshot = snapshot(action)
+        val orchestrator = Dispatch(hid, bridge, delivered::add)
+
+        assertTrue(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+        orchestrator.release()
+        assertTrue(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+
+        hid.completeSend(HidResult.DELIVERED)
+
+        assertFalse(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+        assertTrue(delivered.isEmpty())
+
+        hid.completeSend(HidResult.DELIVERED)
+
+        assertEquals(listOf(action), delivered)
+        assertTrue(orchestrator.activate(snapshot, INPUT_ID, Gesture.Kind.TAP))
+        assertEquals(listOf(action, action, action), hid.sent)
+        assertTrue(bridge.deliveryFailures.isEmpty())
     }
 
     @Test
@@ -474,10 +565,10 @@ class DispatchTest {
         }
 
         fun completeSend(delivered: Boolean) {
-            sendCompletions.removeFirst()(
-                if (delivered) HidResult.DELIVERED else HidResult.NOT_DISPATCHED,
-            )
+            completeSend(if (delivered) HidResult.DELIVERED else HidResult.NOT_DISPATCHED)
         }
+
+        fun completeSend(result: HidResult) = sendCompletions.removeFirst()(result)
     }
 
     private sealed interface BridgeCall {
@@ -492,12 +583,15 @@ class DispatchTest {
 
     private class FakeBridge(
         var transitionPending: Boolean = false,
+        private val activateResult: Boolean = true,
     ) : Bridge {
         val calls = mutableListOf<BridgeCall>()
+        val deliveryFailures = mutableListOf<String>()
+        var refreshCount = 0
 
         override fun activate(inputId: String, gesture: Gesture.Kind): Boolean {
             calls += BridgeCall.Activate(inputId, gesture)
-            return true
+            return activateResult
         }
 
         override fun startVoice(inputId: String): Boolean {
@@ -530,6 +624,14 @@ class DispatchTest {
         override fun selectLayer(layerId: String): Boolean {
             calls += BridgeCall.SelectLayer(layerId)
             return true
+        }
+
+        override fun reportLocalDeliveryFailure(message: String) {
+            deliveryFailures += message
+        }
+
+        override fun refresh() {
+            refreshCount += 1
         }
     }
 

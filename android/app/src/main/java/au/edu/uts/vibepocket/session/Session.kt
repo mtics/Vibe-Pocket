@@ -21,7 +21,6 @@ import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.ContextTransition
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.contextTransition
-import au.edu.uts.vibepocket.control.matches
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import kotlinx.coroutines.CoroutineDispatcher
@@ -45,21 +44,21 @@ class Session internal constructor(
     private val eventFactory: EventFactory = NetworkEvents,
     retry: Retry = Retry(),
 ) : ViewModel() {
-    private data class TransitionBarrier(
-        val uiId: String,
-        val target: ContextTransition,
-        val command: PendingCommand? = null,
-        val refreshVersion: Long? = null,
-    )
-
     private val restored = store.loadLifecycle()
     private var lifecycleErrors = restored.errors
     private val legacyCommandSettled =
         (restored.pendingCommand as? LoadOutcome.RecoverableError)?.settled == true
     private val transitionLock = Any()
-    private var transitionBarrier = restored.pendingCommand.valueOrNull()
+    private var transitionBarrier: TransitionBarrier = restored.pendingCommand.valueOrNull()
         ?.takeIf { it.transition != null }
-        ?.let { TransitionBarrier(it.uiId, requireNotNull(it.transition), command = it) }
+        ?.let {
+            TransitionBarrier.AwaitingDelivery(
+                it.uiId,
+                requireNotNull(it.transition),
+                command = it,
+            )
+        }
+        ?: TransitionBarrier.Unconfirmed
     private var transitionStateUnreadable = restored.pendingCommand.let {
         it is LoadOutcome.RecoverableError && !it.settled
     }
@@ -149,7 +148,7 @@ class Session internal constructor(
             }
             delivery.bind(config)
             refresh.activate(config, eventGeneration)
-            refresh.request()
+            requestRefresh()
         } else {
             restored.pendingCommand.valueOrNull()?.config?.let(delivery::bind)
             connection.pendingInvitation?.let { invitation ->
@@ -207,7 +206,7 @@ class Session internal constructor(
         _state.value.config?.let(::startEvents)
     }
 
-    fun refresh() = refresh.request()
+    fun refresh() = requestRefresh()
 
     fun contextTransitionPending(): Boolean = transitionPending()
 
@@ -285,7 +284,7 @@ class Session internal constructor(
                 return false
             }
             if (transition != null) {
-                transitionBarrier = TransitionBarrier(uiId, transition)
+                transitionBarrier = TransitionBarrier.AwaitingDelivery(uiId, transition)
                 _state.update { it.copy(contextTransitionPending = true) }
             }
             val accepted = delivery.send(command, uiId, family, transition)
@@ -330,6 +329,11 @@ class Session internal constructor(
         prediction.clear()
         lastEventId = null
         eventError = null
+        synchronized(transitionLock) {
+            transitionBarrier = TransitionBarrier.Unconfirmed
+            transitionStateUnreadable = false
+        }
+        delivery.retireOutbox()
         reloadLifecycleErrors()
         _state.value = State(
             invitation = connection.pendingInvitation,
@@ -351,7 +355,7 @@ class Session internal constructor(
             if (current.error == CommandResultUnconfirmed) current.copy(error = null) else current
         }
         _feedback.tryEmit(Feedback.Success)
-        if (!foreground) refresh.request()
+        if (!foreground) requestRefresh()
     }
 
     private fun deliveryAccepted(command: PendingCommand) {
@@ -361,27 +365,15 @@ class Session internal constructor(
         }
         if (_state.value.config != command.config) return
         val ownsBarrier = synchronized(transitionLock) {
-            val current = transitionBarrier
-            if (current?.uiId != command.uiId || current.target != command.transition) {
-                false
-            } else {
-                transitionBarrier = current.copy(command = command)
-                true
-            }
+            transitionBarrier = transitionBarrier.deliveryAccepted(command)
+            transitionBarrier.owns(command)
         }
         if (!ownsBarrier) return
         _state.update { current ->
             if (current.error == CommandResultUnconfirmed) current.copy(error = null) else current
         }
         _feedback.tryEmit(Feedback.Success)
-        refresh.request(stale = true) { version ->
-            synchronized(transitionLock) {
-                val current = transitionBarrier
-                if (current?.command?.operationId == command.operationId) {
-                    transitionBarrier = current.copy(refreshVersion = version)
-                }
-            }
-        }
+        requestRefresh(stale = true)
     }
 
     private fun commandRejected(config: Config, error: Throwable) {
@@ -401,7 +393,7 @@ class Session internal constructor(
             clearTransitionLocked(uiId, command?.transition)
         }
         commandRejected(config, error)
-        if (ambiguous && _state.value.config == config) refresh.request(stale = true)
+        if (ambiguous && _state.value.config == config) requestRefresh(stale = true)
     }
 
     private fun commandUnconfirmed(command: PendingCommand, error: Throwable?) {
@@ -448,13 +440,13 @@ class Session internal constructor(
                                 }
                             }
                         }
-                        refresh.request(generation, stale = true)
+                        requestRefresh(generation, stale = true)
                     }
                 },
                 snapshotChanged = {
                     if (isCurrentEvent(config, generation)) {
                         delivery.recover()
-                        refresh.request(generation, stale = true)
+                        requestRefresh(generation, stale = true)
                     }
                 },
                 eventId = { if (isCurrentEvent(config, generation)) lastEventId = it },
@@ -511,8 +503,8 @@ class Session internal constructor(
             transitionStateUnreadable = pendingCommand is LoadOutcome.RecoverableError &&
                 !pendingCommand.settled
             pendingCommand.valueOrNull()?.takeIf { it.transition != null }?.let { command ->
-                if (transitionBarrier == null) {
-                    transitionBarrier = TransitionBarrier(
+                if (transitionBarrier == TransitionBarrier.Unconfirmed) {
+                    transitionBarrier = TransitionBarrier.AwaitingDelivery(
                         command.uiId,
                         requireNotNull(command.transition),
                         command = command,
@@ -533,23 +525,31 @@ class Session internal constructor(
             delay((deadline - nowMillis()).coerceAtLeast(0L))
             if (prediction.deadlineMillis() == deadline) {
                 _state.update(prediction::fail)
-                refresh.request()
+                requestRefresh()
             }
         }
     }
 
     private fun snapshotReconciled(snapshot: Snapshot, version: Long) {
+        delivery.recover()
         predictionReconciled()
-        val matched = synchronized(transitionLock) {
-            transitionBarrier?.takeIf { barrier ->
-                val requiredVersion = barrier.refreshVersion
-                requiredVersion != null && version >= requiredVersion && barrier.target.matches(snapshot)
-            }
+        val command = synchronized(transitionLock) {
+            transitionBarrier = transitionBarrier.observe(snapshot, version)
+            transitionBarrier.confirmedCommand()
         } ?: return
-        val command = matched.command ?: return
         if (!delivery.clearRetainedTransition(command)) return
         synchronized(transitionLock) {
-            clearTransitionLocked(matched.uiId, matched.target)
+            transitionBarrier = transitionBarrier.confirmationCleared(command)
+            _state.update { it.copy(contextTransitionPending = transitionPendingLocked()) }
+        }
+    }
+
+    private fun requestRefresh(
+        generation: Long? = null,
+        stale: Boolean = false,
+    ): Long? = refresh.request(generation, stale) { version ->
+        synchronized(transitionLock) {
+            transitionBarrier = transitionBarrier.observationPrepared(version)
         }
     }
 
@@ -563,12 +563,12 @@ class Session internal constructor(
         transitionPendingLocked()
     }
 
-    private fun transitionPendingLocked(): Boolean = transitionBarrier != null || transitionStateUnreadable
+    private fun transitionPendingLocked(): Boolean = transitionBarrier.isPending || transitionStateUnreadable
 
     private fun clearTransitionLocked(uiId: String, target: ContextTransition?) {
-        val current = transitionBarrier ?: return
-        if (current.uiId != uiId || target != null && current.target != target) return
-        transitionBarrier = null
+        val updated = transitionBarrier.unconfirm(uiId, target)
+        if (updated == transitionBarrier) return
+        transitionBarrier = updated
         _state.update { it.copy(contextTransitionPending = transitionPendingLocked()) }
     }
 

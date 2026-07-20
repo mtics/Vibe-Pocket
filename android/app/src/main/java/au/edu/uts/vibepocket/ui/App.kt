@@ -64,7 +64,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -82,7 +81,7 @@ internal fun voiceStopTarget(ownerInputId: String?, visibleInputId: String): Str
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-internal fun App(viewModel: Session) {
+internal fun App(viewModel: Session, hidController: Keyboard) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -90,8 +89,6 @@ internal fun App(viewModel: Session) {
     var confirmReset by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val view = LocalView.current
-    val context = LocalContext.current
-    val hidController = remember(context) { Keyboard(context) }
     val inputOrchestrator = remember(hidController, viewModel) {
         Dispatch(
             hid = hidController,
@@ -168,7 +165,6 @@ internal fun App(viewModel: Session) {
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             inputOrchestrator.release()
-            hidController.close()
             viewModel.setForeground(false)
         }
     }
@@ -428,10 +424,16 @@ private fun PairingDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Pair with this Mac?") },
+        title = { Text("Pair with this Bridge?") },
         text = {
             Column {
-                Text(invitation.origin.removePrefix("https://"))
+                Text(invitation.origin)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Confirm this exact address is shown on the Mac where pairing was started.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 error?.takeIf { it.isNotBlank() }?.let { message ->
                     Spacer(Modifier.height(12.dp))
                     ErrorNotice(

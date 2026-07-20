@@ -18,6 +18,30 @@ import org.junit.Test
 
 class ClientCommandTest {
     @Test
+    fun snapshotRejectsMissingOrIncompatibleProtocolVersion() {
+        val responses = listOf(
+            JSONObject().put("revision", "r_missing"),
+            JSONObject().put("protocolVersion", ProtocolVersion + 1).put("revision", "r_future"),
+        )
+
+        responses.forEach { response ->
+            val client = Http { url ->
+                assertEquals("/v1/pocket/snapshot", url.path)
+                FakeConnection(url, HttpURLConnection.HTTP_OK, response.toString())
+            }
+
+            val failure = assertThrows(Failure::class.java) {
+                runBlocking { client.snapshot(ConfigValue) }
+            }
+
+            assertEquals(
+                "The Vibe Pocket bridge returned an incompatible snapshot protocol version.",
+                failure.message,
+            )
+        }
+    }
+
+    @Test
     fun commandUsesExplicitOperationIdAndRequiresHttp200() = runBlocking {
         val operationId = UUID.randomUUID().toString()
         lateinit var connection: FakeConnection

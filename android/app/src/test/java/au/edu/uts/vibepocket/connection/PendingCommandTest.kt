@@ -127,6 +127,28 @@ class PendingCommandTest {
     }
 
     @Test
+    fun versionTwoRecordMigratesAsAlreadyDispatched() {
+        val legacy = JSONObject(encodePendingCommand(pending())).put("version", 2)
+        legacy.remove("phase")
+        val payload = legacy.toString()
+
+        val migrated = decodePendingCommand(payload)
+
+        assertEquals(PendingCommand.Phase.DISPATCH_ATTEMPTED, migrated.phase)
+    }
+
+    @Test
+    fun malformedDispatchPhaseFailsClosed() {
+        val payload = JSONObject(encodePendingCommand(pending()))
+            .put("phase", "maybe")
+            .toString()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            decodePendingCommand(payload)
+        }
+    }
+
+    @Test
     fun durableQueueRejectsDuplicateUiIdsAndOversizedPayloads() {
         val duplicate = pending()
         val duplicatePayload = JSONObject(encodePendingCommands(listOf(duplicate)))

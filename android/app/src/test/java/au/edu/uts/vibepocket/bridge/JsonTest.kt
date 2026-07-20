@@ -16,10 +16,38 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JsonTest {
+    @Test
+    fun rejectsSnapshotWithoutProtocolVersion() {
+        val failure = assertThrows(Failure::class.java) {
+            decode(JSONObject().put("revision", "r_missing"))
+        }
+
+        assertEquals(
+            "The Vibe Pocket bridge returned an incompatible snapshot protocol version.",
+            failure.message,
+        )
+    }
+
+    @Test
+    fun rejectsSnapshotUnlessProtocolVersionIsTheExactCurrentInteger() {
+        listOf<Any>(ProtocolVersion - 1, ProtocolVersion + 1, ProtocolVersion.toString(), ProtocolVersion.toDouble())
+            .forEach { version ->
+                val failure = assertThrows(Failure::class.java) {
+                    decode(JSONObject().put("protocolVersion", version).put("revision", "r_wrong"))
+                }
+
+                assertEquals(
+                    "The Vibe Pocket bridge returned an incompatible snapshot protocol version.",
+                    failure.message,
+                )
+            }
+    }
+
     @Test
     fun parsesCapabilityDrivenControllerSnapshot() {
         val snapshot = decode(JSONObject(CONTROLLER_SNAPSHOT))
@@ -36,6 +64,8 @@ class JsonTest {
         assertEquals(Reasoning.Level.HIGH, snapshot.desktop?.reasoning?.level)
         assertTrue(snapshot.desktop?.reasoning?.canIncrease == true)
         assertTrue(snapshot.desktop?.reasoning?.canDecrease == true)
+        assertEquals(Reasoning.Level.XHIGH, snapshot.desktop?.reasoning?.increaseTo)
+        assertEquals(Reasoning.Level.MEDIUM, snapshot.desktop?.reasoning?.decreaseTo)
         assertTrue(snapshot.capabilities.modelPicker)
         assertTrue(snapshot.capabilities.model)
         assertEquals("gpt-test", snapshot.desktop?.model?.id)
@@ -149,6 +179,7 @@ class JsonTest {
             JSONObject(
                 """
                 {
+                  "protocolVersion":$ProtocolVersion,
                   "revision":"r_old",
                   "status":{"state":"ready","message":null},
                   "controls":{"voice":true,"stop":false,"new-task":true,"approve":false,"reject":true}
@@ -176,6 +207,7 @@ class JsonTest {
             JSONObject(
                 """
                 {
+                  "protocolVersion":$ProtocolVersion,
                   "status":{"state":"ready"},
                   "controller":{
                     "profile":{"version":-2,"inputs":[],"layers":[]},
@@ -264,6 +296,7 @@ class JsonTest {
     private companion object {
         val CONTROLLER_SNAPSHOT = """
             {
+              "protocolVersion":$ProtocolVersion,
               "revision":"r_42",
               "status":{"state":"ready","message":"Current desktop task"},
               "controls":{
@@ -293,7 +326,8 @@ class JsonTest {
                 },
                 "reasoning":{
                   "available":true,"label":"High","level":"high",
-                  "canIncrease":true,"canDecrease":true
+                  "canIncrease":true,"canDecrease":true,
+                  "increaseTo":"xhigh","decreaseTo":"medium"
                 },
                 "userInput":{
                   "questionIndex":0,"questionCount":1,"header":"Scope",

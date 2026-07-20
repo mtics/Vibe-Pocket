@@ -7,6 +7,7 @@ import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.connection.LoadOutcome
 import au.edu.uts.vibepocket.connection.Store
+import au.edu.uts.vibepocket.connection.normalizeOrigin
 import au.edu.uts.vibepocket.connection.valueOrNull
 import au.edu.uts.vibepocket.control.Snapshot
 import kotlinx.coroutines.CoroutineDispatcher
@@ -60,7 +61,7 @@ internal class Connection(
             }
         val previous = current()
         if (previous?.normalizedUrl == config.normalizedUrl && previous.credential == config.credential) return false
-        return start { config }
+        return start(config.normalizedUrl) { config }
     }
 
     fun offer(invitation: Invitation): Boolean {
@@ -72,6 +73,7 @@ internal class Connection(
                 claim = null
                 active?.takeIf { it.claim != null }?.also {
                     generation += 1
+                    pending.remove(it.id)
                     active = null
                 }
             }
@@ -79,7 +81,6 @@ internal class Connection(
             rejected(it)
             return false
         }
-        superseded?.let { pending.remove(it.id) }
         if (superseded != null) publishPending()
         retryRevocation()
         return true
@@ -100,6 +101,7 @@ internal class Connection(
                 claim = null
                 active?.takeIf { it.claim != null }?.also {
                     generation += 1
+                    pending.remove(it.id)
                     active = null
                 }
             }
@@ -108,13 +110,17 @@ internal class Connection(
             return false
         }
         if (!matched) return false
-        superseded?.let { pending.remove(it.id) }
         if (superseded != null) publishPending()
         retryRevocation()
         return true
     }
 
     fun pair(invitation: Invitation): Boolean {
+        val targetOrigin = runCatching { normalizeOrigin(invitation.origin) }
+            .getOrElse {
+                rejected(it)
+                return false
+            }
         val pendingClaim = runCatching {
             synchronized(lock) {
                 val existing = claim?.takeIf { it.invitation == invitation }
@@ -134,27 +140,43 @@ internal class Connection(
             rejected(it)
             return false
         }
-        return start(pendingClaim)
+        return start(targetOrigin, pendingClaim)
     }
 
-    private fun start(pendingClaim: Claim? = null, resolve: (suspend () -> Config)? = null): Boolean {
+    private fun start(
+        targetOrigin: String,
+        pendingClaim: Claim? = null,
+        resolve: (suspend () -> Config)? = null,
+    ): Boolean {
         val revocations = loadRevocations() ?: return false
-        if (revocations.isNotEmpty()) {
-            rejected(IllegalStateException("Vibe Pocket is still revoking the previous device credential."))
-            retryRevocation()
+        if (revocations.isNotEmpty()) retryRevocation()
+        if (revocations.any { it.normalizedUrl == targetOrigin }) {
+            rejected(IllegalStateException("Vibe Pocket is still revoking a device credential for this Bridge."))
             return false
         }
         val attempt = synchronized(lock) {
             if (active != null) return false
-            val next = ++generation
-            Attempt(next, "$InFlightPrefix$next", pendingClaim).also { active = it }
+            if (pendingClaim != null && claim != pendingClaim) return false
+            val next = generation + 1
+            val candidate = Attempt(next, "$InFlightPrefix$next", pendingClaim)
+            if (!pending.add(candidate.id)) return false
+            generation = next
+            active = candidate
+            candidate
         }
-        if (!pending.add(attempt.id)) {
-            synchronized(lock) { if (active === attempt) active = null }
+        val published = runCatching {
+            synchronized(lock) {
+                if (!owns(attempt)) return@synchronized false
+                publishPending()
+                owns(attempt)
+            }
+        }.getOrElse { error ->
+            if (rollbackRegistration(attempt)) rejected(error)
             return false
         }
-        publishPending()
+        if (!published) return false
         scope.launch(dispatcher) {
+            if (!isCurrent(attempt)) return@launch
             var issued: Config? = null
             val verified = runCatching {
                 if (attempt.claim == null) {
@@ -194,9 +216,7 @@ internal class Connection(
                 }
             }
             if (!isCurrent(attempt)) {
-                pending.remove(attempt.id)
                 issued?.let(::retireIssued)
-                publishPending()
                 return@launch
             }
             verified.onSuccess { (config, snapshot) -> commit(attempt, config, snapshot) }
@@ -234,11 +254,11 @@ internal class Connection(
     }
 
     private fun fail(attempt: Attempt, error: Throwable) {
-        pending.remove(attempt.id)
         val currentAttempt = synchronized(lock) {
-            if (active !== attempt || generation != attempt.generation) {
+            if (!owns(attempt)) {
                 false
             } else {
+                pending.remove(attempt.id)
                 active = null
                 true
             }
@@ -250,12 +270,23 @@ internal class Connection(
     }
 
     private fun isCurrent(attempt: Attempt): Boolean = synchronized(lock) {
+        owns(attempt)
+    }
+
+    private fun owns(attempt: Attempt): Boolean =
         active === attempt && generation == attempt.generation
+
+    private fun rollbackRegistration(attempt: Attempt): Boolean = synchronized(lock) {
+        if (!owns(attempt)) return@synchronized false
+        pending.remove(attempt.id)
+        active = null
+        generation = attempt.generation - 1
+        true
     }
 
     fun disconnect(): Boolean {
         var previous: Config? = null
-        val superseded = runCatching {
+        runCatching {
             synchronized(lock) {
                 val existing = current().also { previous = it }
                 claim?.let {
@@ -269,6 +300,7 @@ internal class Connection(
                 generation += 1
                 claim = null
                 active.also {
+                    it?.let { attempt -> pending.remove(attempt.id) }
                     active = null
                     disconnected()
                 }
@@ -278,7 +310,6 @@ internal class Connection(
             previous?.let(recover)
             return false
         }
-        superseded?.let { pending.remove(it.id) }
         retryRevocation()
         return true
     }

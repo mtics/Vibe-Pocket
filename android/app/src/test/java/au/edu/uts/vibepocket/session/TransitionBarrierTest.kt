@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModelStore
 import au.edu.uts.vibepocket.bridge.Client
 import au.edu.uts.vibepocket.bridge.CommandResult
 import au.edu.uts.vibepocket.bridge.CommandStatus
+import au.edu.uts.vibepocket.bridge.EventCallbacks
+import au.edu.uts.vibepocket.bridge.EventFactory
+import au.edu.uts.vibepocket.bridge.EventStream
 import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.connection.Claim
 import au.edu.uts.vibepocket.connection.Config
@@ -88,6 +91,86 @@ class TransitionBarrierTest {
 
         assertFalse(session.state.value.contextTransitionPending)
         assertTrue(session.state.value.inFlightIds.isEmpty())
+        assertNull(store.pendingCommand)
+    }
+
+    @Test
+    fun preDeliveryRefreshReturningAfterSuccessCannotReleaseBarrier() = runTest(dispatcher) {
+        val target = snapshot(focusedAgentId = AgentB)
+        val store = MemoryStore()
+        val client = DelayedOldSnapshotClient(snapshot(), target)
+        val session = Session(store, client, dispatcher)
+        runCurrent()
+
+        assertTrue(session.focusAgent(AgentB))
+        session.refresh()
+        runCurrent()
+
+        client.commandRelease.complete(Unit)
+        runCurrent()
+        client.oldSnapshotRelease.complete(Unit)
+        runCurrent()
+
+        assertEquals(3, client.snapshotCalls)
+        assertTrue(session.state.value.contextTransitionPending)
+        assertNotNull(store.pendingCommand)
+
+        client.authoritativeSnapshotRelease.complete(Unit)
+        runCurrent()
+
+        assertFalse(session.state.value.contextTransitionPending)
+        assertNull(store.pendingCommand)
+    }
+
+    @Test
+    fun backgroundDeliverySuccessIsConfirmedByForegroundSseRefresh() = runTest(dispatcher) {
+        val store = MemoryStore()
+        val client = ResumableSuccessClient(snapshot(), snapshot(focusedAgentId = AgentB))
+        val events = FakeEvents()
+        val session = Session(store, client, dispatcher, eventFactory = events)
+        runCurrent()
+        session.setForeground(true)
+        session.setForeground(false)
+
+        assertTrue(session.focusAgent(AgentB))
+        runCurrent()
+
+        assertEquals(1, client.snapshotCalls)
+        assertTrue(session.state.value.contextTransitionPending)
+        assertNotNull(store.pendingCommand)
+
+        session.setForeground(true)
+        events.callbacks.connected()
+        runCurrent()
+
+        assertEquals(2, client.snapshotCalls)
+        assertEquals(AgentB, session.state.value.snapshot?.desktop?.focusedAgentId)
+        assertFalse(session.state.value.contextTransitionPending)
+        assertNull(store.pendingCommand)
+    }
+
+    @Test
+    fun failedObservationKeepsBarrierUntilLaterAuthoritativeSnapshot() = runTest(dispatcher) {
+        val store = MemoryStore()
+        val client = ObservationFailureClient(
+            snapshot(),
+            snapshot(focusedAgentId = AgentB),
+        )
+        val session = Session(store, client, dispatcher)
+        runCurrent()
+
+        assertTrue(session.focusAgent(AgentB))
+        runCurrent()
+
+        assertEquals(2, client.snapshotCalls)
+        assertTrue(session.state.value.contextTransitionPending)
+        assertNotNull(store.pendingCommand)
+
+        session.refresh()
+        runCurrent()
+
+        assertEquals(3, client.snapshotCalls)
+        assertFalse(session.state.value.contextTransitionPending)
         assertNull(store.pendingCommand)
     }
 
@@ -304,12 +387,63 @@ class TransitionBarrierTest {
         }
     }
 
+    private class DelayedOldSnapshotClient(
+        private val baseline: Snapshot,
+        private val target: Snapshot,
+    ) : Client {
+        val commandRelease = CompletableDeferred<Unit>()
+        val oldSnapshotRelease = CompletableDeferred<Unit>()
+        val authoritativeSnapshotRelease = CompletableDeferred<Unit>()
+        var snapshotCalls = 0
+            private set
+
+        override suspend fun snapshot(config: Config): Snapshot = when (++snapshotCalls) {
+            1 -> baseline
+            2 -> oldSnapshotRelease.await().let { target }
+            3 -> authoritativeSnapshotRelease.await().let { target }
+            else -> error("Unexpected snapshot request")
+        }
+
+        override suspend fun command(config: Config, command: Command) = error("Explicit operation ID required")
+
+        override suspend fun command(config: Config, command: Command, operationId: String) {
+            commandRelease.await()
+        }
+    }
+
     private class ImmediateSuccessClient(vararg snapshots: Snapshot) : SnapshotClient(ArrayDeque(snapshots.toList())) {
         var postCalls = 0
 
         override suspend fun command(config: Config, command: Command, operationId: String) {
             postCalls += 1
         }
+    }
+
+    private class ResumableSuccessClient(vararg snapshots: Snapshot) :
+        SnapshotClient(ArrayDeque(snapshots.toList())) {
+        override suspend fun command(config: Config, command: Command, operationId: String) = Unit
+
+        override suspend fun commandResult(config: Config, operationId: String): CommandResult =
+            CommandResult.Found(CommandStatus.RUNNING)
+    }
+
+    private class ObservationFailureClient(
+        private val baseline: Snapshot,
+        private val target: Snapshot,
+    ) : Client {
+        var snapshotCalls = 0
+            private set
+
+        override suspend fun snapshot(config: Config): Snapshot = when (++snapshotCalls) {
+            1 -> baseline
+            2 -> throw IOException("Snapshot unavailable.")
+            3 -> target
+            else -> error("Unexpected snapshot request")
+        }
+
+        override suspend fun command(config: Config, command: Command) = error("Explicit operation ID required")
+
+        override suspend fun command(config: Config, command: Command, operationId: String) = Unit
     }
 
     private class DefiniteFailureClient(snapshot: Snapshot) : SnapshotClient(ArrayDeque(listOf(snapshot))) {
@@ -356,6 +490,22 @@ class TransitionBarrierTest {
         }
     }
 
+    private class FakeEvents : EventFactory {
+        lateinit var callbacks: EventCallbacks
+
+        override fun create(
+            config: Config,
+            lastEventId: String?,
+            callbacks: EventCallbacks,
+        ): EventStream {
+            this.callbacks = callbacks
+            return object : EventStream {
+                override fun start() = Unit
+                override fun stop() = Unit
+            }
+        }
+    }
+
     private class MemoryStore : Store {
         var config: Config? = ConfigValue
         var claim: Claim? = null
@@ -395,6 +545,14 @@ class TransitionBarrierTest {
         override fun loadPendingCommands(): List<PendingCommand> = pendingCommands.toList()
         override fun loadPendingCommandsRecord(): LoadOutcome<List<PendingCommand>> =
             pendingLoad ?: super.loadPendingCommandsRecord()
+        override fun markPendingCommandDispatched(operationId: String): PendingCommand {
+            val current = pendingCommand
+                ?.takeIf { it.operationId == operationId }
+                ?: error("Different pending command")
+            return current.copy(phase = PendingCommand.Phase.DISPATCH_ATTEMPTED).also {
+                pendingCommands[0] = it
+            }
+        }
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false

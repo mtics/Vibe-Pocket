@@ -20,4 +20,10 @@ internal fun remote(session: Session): Bridge = object : Bridge {
     override fun selectModel(modelId: String): Boolean = session.selectModel(modelId)
 
     override fun selectLayer(layerId: String): Boolean = session.selectLayer(layerId)
+
+    override fun reportLocalDeliveryFailure(message: String) = session.reportLocalDeliveryFailure(message)
+
+    override fun refresh() {
+        session.refresh()
+    }
 }

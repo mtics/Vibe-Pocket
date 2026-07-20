@@ -3,7 +3,6 @@ package au.edu.uts.vibepocket.session
 import au.edu.uts.vibepocket.bridge.Client
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.control.Snapshot
-import au.edu.uts.vibepocket.control.sameSurface
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -139,13 +138,8 @@ internal class Refresh(
                         } else {
                             resolved
                         }
-                        val next = if (visible != null && visible.sameSurface(observed)) {
-                            visible.copy(transportFresh = observed.transportFresh)
-                        } else {
-                            observed
-                        }
                         current.copy(
-                            snapshot = next,
+                            snapshot = observed,
                             isRefreshing = false,
                             error = persistentError(),
                         )

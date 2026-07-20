@@ -65,7 +65,15 @@ interface Store {
     }
     fun loadPendingCommand(): PendingCommand?
     fun loadPendingCommands(): List<PendingCommand> = listOfNotNull(loadPendingCommand())
+    fun markPendingCommandDispatched(operationId: String): PendingCommand
     fun clearPendingCommand(operationId: String): Boolean
+    fun clearPendingCommands() {
+        loadPendingCommands().forEach { command ->
+            check(clearPendingCommand(command.operationId)) {
+                "Vibe Pocket found a different pending command while retiring the outbox."
+            }
+        }
+    }
 
     fun loadConfigRecord(): LoadOutcome<Config> = loadOutcome(LifecycleRecord.CONFIG, ::load)
     fun loadClaimRecord(): LoadOutcome<Claim> = loadOutcome(LifecycleRecord.CLAIM, ::loadClaim)
@@ -91,10 +99,12 @@ interface Store {
 
     fun forget(config: Config) {
         enqueueRevocation(config)
+        clearPendingCommands()
         clear()
     }
 
     fun invalidate() {
+        clearPendingCommands()
         clear()
     }
 }
@@ -193,7 +203,13 @@ data class PendingCommand(
     val operationId: String,
     val uiId: String,
     val transition: ContextTransition? = null,
+    val phase: Phase = Phase.PREPARED,
 ) {
+    enum class Phase {
+        PREPARED,
+        DISPATCH_ATTEMPTED,
+    }
+
     init {
         require(runCatching { UUID.fromString(operationId) }.isSuccess) {
             "The pending command operation ID is invalid."
@@ -425,6 +441,28 @@ class Vault(context: Context) : Store {
     }
 
     @Synchronized
+    override fun markPendingCommandDispatched(operationId: String): PendingCommand {
+        val encrypted = preferences.getString(COMMAND_OUTBOX_KEY, null)
+            ?: throw IllegalStateException("Vibe Pocket could not find the pending command to dispatch.")
+        val queued = decodePendingCommands(decrypt(encrypted))
+        val current = queued.firstOrNull()
+            ?.takeIf { it.operationId == operationId }
+            ?: throw IllegalStateException("Vibe Pocket found a different pending command before dispatch.")
+        if (current.phase == PendingCommand.Phase.DISPATCH_ATTEMPTED) return current
+
+        val dispatched = current.copy(phase = PendingCommand.Phase.DISPATCH_ATTEMPTED)
+        val updated = listOf(dispatched) + queued.drop(1)
+        check(
+            preferences.edit()
+                .putString(COMMAND_OUTBOX_KEY, encrypt(encodePendingCommands(updated)))
+                .commit(),
+        ) {
+            "Vibe Pocket could not record the pending command dispatch attempt."
+        }
+        return dispatched
+    }
+
+    @Synchronized
     override fun clearPendingCommand(operationId: String): Boolean {
         val encrypted = preferences.getString(COMMAND_OUTBOX_KEY, null) ?: return true
         val queued = decodePendingCommands(decrypt(encrypted))
@@ -440,6 +478,13 @@ class Vault(context: Context) : Store {
             "Vibe Pocket could not clear the pending command."
         }
         return true
+    }
+
+    @Synchronized
+    override fun clearPendingCommands() {
+        check(preferences.edit().remove(COMMAND_OUTBOX_KEY).commit()) {
+            "Vibe Pocket could not retire the pending command outbox."
+        }
     }
 
     override fun commit(config: Config) {
@@ -462,6 +507,7 @@ class Vault(context: Context) : Store {
             preferences.edit()
                 .putString(REVOCATION_KEY, encrypt(encodeRevocations(queued)))
                 .remove(CONFIG_KEY)
+                .remove(COMMAND_OUTBOX_KEY)
                 .commit(),
         ) {
             "Vibe Pocket could not forget the Bridge configuration."
@@ -472,6 +518,7 @@ class Vault(context: Context) : Store {
         check(
             preferences.edit()
                 .remove(CONFIG_KEY)
+                .remove(COMMAND_OUTBOX_KEY)
                 .commit(),
         ) {
             "Vibe Pocket could not invalidate the Bridge configuration."
@@ -587,6 +634,7 @@ internal fun encodePendingCommand(command: PendingCommand): String = JSONObject(
     .put("command", command.command.encode())
     .put("operationId", command.operationId)
     .put("uiId", command.uiId)
+    .put("phase", command.phase.wireValue)
     .apply { command.transition?.let { put("transition", encodeTransition(it)) } }
     .toString()
 
@@ -594,7 +642,7 @@ internal fun decodePendingCommand(value: String): PendingCommand {
     val payload = JSONObject(value)
     val version = payload.optInt("version", 1)
     if (version == 1) throw LegacyPendingCommand()
-    require(version == PendingCommandVersion) { "The pending command version is unsupported." }
+    require(version in 2..PendingCommandVersion) { "The pending command version is unsupported." }
     val encodedCommand = payload.optJSONObject("command")
         ?: throw IllegalArgumentException("The pending command body is invalid.")
     return PendingCommand(
@@ -611,7 +659,24 @@ internal fun decodePendingCommand(value: String): PendingCommand {
                 ?.let(::decodeTransition)
                 ?: throw IllegalArgumentException("The pending command transition target is invalid.")
         },
+        phase = if (version == 2) {
+            PendingCommand.Phase.DISPATCH_ATTEMPTED
+        } else {
+            decodePendingCommandPhase(payload.getString("phase"))
+        },
     )
+}
+
+private val PendingCommand.Phase.wireValue: String
+    get() = when (this) {
+        PendingCommand.Phase.PREPARED -> "prepared"
+        PendingCommand.Phase.DISPATCH_ATTEMPTED -> "dispatch_attempted"
+    }
+
+private fun decodePendingCommandPhase(value: String): PendingCommand.Phase = when (value) {
+    "prepared" -> PendingCommand.Phase.PREPARED
+    "dispatch_attempted" -> PendingCommand.Phase.DISPATCH_ATTEMPTED
+    else -> throw IllegalArgumentException("The pending command dispatch phase is invalid.")
 }
 
 internal fun encodePendingCommands(commands: List<PendingCommand>): String = JSONObject()
@@ -665,7 +730,7 @@ private fun decodeTransition(value: JSONObject): ContextTransition = when (value
     else -> throw IllegalArgumentException("The pending command transition target is invalid.")
 }
 
-private const val PendingCommandVersion = 2
+private const val PendingCommandVersion = 3
 private const val PendingCommandQueueVersion = 3
 internal const val PendingCommandLimit = 32
 

@@ -13,10 +13,12 @@ class ReasoningTest {
             level = Reasoning.Level.MINIMAL,
             canIncrease = true,
             canDecrease = false,
+            increaseTo = Reasoning.Level.HIGH,
         )
 
         assertTrue(status.allows(1))
         assertFalse(status.allows(-1))
+        assertTrue(status.shifted(1)?.level == Reasoning.Level.HIGH)
     }
 
     @Test
@@ -31,5 +33,20 @@ class ReasoningTest {
 
         assertTrue(status.allows(1))
         assertTrue(status.allows(-1))
+    }
+
+    @Test
+    fun predictionUsesTheAdvertisedNonContiguousTarget() {
+        val status = Reasoning(
+            available = true,
+            label = "Low",
+            level = Reasoning.Level.LOW,
+            canIncrease = true,
+            canDecrease = false,
+            increaseTo = Reasoning.Level.HIGH,
+        )
+
+        assertTrue(status.shifted(1)?.level == Reasoning.Level.HIGH)
+        assertTrue(status.shifted(1)?.level != Reasoning.Level.MEDIUM)
     }
 }

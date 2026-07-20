@@ -17,6 +17,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<Session> {
         Session.create(Vault(applicationContext))
     }
+    private val hardware by viewModels<HardwareViewModel>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,7 +35,7 @@ class MainActivity : ComponentActivity() {
         consume(intent)
         setContent {
             Theme {
-                App(viewModel = viewModel)
+                App(viewModel = viewModel, hidController = hardware.keyboard)
             }
         }
     }

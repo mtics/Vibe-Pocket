@@ -28,6 +28,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal fun decode(root: JSONObject): Snapshot {
+    if (root.opt("protocolVersion") != ProtocolVersion) {
+        throw Failure("The Vibe Pocket bridge returned an incompatible snapshot protocol version.")
+    }
     val status = root.optJSONObject("status") ?: JSONObject()
     val controls = root.optJSONObject("controls") ?: JSONObject()
     return Snapshot(
@@ -204,6 +207,8 @@ private fun decodeReasoning(value: JSONObject?): Reasoning {
         // capability keeps a rolling bridge/app upgrade interactive.
         canIncrease = available && value.optBoolean("canIncrease", true),
         canDecrease = available && value.optBoolean("canDecrease", true),
+        increaseTo = Reasoning.Level.fromWire(value?.safeString("increaseTo")),
+        decreaseTo = Reasoning.Level.fromWire(value?.safeString("decreaseTo")),
     )
 }
 

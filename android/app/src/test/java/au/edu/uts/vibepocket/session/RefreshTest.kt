@@ -1,6 +1,7 @@
 package au.edu.uts.vibepocket.session
 
 import au.edu.uts.vibepocket.bridge.Client
+import au.edu.uts.vibepocket.bridge.Failure
 import au.edu.uts.vibepocket.connection.Config
 import au.edu.uts.vibepocket.control.Capabilities
 import au.edu.uts.vibepocket.control.Command
@@ -127,6 +128,29 @@ class RefreshTest {
     }
 
     @Test
+    fun incompatibleRefreshKeepsTheVisibleSnapshotStaleAndUnreconciled() = runTest(dispatcher) {
+        val client = ControlledClient()
+        val harness = harness(client, snapshot("compatible"))
+        harness.refresh.activate(ConfigA, 1)
+        harness.refresh.request(stale = true)
+        runCurrent()
+
+        client.fail(
+            0,
+            Failure("The Vibe Pocket bridge returned an incompatible snapshot protocol version."),
+        )
+        runCurrent()
+
+        assertEquals("compatible", harness.state.value.snapshot?.revision)
+        assertFalse(harness.state.value.snapshot?.transportFresh == true)
+        assertEquals(
+            "The Vibe Pocket bridge returned an incompatible snapshot protocol version.",
+            harness.state.value.error,
+        )
+        assertTrue(harness.reconciled.isEmpty())
+    }
+
+    @Test
     fun callbacksUseAppliedRequestVersions() = runTest(dispatcher) {
         val client = ControlledClient()
         val harness = harness(client, snapshot("base"))
@@ -152,6 +176,23 @@ class RefreshTest {
         assertTrue(first < replaced && replaced < latest)
         assertEquals(listOf("first" to first, "latest" to latest), harness.reconciled)
         assertFalse(harness.reconciled.any { it.second == replaced })
+    }
+
+    @Test
+    fun storesRevisionAndMessageOnlyAuthoritativeChanges() = runTest(dispatcher) {
+        val client = ControlledClient()
+        val initial = snapshot("r_1", message = "Waiting for approval")
+        val harness = harness(client, initial)
+        harness.refresh.activate(ConfigA, 1)
+        val request = requireNotNull(harness.refresh.request())
+        runCurrent()
+
+        client.succeed(0, snapshot("r_2", message = "Tests are running"))
+        runCurrent()
+
+        assertEquals("r_2", harness.state.value.snapshot?.revision)
+        assertEquals("Tests are running", harness.state.value.snapshot?.status?.message)
+        assertEquals(listOf("r_2" to request), harness.reconciled)
     }
 
     private fun TestScope.harness(client: Client, initial: Snapshot?): Harness {
@@ -218,9 +259,9 @@ class RefreshTest {
         val ConfigA = Config("https://a.example.test", "a".repeat(24))
         val ConfigB = Config("https://b.example.test", "b".repeat(24))
 
-        fun snapshot(revision: String) = Snapshot(
+        fun snapshot(revision: String, message: String? = null) = Snapshot(
             revision = revision,
-            status = Status(revision, null),
+            status = Status("ready", message),
             capabilities = Capabilities(),
         )
     }

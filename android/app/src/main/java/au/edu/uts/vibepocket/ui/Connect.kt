@@ -1,5 +1,8 @@
 package au.edu.uts.vibepocket.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,13 +39,22 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanner
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+
+internal fun normalizedScannedInvitation(rawValue: String?): String? =
+    rawValue?.trim()?.takeIf(String::isNotEmpty)
 
 @Composable
 internal fun Connect(
@@ -52,6 +64,38 @@ internal fun Connect(
 ) {
     var invitation by rememberSaveable { mutableStateOf("") }
     var advanced by rememberSaveable { mutableStateOf(false) }
+    var scanError by rememberSaveable { mutableStateOf<String?>(null) }
+    var isScanning by remember { mutableStateOf(false) }
+    val activity = LocalContext.current.findActivity()
+    val scanner = remember(activity) { activity?.qrScanner() }
+
+    fun startScan() {
+        scanError = null
+        if (scanner == null) {
+            scanError = "QR scanner is unavailable. Try again or paste the invitation."
+            return
+        }
+        isScanning = true
+        try {
+            scanner.startScan()
+                .addOnSuccessListener { barcode ->
+                    val scannedInvitation = normalizedScannedInvitation(barcode.rawValue)
+                    if (scannedInvitation == null) {
+                        scanError = "The QR code is empty. Scan again or paste the invitation."
+                    } else {
+                        onInvitation(scannedInvitation)
+                    }
+                }
+                .addOnFailureListener {
+                    scanError = "Could not scan the QR code. Scan again or paste the invitation."
+                }
+                .addOnCompleteListener { isScanning = false }
+        } catch (_: RuntimeException) {
+            isScanning = false
+            scanError = "QR scanner is unavailable. Try again or paste the invitation."
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -82,13 +126,32 @@ internal fun Connect(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = ::startScan,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                enabled = !isConnecting && !isScanning,
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                if (isScanning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Scan QR code")
+                }
+            }
             Column(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 if (isConnecting) CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
-                error?.let {
+                (scanError ?: error)?.let {
                     if (isConnecting) Spacer(Modifier.height(12.dp))
                     ErrorNotice(it)
                 }
@@ -106,7 +169,10 @@ internal fun Connect(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = invitation,
-                    onValueChange = { invitation = it },
+                    onValueChange = {
+                        invitation = it
+                        scanError = null
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                     maxLines = 4,
@@ -115,7 +181,10 @@ internal fun Connect(
                 )
                 Spacer(Modifier.height(14.dp))
                 Button(
-                    onClick = { onInvitation(invitation) },
+                    onClick = {
+                        scanError = null
+                        onInvitation(invitation)
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !isConnecting && invitation.isNotBlank(),
                     shape = RoundedCornerShape(8.dp),
@@ -125,4 +194,18 @@ internal fun Connect(
             }
         }
     }
+}
+
+private fun Activity.qrScanner(): GmsBarcodeScanner {
+    val options = GmsBarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        .enableAutoZoom()
+        .build()
+    return GmsBarcodeScanning.getClient(this, options)
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
