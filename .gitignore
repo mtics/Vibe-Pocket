@@ -18,6 +18,7 @@ bridge/npm-debug.log*
 
 # Android and Gradle build output
 android/.gradle/
+android/.kotlin/
 android/build/
 android/app/build/
 *.apk
