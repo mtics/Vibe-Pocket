@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal class Commands(
     private val snapshot: () -> Snapshot?,
-    private val deliver: (Command, String, String?) -> Boolean,
+    private val deliver: (Command, String) -> Boolean,
 ) {
     private val sequence = AtomicLong(0)
 
@@ -22,20 +22,20 @@ internal class Commands(
         } else {
             "input:$inputId:${gesture.wireValue}"
         }
-        return deliver(current.commandFor(inputId, gesture), id, null)
+        return deliver(current.commandFor(inputId, gesture), id)
     }
 
     fun openModel(): Boolean {
         val current = snapshot() ?: return false
         val desktop = current.desktop ?: return false
         if (!desktop.foreground || desktop.question != null || !current.capabilities.modelPicker) return false
-        return deliver(Command.ModelPicker, "model-picker", null)
+        return deliver(Command.ModelPicker, "model-picker")
     }
 
     fun focusAgent(agentId: String): Boolean {
         val current = snapshot() ?: return false
         if (!current.agentFocusEnabled(agentId)) return false
-        return deliver(Command.FocusAgent(agentId), "agent:$agentId", "agent")
+        return deliver(Command.FocusAgent(agentId), "agent:$agentId")
     }
 
     fun selectModel(modelId: String): Boolean {
@@ -45,7 +45,7 @@ internal class Commands(
         if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
         if (!current.capabilities.model || !model.available || model.id == modelId) return false
         if (model.options.none { it.id == modelId }) return false
-        return deliver(Command.SelectModel(modelId), "model:$modelId", "model")
+        return deliver(Command.SelectModel(modelId), "model:$modelId")
     }
 
     fun selectMode(modeId: String): Boolean {
@@ -55,7 +55,7 @@ internal class Commands(
         if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
         if (!current.capabilities.modeCycle || !mode.available || mode.id == modeId) return false
         if (mode.options.none { it.id == modeId }) return false
-        return deliver(Command.SelectMode(modeId), "mode:$modeId", "settings")
+        return deliver(Command.SelectMode(modeId), "mode:$modeId")
     }
 
     fun selectReasoning(level: au.edu.uts.vibepocket.control.Reasoning.Level): Boolean {
@@ -65,14 +65,14 @@ internal class Commands(
         if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
         if (!current.capabilities.reasoning || !reasoning.available || reasoning.level == level) return false
         if (reasoning.options.none { it == level }) return false
-        return deliver(Command.SelectReasoning(level), "reasoning:${level.wireValue}", "settings")
+        return deliver(Command.SelectReasoning(level), "reasoning:${level.wireValue}")
     }
 
     fun selectLayer(layerId: String): Boolean {
         val desktop = snapshot()?.desktop ?: return false
         if (desktop.profile?.layers?.none { it.id == layerId } != false) return false
         if (desktop.activeLayerId == layerId) return false
-        return deliver(Command.SelectLayer(layerId), "layer:$layerId", "layer")
+        return deliver(Command.SelectLayer(layerId), "layer:$layerId")
     }
 
     fun updateBinding(
@@ -88,7 +88,6 @@ internal class Commands(
         return deliver(
             Command.UpdateBinding(layerId, inputId, gesture, action),
             "mapping:$inputId:${gesture.wireValue}",
-            null,
         )
     }
 
@@ -99,7 +98,6 @@ internal class Commands(
         return deliver(
             Command.ClearBinding(layerId, inputId, gesture),
             "mapping:$inputId:${gesture.wireValue}",
-            null,
         )
     }
 
@@ -108,14 +106,14 @@ internal class Commands(
         if (trimmed.isEmpty() || trimmed.length > 40 || trimmed.any(Char::isISOControl)) return false
         val layer = snapshot()?.desktop?.profile?.layers?.firstOrNull { it.id == layerId } ?: return false
         if (layer.name == trimmed) return false
-        return deliver(Command.RenameLayer(layerId, trimmed), "rename:$layerId", null)
+        return deliver(Command.RenameLayer(layerId, trimmed), "rename:$layerId")
     }
 
     fun updateLayerColor(layerId: String, color: String): Boolean {
         if (!color.matches(Regex("#[0-9a-fA-F]{6}"))) return false
         val layer = snapshot()?.desktop?.profile?.layers?.firstOrNull { it.id == layerId } ?: return false
         if (layer.color.equals(color, ignoreCase = true)) return false
-        return deliver(Command.UpdateLayerColor(layerId, color.uppercase()), "color:$layerId", null)
+        return deliver(Command.UpdateLayerColor(layerId, color.uppercase()), "color:$layerId")
     }
 
     fun updateWorkflow(workflowId: String, prompt: String): Boolean {
@@ -124,11 +122,11 @@ internal class Commands(
         if (trimmed.isEmpty() || trimmed.length > 4_000 || invalidControl) return false
         val workflow = snapshot()?.desktop?.profile?.workflows?.firstOrNull { it.id == workflowId } ?: return false
         if (workflow.prompt == trimmed) return false
-        return deliver(Command.UpdateWorkflowPrompt(workflowId, trimmed), "workflow:$workflowId", null)
+        return deliver(Command.UpdateWorkflowPrompt(workflowId, trimmed), "workflow:$workflowId")
     }
 
     fun resetProfile(): Boolean {
         if (snapshot()?.desktop?.profile == null) return false
-        return deliver(Command.ResetProfile, "reset-profile", null)
+        return deliver(Command.ResetProfile, "reset-profile")
     }
 }

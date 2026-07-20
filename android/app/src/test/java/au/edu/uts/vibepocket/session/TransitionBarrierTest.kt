@@ -66,7 +66,7 @@ class TransitionBarrierTest {
     }
 
     @Test
-    fun barrierBeginsBeforeEnqueueAndPreSuccessSnapshotCannotReleaseIt() = runTest(dispatcher) {
+    fun barrierBlocksContextButAllowsUnrelatedDecisionBeforeObservation() = runTest(dispatcher) {
         val baseline = snapshot()
         val target = snapshot(focusedAgentId = AgentB)
         val store = MemoryStore()
@@ -76,7 +76,7 @@ class TransitionBarrierTest {
 
         assertTrue(session.focusAgent(AgentB))
         assertTrue(session.state.value.contextTransitionPending)
-        assertFalse(session.activateInput("key_accept"))
+        assertTrue(session.activateInput("key_accept"))
         assertFalse(session.openModel())
         assertFalse(session.startVoice("key_voice"))
 
@@ -271,6 +271,8 @@ class TransitionBarrierTest {
         assertFalse(unknown.state.value.contextTransitionPending)
         assertNull(unknownStore.pendingCommand)
         assertEquals(2, unknownClient.snapshotCalls)
+        assertEquals(Operation.Phase.UNKNOWN, unknown.state.value.operation?.phase)
+        assertEquals(AmbiguousOutcome, unknown.state.value.operation?.message)
 
         val networkStore = MemoryStore()
         val network = Session(
@@ -287,6 +289,7 @@ class TransitionBarrierTest {
         runCurrent()
         assertTrue(network.state.value.contextTransitionPending)
         assertNotNull(networkStore.pendingCommand)
+        assertEquals(Operation.Phase.UNKNOWN, network.state.value.operation?.phase)
     }
 
     @Test

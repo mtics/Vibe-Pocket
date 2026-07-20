@@ -136,7 +136,8 @@ class SessionTest {
         runCurrent()
         val persisted = requireNotNull(firstStore.pendingCommand)
         assertEquals(setOf("input:key_accept:tap"), first.state.value.inFlightIds)
-        assertEquals("The command result is not yet confirmed.", first.state.value.error)
+        assertEquals(null, first.state.value.error)
+        assertEquals(Operation.Phase.OBSERVING, first.state.value.operation?.phase)
 
         val recreatedStore = firstStore.recreated()
         val recoveredClient = RecoverableCommandClient(CommandResult.Found(CommandStatus.SUCCEEDED))
@@ -147,13 +148,39 @@ class SessionTest {
         )
 
         assertEquals(setOf(persisted.uiId), recreated.state.value.inFlightIds)
-        assertEquals("The command result is not yet confirmed.", recreated.state.value.error)
+        assertEquals(null, recreated.state.value.error)
+        assertEquals(Operation.Phase.OBSERVING, recreated.state.value.operation?.phase)
         runCurrent()
 
         assertEquals(0, recoveredClient.commandCalls)
         assertEquals(listOf(persisted.operationId), recoveredClient.queriedOperationIds)
         assertEquals(null, recreatedStore.pendingCommand)
         assertTrue(recreated.state.value.inFlightIds.isEmpty())
+    }
+
+    @Test
+    fun observingOperationBecomesUnknownAfterConfirmationTimeout() = runTest(dispatcher) {
+        val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
+        val viewModel = Session(
+            store = FakeStore(config),
+            client = RecoverableCommandClient(CommandResult.Found(CommandStatus.RUNNING)),
+            dispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.activateInput("key_accept"))
+        runCurrent()
+        assertEquals(Operation.Phase.OBSERVING, viewModel.state.value.operation?.phase)
+
+        advanceTimeBy(10_000L)
+        runCurrent()
+
+        assertEquals(Operation.Phase.UNKNOWN, viewModel.state.value.operation?.phase)
+        assertEquals(
+            "The Mac has not confirmed this command. Its outcome may be unknown.",
+            viewModel.state.value.operation?.message,
+        )
+        assertEquals(null, viewModel.state.value.error)
     }
 
     @Test

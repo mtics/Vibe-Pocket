@@ -9,7 +9,10 @@ import au.edu.uts.vibepocket.connection.LoadOutcome
 import au.edu.uts.vibepocket.connection.PendingCommand
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.control.Command
+import au.edu.uts.vibepocket.control.ConflictGroup
 import au.edu.uts.vibepocket.control.ContextTransition
+import au.edu.uts.vibepocket.control.conflictGroups
+import au.edu.uts.vibepocket.profile.allowsQueuedRepeat
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -33,6 +36,7 @@ internal class Delivery(
     private val accepted: (PendingCommand) -> Unit,
     private val rejected: (Config, String, PendingCommand?, Throwable) -> Unit,
     private val unconfirmed: (PendingCommand, Throwable?) -> Unit,
+    private val changed: (PendingCommand, Operation.Phase, String?) -> Unit = { _, _, _ -> },
     private val operationId: () -> String = { UUID.randomUUID().toString() },
 ) {
     private data class Owner(
@@ -61,15 +65,13 @@ internal class Delivery(
         if (synchronized(lock) { canWorkLocked() }) requestWorker()
     }
 
-    fun hasPendingResult(): Boolean = synchronized(lock) {
-        outbox.isNotEmpty() || outboxUnreadable
+    fun busyGroups(): Set<ConflictGroup> = synchronized(lock) {
+        outbox.flatMapTo(mutableSetOf()) { it.command.conflictGroups() }
     }
 
-    @Suppress("UNUSED_PARAMETER")
     fun send(
         command: Command,
         id: String,
-        family: String? = null,
         transition: ContextTransition? = null,
     ): Boolean {
         var saveError: Throwable? = null
@@ -77,8 +79,12 @@ internal class Delivery(
         val saved = synchronized(lock) {
             val currentOwner = owner.takeIf { it.config != null } ?: return@synchronized false
             if (outboxUnreadable) return@synchronized false
-            if (transition != null && outbox.isNotEmpty()) return@synchronized false
-            if (outbox.any { it.transition != null }) return@synchronized false
+            val groups = command.conflictGroups()
+            if (groups.isNotEmpty() && outbox.any { queued ->
+                    queued.command.conflictGroups().any(groups::contains) &&
+                        !command.isQueuedRepeatOf(queued.command)
+                }
+            ) return@synchronized false
             if (!pending.add(id)) return@synchronized false
 
             val persisted = try {
@@ -119,6 +125,8 @@ internal class Delivery(
             return false
         }
 
+        val queued = synchronized(lock) { outbox.lastOrNull { it.uiId == id } }
+        if (queued != null) changed(queued, Operation.Phase.QUEUED, null)
         publishPending()
         requestWorker()
         return true
@@ -262,6 +270,7 @@ internal class Delivery(
         val persisted = try {
             store.markPendingCommandDispatched(prepared.operationId)
         } catch (error: Throwable) {
+            changed(prepared, Operation.Phase.FAILED, error.message)
             retain(prepared, error)
             return false
         }
@@ -270,6 +279,7 @@ internal class Delivery(
             outbox.removeFirst()
             outbox.addFirst(persisted)
         }
+        changed(persisted, Operation.Phase.SENT, null)
         currentCoroutineContext().ensureActive()
         return try {
             client.command(persisted.config, persisted.command, persisted.operationId)
@@ -283,6 +293,7 @@ internal class Delivery(
             if ((error as? Failure)?.errorCode == CommandOutcomeIndeterminate) {
                 settleAmbiguous(persisted)
             } else {
+                changed(persisted, Operation.Phase.FAILED, error.message)
                 settle(persisted) {
                     rejected(persisted.config, persisted.uiId, persisted, error)
                 }
@@ -300,6 +311,7 @@ internal class Delivery(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
+            changed(persisted, Operation.Phase.UNKNOWN, CommandResultUnconfirmed)
             retain(persisted, null)
             return false
         }
@@ -309,7 +321,8 @@ internal class Delivery(
                 CommandStatus.ACCEPTED,
                 CommandStatus.RUNNING,
                 -> {
-                    retain(persisted, null)
+                    changed(persisted, Operation.Phase.OBSERVING, null)
+                    publishPending()
                     false
                 }
                 CommandStatus.SUCCEEDED -> completeSuccess(persisted)
@@ -321,6 +334,7 @@ internal class Delivery(
                             result.error?.message ?: "The Bridge reported that the command failed.",
                             errorCode = result.error?.code,
                         )
+                        changed(persisted, Operation.Phase.FAILED, failure.message)
                         settle(persisted) {
                             rejected(persisted.config, persisted.uiId, persisted, failure)
                         }
@@ -343,12 +357,18 @@ internal class Delivery(
             AmbiguousOutcome,
             errorCode = CommandOutcomeIndeterminate,
         )
+        changed(persisted, Operation.Phase.UNKNOWN, failure.message)
         return settle(persisted) {
             rejected(persisted.config, persisted.uiId, persisted, failure)
         }
     }
 
     private fun completeSuccess(persisted: PendingCommand): Boolean {
+        changed(
+            persisted,
+            if (persisted.transition == null) Operation.Phase.OBSERVED else Operation.Phase.ACKNOWLEDGED,
+            null,
+        )
         if (persisted.transition == null) return settle(persisted) { accepted(persisted) }
         accepted(persisted)
         publishPending()
@@ -362,6 +382,7 @@ internal class Delivery(
             }
         }.exceptionOrNull()
         if (clearError != null) {
+            changed(persisted, Operation.Phase.FAILED, clearError.message)
             retain(persisted, clearError)
             return false
         }
@@ -395,3 +416,7 @@ internal class Delivery(
 internal const val CommandOutcomeIndeterminate = "command_outcome_indeterminate"
 internal const val AmbiguousOutcome =
     "The command may have completed, but its outcome could not be confirmed."
+internal const val CommandResultUnconfirmed = "The command result is not yet confirmed."
+
+private fun Command.isQueuedRepeatOf(other: Command): Boolean =
+    this == other && this is Command.Binding && action.allowsQueuedRepeat()

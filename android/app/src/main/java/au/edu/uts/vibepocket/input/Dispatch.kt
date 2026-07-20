@@ -1,6 +1,8 @@
 package au.edu.uts.vibepocket.input
 
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.ConflictGroup
+import au.edu.uts.vibepocket.control.conflictGroups
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.allowsQueuedRepeat
@@ -78,8 +80,13 @@ internal class Dispatch(
         inputId: String,
         gesture: Gesture.Kind,
     ): Boolean {
-        if (bridge.contextTransitionPending()) return false
         val plan = activation(snapshot, inputId, gesture)
+        val contextBlocked = bridge.contextTransitionPending() && (
+            ConflictGroup.CONTEXT in snapshot?.actionFor(inputId, gesture)?.conflictGroups().orEmpty() ||
+                (plan as? Plan.Bridge)?.transition != null ||
+                (plan as? Plan.HidTap)?.fallback?.transition != null
+            )
+        if (contextBlocked) return false
         if (plan is Plan.Bridge && plan.transition != null && snapshot?.desktop?.voice?.active == true) return false
         return when (plan) {
         Plan.Disabled -> false
@@ -107,7 +114,6 @@ internal class Dispatch(
     }
 
     fun startRepeat(snapshot: Snapshot?, inputId: String): Boolean {
-        if (bridge.contextTransitionPending()) return false
         return when (val plan = activation(snapshot, inputId, Gesture.Kind.TAP)) {
             Plan.Disabled -> false
             is Plan.Bridge -> deliver(plan)
@@ -239,7 +245,6 @@ internal class Dispatch(
     }
 
     private fun deliver(plan: Plan.Bridge): Boolean {
-        if (bridge.contextTransitionPending()) return false
         return if (plan.transition == null) {
             bridge.activate(plan.inputId, plan.gesture)
         } else {

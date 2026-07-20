@@ -22,7 +22,7 @@ class CommandsTest {
         val delivered = mutableListOf<Command>()
         val commands = Commands(
             snapshot = { current },
-            deliver = { command, _, _ -> delivered.add(command) },
+            deliver = { command, _ -> delivered.add(command) },
         )
 
         assertTrue(commands.selectModel("model-2"))
@@ -41,7 +41,7 @@ class CommandsTest {
         val delivered = mutableListOf<Command>()
         val commands = Commands(
             snapshot = { snapshot() },
-            deliver = { command, _, _ -> delivered.add(command) },
+            deliver = { command, _ -> delivered.add(command) },
         )
 
         assertTrue(commands.selectMode("plan"))

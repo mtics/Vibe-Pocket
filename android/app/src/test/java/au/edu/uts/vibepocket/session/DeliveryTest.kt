@@ -11,6 +11,7 @@ import au.edu.uts.vibepocket.connection.PendingCommand
 import au.edu.uts.vibepocket.connection.Store
 import au.edu.uts.vibepocket.connection.VoiceStop
 import au.edu.uts.vibepocket.control.Command
+import au.edu.uts.vibepocket.control.ContextTransition
 import au.edu.uts.vibepocket.control.Snapshot
 import java.io.IOException
 import java.util.UUID
@@ -155,7 +156,7 @@ class DeliveryTest {
     }
 
     @Test
-    fun distinctRapidSendsQueueWhileDuplicateUiIdIsRejected() = runTest {
+    fun conflictingDecisionIsRejectedWhileUnrelatedCommandQueues() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val store = MemoryStore()
         val client = GateClient()
@@ -163,18 +164,40 @@ class DeliveryTest {
 
         assertTrue(harness.delivery.send(Command.Approve, "approve"))
         assertFalse(harness.delivery.send(Command.Approve, "approve"))
-        assertTrue(harness.delivery.send(Command.Reject, "reject"))
+        assertFalse(harness.delivery.send(Command.Reject, "reject"))
+        assertTrue(harness.delivery.send(Command.Stop, "stop"))
         assertEquals("approve", store.pendingCommand?.uiId)
-        assertEquals(listOf("approve", "reject"), store.pendingCommands.map(PendingCommand::uiId))
-        assertEquals(setOf("approve", "reject"), harness.pending.snapshot())
+        assertEquals(listOf("approve", "stop"), store.pendingCommands.map(PendingCommand::uiId))
+        assertEquals(setOf("approve", "stop"), harness.pending.snapshot())
         runCurrent()
         assertEquals(listOf(Command.Approve), client.posts.map(Post::command))
 
         client.release.complete(Unit)
         runCurrent()
-        assertEquals(listOf(Command.Approve, Command.Reject), client.posts.map(Post::command))
+        assertEquals(listOf(Command.Approve, Command.Stop), client.posts.map(Post::command))
         assertNull(store.pendingCommand)
         assertTrue(harness.pending.snapshot().isEmpty())
+    }
+
+    @Test
+    fun contextTransitionOnlyBlocksItsOwnConflictGroup() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val store = MemoryStore()
+        val harness = delivery(dispatcher, RecordingClient(), store)
+        val agentId = "agent-000000000000000000000000"
+
+        assertTrue(
+            harness.delivery.send(
+                Command.FocusAgent(agentId),
+                "agent:one",
+                ContextTransition.Agent(agentId),
+            ),
+        )
+        assertTrue(harness.delivery.send(Command.Approve, "approve"))
+        assertFalse(harness.delivery.send(Command.SelectModel("model-2"), "model:model-2"))
+
+        assertEquals(listOf("agent:one", "approve"), store.pendingCommands.map(PendingCommand::uiId))
+        runCurrent()
     }
 
     @Test
@@ -190,7 +213,8 @@ class DeliveryTest {
         val retained = requireNotNull(store.pendingCommand)
         assertEquals(1, client.posts.size)
         assertEquals(1, client.queries.size)
-        assertEquals(1, harness.unconfirmed.size)
+        assertTrue(harness.unconfirmed.isEmpty())
+        assertEquals(Operation.Phase.OBSERVING, harness.updates.last().phase)
 
         client.result = CommandResult.Found(CommandStatus.SUCCEEDED)
         harness.delivery.recover()
@@ -232,6 +256,7 @@ class DeliveryTest {
         val accepted = mutableListOf<PendingCommand>()
         val rejected = mutableListOf<Rejection>()
         val unconfirmed = mutableListOf<Throwable?>()
+        val updates = mutableListOf<Update>()
         val delivery = Delivery(
             scope = this,
             dispatcher = dispatcher,
@@ -245,8 +270,9 @@ class DeliveryTest {
                 rejected += Rejection(config, id, command, error)
             },
             unconfirmed = { _, error -> unconfirmed += error },
+            changed = { command, phase, message -> updates += Update(command, phase, message) },
         ).also { it.bind(bind) }
-        return Harness(delivery, pending, accepted, rejected, unconfirmed)
+        return Harness(delivery, pending, accepted, rejected, unconfirmed, updates)
     }
 
     private data class Harness(
@@ -255,6 +281,13 @@ class DeliveryTest {
         val accepted: List<PendingCommand>,
         val rejected: List<Rejection>,
         val unconfirmed: List<Throwable?>,
+        val updates: List<Update>,
+    )
+
+    private data class Update(
+        val command: PendingCommand,
+        val phase: Operation.Phase,
+        val message: String?,
     )
 
     private data class Rejection(

@@ -497,7 +497,7 @@ class DispatchTest {
     }
 
     @Test
-    fun activeBarrierRejectsOrdinaryHidAndVoiceStartButAllowsStopAndRelease() {
+    fun activeBarrierRejectsContextAndVoiceButKeepsUnrelatedGroupsResponsive() {
         val hid = FakeHid()
         val bridge = FakeBridge(transitionPending = true)
         val orchestrator = Dispatch(hid, bridge)
@@ -505,13 +505,17 @@ class DispatchTest {
 
         assertFalse(orchestrator.activate(ordinary, INPUT_ID, Gesture.Kind.TAP))
         assertFalse(orchestrator.openModel(ordinary))
-        assertFalse(orchestrator.startRepeat(transitionSnapshot(Action("navigate", direction = "up")), INPUT_ID))
+        assertTrue(orchestrator.startRepeat(transitionSnapshot(Action("navigate", direction = "up")), INPUT_ID))
+        assertTrue(orchestrator.activate(transitionSnapshot(Action("approve")), INPUT_ID, Gesture.Kind.TAP))
         assertFalse(orchestrator.startVoice(transitionSnapshot(Action("voice")), INPUT_ID))
         assertFalse(orchestrator.focusAgent(ordinary, AGENT_B))
         assertTrue(orchestrator.stopVoice(INPUT_ID))
         orchestrator.release()
 
-        assertTrue(hid.sent.isEmpty())
+        assertEquals(
+            listOf(Action("navigate", direction = "up"), Action("approve")),
+            hid.sent,
+        )
         assertEquals(listOf(BridgeCall.VoiceStop(INPUT_ID)), bridge.calls)
         assertEquals(1, hid.releaseAllCount)
     }
