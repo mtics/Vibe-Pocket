@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.ui.control
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.ConflictGroup
+import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Status
 import au.edu.uts.vibepocket.control.Tasks
@@ -185,6 +186,24 @@ class BoardAccessibilityTest {
     @Test
     fun staleBoardPassesAutomatedChecks() {
         rule.setContent { BoardPreview(Fixtures.snapshot().copy(transportFresh = false)) }
+        rule.onRoot().tryPerformAccessibilityChecks()
+    }
+
+    @Test
+    fun taskConflictUsesTheStableStatusRegionAndPassesAutomatedChecks() {
+        val snapshot = Fixtures.snapshot()
+        val conflict = snapshot.copy(
+            desktop = snapshot.desktop?.copy(
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.CONFLICT,
+                    snapshot.desktop.focusedAgentId,
+                ),
+            ),
+        )
+
+        rule.setContent { BoardPreview(conflict) }
+
+        rule.onNodeWithText("Task conflict").assertIsDisplayed()
         rule.onRoot().tryPerformAccessibilityChecks()
     }
 

@@ -205,6 +205,7 @@ function emptyDesktop() {
   return {
     foreground: false,
     taskState: "idle",
+    binding: { state: "unbound", contextId: null },
     agents: [],
     tasks: { availability: "unavailable", message: null },
     focusedAgentIndex: -1,
@@ -247,6 +248,7 @@ function normalizeDesktop(result) {
   return {
     foreground: result.foreground === true,
     taskState: TASK_STATES.has(result.taskState) ? result.taskState : "idle",
+    binding: normalizeBinding(result.binding, focusedAgentId),
     agents: focusedAgents,
     tasks: normalizeTasks(result.tasks, focusedAgents),
     focusedAgentIndex: focusedAgentId ? focusedAgents.findIndex((agent) => agent.id === focusedAgentId) : -1,
@@ -258,6 +260,23 @@ function normalizeDesktop(result) {
     reasoning: normalizeReasoning(result.reasoning),
     userInput: normalizeUserInput(result.userInput),
   };
+}
+
+function normalizeBinding(value, focusedAgentId) {
+  const contextId = typeof value?.contextId === "string" && /^agent-[a-f0-9]{24}$/.test(value.contextId)
+    ? value.contextId
+    : null;
+  if (value?.state === "confirmed") {
+    return contextId && contextId === focusedAgentId
+      ? { state: "confirmed", contextId }
+      : { state: "conflict", contextId };
+  }
+  if (value?.state === "conflict") return { state: "conflict", contextId };
+  if (value?.state === "reconciling") return { state: "reconciling", contextId };
+  if (value?.state === "unbound") return { state: "unbound", contextId: null };
+  return focusedAgentId
+    ? { state: "reconciling", contextId: focusedAgentId }
+    : { state: "unbound", contextId: null };
 }
 
 function normalizeTasks(value, agents) {

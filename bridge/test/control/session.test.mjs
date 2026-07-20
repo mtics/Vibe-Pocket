@@ -36,6 +36,7 @@ class FakeDesktop {
     { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true, freshness: "fresh", actionable: true },
     { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false, freshness: "fresh", actionable: true },
   ];
+  binding = { state: "confirmed", contextId: "agent-111111111111111111111111" };
 
   async status() {
     return {
@@ -59,6 +60,7 @@ class FakeDesktop {
         reasoning: true,
         workflow: true,
       },
+      binding: this.binding,
       agents: this.agents,
       tasks: { availability: "fresh", message: null },
       voice: this.voice,
@@ -157,6 +159,10 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.ok(snapshot.controller.actionCatalog.some(({ id }) => id === "workflow_debug"));
   assert.equal(snapshot.controller.activeLayerId, "layer-1");
   assert.equal(snapshot.controller.taskState, "waiting");
+  assert.deepEqual(snapshot.controller.binding, {
+    state: "confirmed",
+    contextId: "agent-111111111111111111111111",
+  });
   assert.deepEqual(snapshot.controller.agents, [
     { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true, freshness: "fresh", actionable: true },
     { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false, freshness: "fresh", actionable: true },
@@ -176,6 +182,21 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controls.reasoning, true);
   assert.equal(snapshot.controls["model-picker"], true);
   assert.equal(snapshot.controls.model, true);
+});
+
+test("preserves a same-generation Agent and desktop binding conflict", async () => {
+  const desktop = new FakeDesktop();
+  desktop.binding = {
+    state: "conflict",
+    contextId: "agent-111111111111111111111111",
+  };
+  const service = makeService(desktop);
+  await service.start();
+
+  const snapshot = await service.snapshot();
+
+  assert.deepEqual(snapshot.controller.binding, desktop.binding);
+  assert.equal(snapshot.observation.fresh, true);
 });
 
 test("keeps reasoning adjustable upward at the minimum level", async () => {

@@ -122,6 +122,30 @@ private fun decodeDesktop(value: JSONObject?): Desktop? {
         reasoning = decodeReasoning(value.optJSONObject("reasoning")),
         question = decodeQuestion(value.optJSONObject("userInput")),
         tasks = decodeTasks(value.optJSONObject("tasks")),
+        binding = decodeBinding(value.optJSONObject("binding"), focusedAgentId),
+    )
+}
+
+private fun decodeBinding(value: JSONObject?, focusedAgentId: String?): Desktop.Binding {
+    val contextId = value?.safeString("contextId")?.takeIf(AgentId::matches)
+    val state = when (value?.safeString("state")) {
+        "confirmed" -> if (contextId != null && contextId == focusedAgentId) {
+            Desktop.Binding.State.CONFIRMED
+        } else {
+            Desktop.Binding.State.CONFLICT
+        }
+        "reconciling" -> Desktop.Binding.State.RECONCILING
+        "conflict" -> Desktop.Binding.State.CONFLICT
+        "unbound" -> Desktop.Binding.State.UNBOUND
+        else -> if (focusedAgentId == null) {
+            Desktop.Binding.State.UNBOUND
+        } else {
+            Desktop.Binding.State.RECONCILING
+        }
+    }
+    return Desktop.Binding(
+        state = state,
+        contextId = contextId.takeUnless { state == Desktop.Binding.State.UNBOUND },
     )
 }
 

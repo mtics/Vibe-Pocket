@@ -1,6 +1,7 @@
 import { createConnection } from "node:net";
 
 import { open } from "../task/open.mjs";
+import { agentIdForThread } from "../task/catalog.mjs";
 
 const MUTATION_BINDING = Symbol("desktopMutationBinding");
 const MAXIMUM_CONTROL_REQUEST_LIFETIME_MS = 10_000;
@@ -51,18 +52,20 @@ export class Desktop {
     } catch {
       settings = null;
     }
-    const binding = mutationBinding(result, settings, agents);
+    const binding = bindingObservation(result, settings, agents);
+    const mutation = binding.state === "confirmed" ? binding.mutation : null;
     const modelAvailable = Boolean(
-      binding && settings?.model.available === true && result.controls?.["model-picker"] === true,
+      mutation && settings?.model.available === true && result.controls?.["model-picker"] === true,
     );
     const reasoningAvailable = Boolean(
-      binding && settings?.reasoning.available === true && result.controls?.reasoning === true,
+      mutation && settings?.reasoning.available === true && result.controls?.reasoning === true,
     );
-    const modeAvailable = Boolean(binding && settings?.mode?.available === true);
+    const modeAvailable = Boolean(mutation && settings?.mode?.available === true);
     const view = {
       ...result,
       agents,
       tasks,
+      binding: { state: binding.state, contextId: binding.contextId },
       mode: settings?.mode ? { ...settings.mode, available: modeAvailable } : result.mode,
       model: settings?.model ? { ...settings.model, available: modelAvailable } : undefined,
       reasoning: settings?.reasoning ? {
@@ -79,7 +82,7 @@ export class Desktop {
         reasoning: reasoningAvailable,
       },
     };
-    Object.defineProperty(view, MUTATION_BINDING, { value: binding });
+    Object.defineProperty(view, MUTATION_BINDING, { value: mutation });
     return view;
   }
 
@@ -350,13 +353,28 @@ function taskObservation(value) {
   };
 }
 
-function mutationBinding(result, settings, agents) {
+function bindingObservation(result, settings, agents) {
   const desktopToken = result?.identity?.mutationToken;
   const threadId = settings?.binding?.threadId;
   const focusedAgents = Array.isArray(agents) ? agents.filter(({ focused }) => focused === true) : [];
-  if (typeof desktopToken !== "string" || !/^desktop-[a-f0-9]{24,64}$/.test(desktopToken)) return null;
-  if (typeof threadId !== "string" || !threadId || focusedAgents.length !== 1) return null;
-  return Object.freeze({ desktopToken, threadId });
+  if (focusedAgents.length === 0) return { state: "unbound", contextId: null, mutation: null };
+  if (focusedAgents.length !== 1) return { state: "conflict", contextId: null, mutation: null };
+
+  const contextId = focusedAgents[0].id;
+  const validDesktopToken = typeof desktopToken === "string"
+    && /^desktop-[a-f0-9]{24,64}$/.test(desktopToken);
+  const validThreadId = typeof threadId === "string" && threadId.length > 0;
+  if (!validDesktopToken || !validThreadId) {
+    return { state: "reconciling", contextId, mutation: null };
+  }
+  if (contextId !== agentIdForThread(threadId)) {
+    return { state: "conflict", contextId, mutation: null };
+  }
+  return {
+    state: "confirmed",
+    contextId,
+    mutation: Object.freeze({ desktopToken, threadId }),
+  };
 }
 
 function requireEffects(value) {

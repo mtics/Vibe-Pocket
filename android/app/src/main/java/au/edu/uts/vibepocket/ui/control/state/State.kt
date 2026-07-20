@@ -1,6 +1,7 @@
 package au.edu.uts.vibepocket.ui.control.state
 
 import au.edu.uts.vibepocket.control.Activity
+import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.session.Operation
@@ -20,6 +21,7 @@ internal data class State(
         QUESTION,
         DECISION,
         STALE,
+        CONFLICT,
         UNKNOWN,
         ERROR,
     }
@@ -44,6 +46,35 @@ internal fun Snapshot.state(operation: Operation? = null): State {
             task = null,
             detail = status.message?.takeIf(String::isNotBlank),
         )
+    }
+
+    val task = desktop.agents
+        .firstOrNull { it.id == desktop.focusedAgentId || it.focused }
+        ?.label
+        ?.takeIf(String::isNotBlank)
+    when (desktop.binding.state) {
+        Desktop.Binding.State.CONFLICT -> return State(
+            kind = State.Kind.CONFLICT,
+            activity = Activity.ERROR,
+            title = "Task conflict",
+            task = task,
+            detail = "The visible Codex task and Agent identity disagree. Reconfirming the desktop context.",
+        )
+        Desktop.Binding.State.RECONCILING -> return State(
+            kind = State.Kind.STALE,
+            activity = Activity.WAITING,
+            title = "Confirming task",
+            task = task,
+            detail = "Waiting for the Mac and Agent list to confirm the same Codex task.",
+        )
+        Desktop.Binding.State.UNBOUND -> return State(
+            kind = State.Kind.STALE,
+            activity = Activity.IDLE,
+            title = "No task attached",
+            task = task,
+            detail = "Open a Codex task on the Mac, then attach it to Vibe Pocket.",
+        )
+        Desktop.Binding.State.CONFIRMED -> Unit
     }
 
     when (operation?.phase) {
@@ -78,11 +109,6 @@ internal fun Snapshot.state(operation: Operation? = null): State {
             detail = desktop.tasks.message ?: "Showing the last confirmed Codex tasks.",
         )
     }
-
-    val task = desktop.agents
-        .firstOrNull { it.id == desktop.focusedAgentId || it.focused }
-        ?.label
-        ?.takeIf(String::isNotBlank)
 
     desktop.question?.let { question ->
         val option = question.options.getOrNull(question.selectedOptionIndex)

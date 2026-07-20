@@ -1,6 +1,7 @@
 package au.edu.uts.vibepocket.ui.control.state
 
 import au.edu.uts.vibepocket.control.Activity
+import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Capabilities
 import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.Model
@@ -83,6 +84,48 @@ class StateTest {
     }
 
     @Test
+    fun conflictingTaskIdentityNeverLooksReady() {
+        val snapshot = snapshot(Activity.IDLE)
+        val desktop = requireNotNull(snapshot.desktop)
+
+        val state = snapshot.copy(
+            desktop = desktop.copy(
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.CONFLICT,
+                    desktop.focusedAgentId,
+                ),
+            ),
+        ).state()
+
+        assertEquals(State.Kind.CONFLICT, state.kind)
+        assertEquals("Task conflict", state.title)
+        assertEquals("Focused task", state.task)
+    }
+
+    @Test
+    fun incompleteAndMissingBindingsHaveDistinctRecoveryStates() {
+        val snapshot = snapshot(Activity.IDLE)
+        val desktop = requireNotNull(snapshot.desktop)
+
+        val reconciling = snapshot.copy(
+            desktop = desktop.copy(
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.RECONCILING,
+                    desktop.focusedAgentId,
+                ),
+            ),
+        ).state()
+        val unbound = snapshot.copy(
+            desktop = desktop.copy(binding = Desktop.Binding.Unbound),
+        ).state()
+
+        assertEquals(State.Kind.STALE, reconciling.kind)
+        assertEquals("Confirming task", reconciling.title)
+        assertEquals(State.Kind.STALE, unbound.kind)
+        assertEquals("No task attached", unbound.title)
+    }
+
+    @Test
     fun unknownOperationOverridesAReadyTaskWithoutDiscardingItsContext() {
         val state = snapshot(Activity.IDLE).state(
             Operation(
@@ -150,15 +193,26 @@ class StateTest {
             activeLayerId = null,
             foreground = true,
             activity = activity,
-            agents = emptyList(),
-            focusedAgentIndex = -1,
-            focusedAgentId = null,
+            agents = listOf(
+                Agent(
+                    id = "agent-111111111111111111111111",
+                    label = "Focused task",
+                    activity = activity,
+                    focused = true,
+                ),
+            ),
+            focusedAgentIndex = 0,
+            focusedAgentId = "agent-111111111111111111111111",
             voice = Voice(false, false),
             mode = Selector(false, ""),
             access = Selector(false, ""),
             model = Model.Unavailable,
             reasoning = Reasoning.Unavailable,
             question = question,
+            binding = Desktop.Binding(
+                Desktop.Binding.State.CONFIRMED,
+                "agent-111111111111111111111111",
+            ),
         ),
     )
 }

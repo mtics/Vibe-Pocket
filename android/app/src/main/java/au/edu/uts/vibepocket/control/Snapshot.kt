@@ -137,7 +137,24 @@ data class Desktop(
     val reasoning: Reasoning,
     val question: Question? = null,
     val tasks: Tasks = Tasks.Fresh,
-)
+    val binding: Binding = Binding.Unbound,
+) {
+    data class Binding(
+        val state: State,
+        val contextId: String?,
+    ) {
+        enum class State {
+            CONFIRMED,
+            RECONCILING,
+            CONFLICT,
+            UNBOUND,
+        }
+
+        companion object {
+            val Unbound = Binding(State.UNBOUND, null)
+        }
+    }
+}
 
 data class Question(
     val index: Int,

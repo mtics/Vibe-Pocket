@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.ui.control
 import android.content.res.Configuration
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Capabilities
+import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.control.Status
@@ -53,6 +54,23 @@ fun errorPortrait() = BoardPreview(Fixtures.snapshot(activity = Activity.ERROR, 
 @Preview(name = "Stale", widthDp = 393, heightDp = 873, showBackground = true)
 @Composable
 fun stalePortrait() = BoardPreview(Fixtures.snapshot().copy(transportFresh = false))
+
+@PreviewTest
+@Preview(name = "Task conflict", widthDp = 393, heightDp = 873, showBackground = true)
+@Composable
+fun conflictPortrait() {
+    val snapshot = Fixtures.snapshot()
+    BoardPreview(
+        snapshot.copy(
+            desktop = snapshot.desktop?.copy(
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.CONFLICT,
+                    snapshot.desktop.focusedAgentId,
+                ),
+            ),
+        ),
+    )
+}
 
 @PreviewTest
 @Preview(name = "Offline", widthDp = 393, heightDp = 873, showBackground = true)

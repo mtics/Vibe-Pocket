@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Desktop, prepareControlRequest } from "../../src/macos/desktop.mjs";
+import { agentIdForThread } from "../../src/task/catalog.mjs";
+
+const FOCUSED_AGENT_ID = agentIdForThread("thread-1");
 
 function effectBoundary(calls = []) {
   let crossed = false;
@@ -104,7 +107,7 @@ test("writes model and reasoning only through the bound app-server catalog", asy
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
       async resolveVisibleAgents() {
-        return [{ id: "agent-focused", label: "Focused task", focused: true }];
+        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
       },
       async settings() { return settings; },
       async validateModel({ id }) { return settings.model.options.find((option) => option.id === id); },
@@ -141,13 +144,14 @@ test("writes model and reasoning only through the bound app-server catalog", asy
         foreground: true,
         controls: { "model-picker": true, reasoning: true },
         identity: { mutationToken: "desktop-0123456789abcdef01234567" },
-        agents: [{ id: "agent-focused", label: "Focused task", focused: true }],
+        agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
         reasoning: { modelLabel: "Sol", level: "minimal" },
       };
     },
   });
 
   const status = await controller.status();
+  assert.deepEqual(status.binding, { state: "confirmed", contextId: FOCUSED_AGENT_ID });
   assert.equal(status.controls.model, true);
   assert.equal(status.controls.reasoning, true);
   await controller.selectModel("gpt-sol", effectBoundary(calls));
@@ -166,13 +170,98 @@ test("writes model and reasoning only through the bound app-server catalog", asy
   ]);
 });
 
+test("reports a conflict when the focused Agent and settings thread disagree", async () => {
+  const otherAgentId = agentIdForThread("thread-2");
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() {
+        return [{ id: otherAgentId, label: "Other task", focused: true }];
+      },
+      async settings() {
+        return {
+          binding: { threadId: "thread-1" },
+          model: { available: true },
+          mode: { available: true },
+          reasoning: { available: true },
+        };
+      },
+    },
+    run: async () => ({
+      ok: true,
+      controls: { "model-picker": true, reasoning: true },
+      identity: { mutationToken: "desktop-0123456789abcdef01234567" },
+      agents: [{ id: otherAgentId, label: "Other task", focused: true }],
+    }),
+  });
+
+  const status = await controller.status();
+
+  assert.deepEqual(status.binding, { state: "conflict", contextId: otherAgentId });
+  assert.equal(status.controls.model, false);
+  assert.equal(status.controls.reasoning, false);
+  assert.equal(status.controls["mode-cycle"], false);
+});
+
+test("reports reconciliation while desktop identity evidence is incomplete", async () => {
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() {
+        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
+      },
+      async settings() {
+        return {
+          binding: { threadId: "thread-1" },
+          model: { available: true },
+          mode: { available: true },
+          reasoning: { available: true },
+        };
+      },
+    },
+    run: async () => ({
+      ok: true,
+      controls: { "model-picker": true, reasoning: true },
+      agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
+    }),
+  });
+
+  const status = await controller.status();
+
+  assert.deepEqual(status.binding, { state: "reconciling", contextId: FOCUSED_AGENT_ID });
+  assert.equal(status.controls.model, false);
+  assert.equal(status.controls.reasoning, false);
+});
+
+test("reports an unbound desktop when no visible Agent is focused", async () => {
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async resolveVisibleAgents() { return []; },
+      async settings() {
+        return {
+          binding: null,
+          model: { available: false },
+          mode: { available: false },
+          reasoning: { available: false },
+        };
+      },
+    },
+    run: async () => ({ ok: true, controls: {}, agents: [] }),
+  });
+
+  const status = await controller.status();
+
+  assert.deepEqual(status.binding, { state: "unbound", contextId: null });
+});
+
 test("rejects stale model IDs before any prefix-colliding desktop option can be pressed", async () => {
   const calls = [];
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
       async resolveVisibleAgents() {
-        return [{ id: "agent-focused", label: "Focused task", focused: true }];
+        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
       },
       async settings() {
         return {
@@ -195,7 +284,7 @@ test("rejects stale model IDs before any prefix-colliding desktop option can be 
         taskState: "idle",
         controls: { "model-picker": true, reasoning: true },
         identity: { mutationToken: "desktop-0123456789abcdef01234567" },
-        agents: [{ id: "agent-focused", label: "Focused task", focused: true }],
+        agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
         reasoning: { modelLabel: "Solar", level: "low" },
       };
     },
@@ -266,7 +355,7 @@ test("rejects a changed desktop identity before crossing the settings boundary",
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
       async resolveVisibleAgents() {
-        return [{ id: "agent-focused", label: "Focused task", focused: true }];
+        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
       },
       async settings() { return settings; },
       async validateModel({ id }) { return settings.model.options.find((option) => option.id === id); },
@@ -283,7 +372,7 @@ test("rejects a changed desktop identity before crossing the settings boundary",
             ? "desktop-0123456789abcdef01234567"
             : "desktop-89abcdef0123456701234567",
         },
-        agents: [{ id: "agent-focused", label: "Focused task", focused: true }],
+        agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
         reasoning: { modelLabel: "Sol", level: "high" },
       };
     },

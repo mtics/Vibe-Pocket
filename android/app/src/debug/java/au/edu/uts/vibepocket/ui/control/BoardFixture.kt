@@ -252,6 +252,10 @@ internal object Fixtures {
                 options = Reasoning.Level.entries,
             ),
             question = question,
+            binding = Desktop.Binding(
+                Desktop.Binding.State.CONFIRMED,
+                "agent-${"1".padStart(24, '0')}",
+            ),
         ),
     )
 

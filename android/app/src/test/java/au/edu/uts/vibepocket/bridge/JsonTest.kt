@@ -3,6 +3,7 @@ package au.edu.uts.vibepocket.bridge
 import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Agent
 import au.edu.uts.vibepocket.control.Command
+import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.MaxAgents
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Tasks
@@ -59,6 +60,8 @@ class JsonTest {
         assertEquals(Activity.WAITING, snapshot.desktop?.activity)
         assertTrue(snapshot.desktop?.foreground == true)
         assertEquals("agent-0123456789abcdef01234567", snapshot.desktop?.focusedAgentId)
+        assertEquals(Desktop.Binding.State.CONFIRMED, snapshot.desktop?.binding?.state)
+        assertEquals("agent-0123456789abcdef01234567", snapshot.desktop?.binding?.contextId)
         assertEquals(0, snapshot.desktop?.focusedAgentIndex)
         assertEquals(Voice(available = true, active = false), snapshot.desktop?.voice)
         assertEquals("Codex", snapshot.desktop?.mode?.label)
@@ -143,6 +146,28 @@ class JsonTest {
 
         assertFalse(snapshot.transportFresh)
         assertEquals(1_700_000_000_000L, snapshot.observedAtMillis)
+    }
+
+    @Test
+    fun confirmedBindingMustMatchTheFocusedAgentIdentity() {
+        val root = JSONObject(CONTROLLER_SNAPSHOT)
+        root.getJSONObject("controller").getJSONObject("binding")
+            .put("contextId", "agent-89abcdef0123456789abcdef")
+
+        val snapshot = decode(root)
+
+        assertEquals(Desktop.Binding.State.CONFLICT, snapshot.desktop?.binding?.state)
+    }
+
+    @Test
+    fun missingBindingEvidenceNeverDefaultsToConfirmed() {
+        val root = JSONObject(CONTROLLER_SNAPSHOT)
+        root.getJSONObject("controller").remove("binding")
+
+        val snapshot = decode(root)
+
+        assertEquals(Desktop.Binding.State.RECONCILING, snapshot.desktop?.binding?.state)
+        assertEquals(null, snapshot.desktop?.binding?.contextId)
     }
 
     @Test
@@ -370,6 +395,7 @@ class JsonTest {
                 "taskState":"waiting",
                 "focusedAgentIndex":0,
                 "focusedAgentId":"agent-0123456789abcdef01234567",
+                "binding":{"state":"confirmed","contextId":"agent-0123456789abcdef01234567"},
                 "tasks":{"availability":"fresh","message":null},
                 "voice":{"available":true,"active":false},
                 "agents":[
