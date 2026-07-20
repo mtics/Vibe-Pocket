@@ -31,6 +31,6 @@ internal fun Voice(
         blocked = blocked,
         dedicatedVoiceControl = true,
         labelPlacement = LabelPlacement.BESIDE,
-        modifier = modifier.fillMaxWidth().heightIn(min = 64.dp),
+        modifier = modifier.fillMaxWidth().heightIn(min = 72.dp),
     )
 }

@@ -252,6 +252,16 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
             }
         }
     }
+    val onMode: (String) -> Boolean = { modeId ->
+        inputOrchestrator.selectMode(state.snapshot, modeId).also {
+            if (it) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        }
+    }
+    val onReasoning: (au.edu.uts.vibepocket.control.Reasoning.Level) -> Boolean = { level ->
+        inputOrchestrator.selectReasoning(state.snapshot, level).also {
+            if (it) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+    }
     val onLayer: (String) -> Boolean = { layerId ->
         inputOrchestrator.selectLayer(state.snapshot, layerId).also { selected ->
             if (selected) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -284,7 +294,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.background)
                         .windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Bottom))
-                        .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 4.dp),
+                        .padding(start = 12.dp, top = 6.dp, end = 12.dp, bottom = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Voice(
@@ -294,7 +304,7 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                         onInput = onInput,
                         onVoiceStart = onVoiceStart,
                         onVoiceStop = onVoiceStop,
-                        blocked = transitionPending,
+                        blocked = transitionPending || !current.transportFresh,
                         modifier = Modifier.widthIn(max = 720.dp),
                     )
                 }
@@ -312,13 +322,6 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                 actions = {
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = "Open settings")
-                    }
-                    IconButton(onClick = viewModel::refresh, enabled = !state.isRefreshing) {
-                        if (state.isRefreshing) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh controller state")
-                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -344,6 +347,8 @@ internal fun App(viewModel: Session, hidController: Keyboard) {
                     onVoiceStop = onVoiceStop,
                     onAgent = onAgent,
                     onModel = onModel,
+                    onMode = onMode,
+                    onReasoning = onReasoning,
                     onLayer = onLayer,
                 )
             }

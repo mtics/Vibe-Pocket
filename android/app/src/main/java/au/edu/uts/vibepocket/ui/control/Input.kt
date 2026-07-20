@@ -88,6 +88,7 @@ internal fun inputInteractive(
 @Composable
 internal fun InputButton(
     input: Input,
+    gesture: Gesture.Kind? = null,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
@@ -103,8 +104,10 @@ internal fun InputButton(
     shape: Shape = RoundedCornerShape(8.dp),
     modifier: Modifier,
 ) {
-    val gestures = Gesture.Kind.entries.filter { snapshot.inputEnabled(input.id, it) }
-    val action = snapshot.actionFor(input.id)
+    val gestures = Gesture.Kind.entries.filter { candidate ->
+        (gesture == null || gesture == candidate) && snapshot.inputEnabled(input.id, candidate)
+    }
+    val action = snapshot.actionFor(input.id, gesture ?: Gesture.Kind.TAP)
     val voiceMapping = snapshot.voiceMappingIdentity(input.id)
     val voiceAvailable = voiceMapping != null && snapshot.inputEnabled(input.id, Gesture.Kind.TAP)
     val desktopVoiceActive = snapshot.desktop?.voice?.active == true
@@ -133,7 +136,7 @@ internal fun InputButton(
         hasGestures = gestures.isNotEmpty(),
     )
     val voicePressEnabled = voiceAvailable && !voiceActive && !pending && !blocked
-    val repeat = navigationRepeatEnabled && !pending && !blocked
+    val repeat = navigationRepeatEnabled && gesture in setOf(null, Gesture.Kind.TAP) && !pending && !blocked
     val currentInput by rememberUpdatedState(onInput)
     val currentVoiceStart by rememberUpdatedState(onVoiceStart)
     val currentVoiceStop by rememberUpdatedState(onVoiceStop)

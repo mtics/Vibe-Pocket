@@ -3,22 +3,16 @@ package au.edu.uts.vibepocket.ui.control
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.ui.compositedBackground
 import au.edu.uts.vibepocket.ui.contrastingColor
-import au.edu.uts.vibepocket.ui.layerSemanticsLabel
 import au.edu.uts.vibepocket.ui.profileColor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,10 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.disabled
-import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -49,93 +39,43 @@ internal fun Layers(
     onLayer: (String) -> Boolean,
     modifier: Modifier = Modifier,
 ) {
-    if (layers.isEmpty()) return
-
-    Column(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        layers.chunked(3).forEachIndexed { rowIndex, rowLayers ->
-            Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically,
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        layers.take(6).forEachIndexed { index, layer ->
+            val selected = layer.id == active
+            val loading = "layer:${layer.id}" in inFlightIds
+            val accentSource = profileColor(layer.color)
+            val surface = MaterialTheme.colorScheme.surface
+            val background = if (selected) compositedBackground(accentSource, 0.16f, surface) else surface
+            val accent = contrastingColor(accentSource, background, MaterialTheme.colorScheme.onSurface, 3f)
+            Box(
+                Modifier.weight(1f).fillMaxSize().clip(RoundedCornerShape(8.dp))
+                    .background(background)
+                    .border(1.dp, if (selected) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
+                    .semantics { role = Role.Button; this.selected = selected }
+                    .clickable(enabled = enabled && !selected && !loading) { onLayer(layer.id) }
+                    .alpha(if (enabled || selected) 1f else 0.58f)
+                    .padding(horizontal = 5.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                rowLayers.forEachIndexed { columnIndex, layer ->
-                    LayerButton(
-                        index = rowIndex * 3 + columnIndex,
-                        layer = layer,
-                        active = layer.id == active,
-                        loading = "layer:${layer.id}" in inFlightIds,
-                        enabled = enabled,
-                        onLayer = onLayer,
-                        modifier = Modifier.weight(1f),
+                if (loading) {
+                    CircularProgressIndicator(strokeWidth = 2.dp)
+                } else {
+                    Text(
+                        compactLayerName(layer.name, index),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                     )
                 }
-                repeat(3 - rowLayers.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
 }
 
-@Composable
-private fun LayerButton(
-    index: Int,
-    layer: Layer,
-    active: Boolean,
-    loading: Boolean,
-    enabled: Boolean,
-    onLayer: (String) -> Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val profileAccent = profileColor(layer.color)
-    val surface = MaterialTheme.colorScheme.surface
-    val background = if (active) compositedBackground(profileAccent, 0.18f, surface) else surface
-    val accent = contrastingColor(
-        preferred = profileAccent,
-        background = background,
-        fallback = MaterialTheme.colorScheme.onSurface,
-        minimumRatio = 3f,
-    )
-    val selectable = enabled && !active && !loading
-    Row(
-        modifier = modifier
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(background)
-            .border(
-                width = 1.dp,
-                color = if (active) accent else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(8.dp),
-            )
-            .clickable(enabled = selectable) { onLayer(layer.id) }
-            .alpha(if (enabled || active) 1f else 0.62f)
-            .padding(PaddingValues(horizontal = 10.dp))
-            .clearAndSetSemantics {
-                role = Role.Button
-                selected = active
-                contentDescription = layerSemanticsLabel(index, layer.name)
-                if (selectable) {
-                    onClick { onLayer(layer.id) }
-                } else if (!active) {
-                    disabled()
-                }
-            },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (loading) {
-            CircularProgressIndicator(Modifier.size(14.dp), color = accent, strokeWidth = 2.dp)
-        } else {
-            Row(Modifier.size(9.dp).clip(CircleShape).background(accent)) {}
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = layer.name.ifBlank { "Layer ${index + 1}" },
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
+private fun compactLayerName(name: String, index: Int): String {
+    val value = name.trim()
+    if (value.isEmpty()) return "${index + 1}"
+    val generic = Regex("(?i)^layer\\s*${index + 1}$")
+    return if (generic.matches(value)) "${index + 1}" else value
 }

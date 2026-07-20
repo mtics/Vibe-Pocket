@@ -1,28 +1,38 @@
 package au.edu.uts.vibepocket.ui.control.actions
 
+import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Gesture
-import au.edu.uts.vibepocket.profile.Input
-import au.edu.uts.vibepocket.ui.control.Dpad
+import au.edu.uts.vibepocket.ui.control.Catalog
+import au.edu.uts.vibepocket.ui.control.Control
 import au.edu.uts.vibepocket.ui.control.InputButton
 import au.edu.uts.vibepocket.ui.control.LabelPlacement
-import au.edu.uts.vibepocket.ui.control.state.State
+import au.edu.uts.vibepocket.ui.control.Mode
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun Actions(
-    state: State,
-    inputs: List<Input>,
-    modeInput: Input?,
+    catalog: Catalog,
+    mode: Selector,
     snapshot: Snapshot,
     hidNavigationAvailable: Boolean,
     inFlightIds: Set<String>,
@@ -30,60 +40,20 @@ internal fun Actions(
     onNavigationRepeat: (String, Boolean) -> Unit,
     onVoiceStart: (String) -> Boolean,
     onVoiceStop: (String) -> Unit,
+    onMode: (String) -> Boolean,
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val byId = inputs.associateBy(Input::id)
-    when (state.kind) {
-        State.Kind.ERROR -> Error(
-            byId = byId,
-            snapshot = snapshot,
-            inFlightIds = inFlightIds,
-            onInput = onInput,
-            onVoiceStart = onVoiceStart,
-            onVoiceStop = onVoiceStop,
-            blocked = blocked,
-            modifier = modifier,
-        )
-        State.Kind.READY, State.Kind.QUESTION, State.Kind.DECISION, State.Kind.RUNNING -> Controller(
-            byId = byId,
-            modeInput = modeInput,
-            snapshot = snapshot,
-            hidNavigationAvailable = hidNavigationAvailable,
-            inFlightIds = inFlightIds,
-            onInput = onInput,
-            onNavigationRepeat = onNavigationRepeat,
-            onVoiceStart = onVoiceStart,
-            onVoiceStop = onVoiceStop,
-            blocked = blocked,
-            modifier = modifier,
-        )
-    }
-}
-
-@Composable
-private fun Controller(
-    byId: Map<String, Input>,
-    modeInput: Input?,
-    snapshot: Snapshot,
-    hidNavigationAvailable: Boolean,
-    inFlightIds: Set<String>,
-    onInput: (String, Gesture.Kind) -> Unit,
-    onNavigationRepeat: (String, Boolean) -> Unit,
-    onVoiceStart: (String) -> Boolean,
-    onVoiceStop: (String) -> Unit,
-    blocked: Boolean,
-    modifier: Modifier,
-) {
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        val footer = listOfNotNull(byId["key_reject"], byId["key_stop"])
+    val directions = listOf("up", "down", "left", "right")
+        .associateWith { catalog.find("navigate", direction = it) }
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
-            Modifier.fillMaxWidth().heightIn(min = 208.dp, max = 300.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.fillMaxWidth().height(228.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Dpad(
-                inputs = listOf("key_up", "key_down", "key_left", "key_right").mapNotNull(byId::get),
+            Pad(
+                directions = directions,
                 snapshot = snapshot,
                 hidNavigationAvailable = hidNavigationAvailable,
                 inFlightIds = inFlightIds,
@@ -92,49 +62,43 @@ private fun Controller(
                 onVoiceStart = onVoiceStart,
                 onVoiceStop = onVoiceStop,
                 blocked = blocked,
-                modifier = Modifier.weight(1.15f).aspectRatio(1f),
+                modifier = Modifier.size(228.dp),
             )
             Column(
-                modifier = Modifier.weight(0.85f),
+                modifier = Modifier.weight(1f).fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                listOfNotNull(
-                    modeInput,
-                    byId["key_clear"],
-                    byId["key_new_task"],
-                    byId["key_accept"],
-                ).distinctBy(Input::id).forEach { input ->
-                    val isMode = input.id == modeInput?.id
-                    InputButton(
-                        input = input,
-                        snapshot = snapshot,
-                        inFlightIds = inFlightIds,
-                        onInput = onInput,
-                        onVoiceStart = onVoiceStart,
-                        onVoiceStop = onVoiceStop,
-                        blocked = blocked,
-                        labelPlacement = if (isMode) LabelPlacement.TEXT else LabelPlacement.BESIDE,
-                        labelOverride = if (isMode) {
-                            snapshot.desktop?.mode?.label?.takeIf(String::isNotBlank) ?: "Default"
-                        } else null,
-                        supportingLabel = if (isMode) "Mode" else null,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    )
-                }
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            footer.forEach { input ->
-                InputButton(
-                    input = input,
+                Mode(
+                    state = mode,
                     snapshot = snapshot,
                     inFlightIds = inFlightIds,
-                    onInput = onInput,
-                    onVoiceStart = onVoiceStart,
-                    onVoiceStop = onVoiceStop,
+                    onMode = onMode,
                     blocked = blocked,
-                    labelPlacement = LabelPlacement.BESIDE,
-                    modifier = Modifier.weight(1f).heightIn(min = 60.dp),
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+                Slot(
+                    catalog.find("delete_backward"), "Delete", snapshot, inFlightIds,
+                    onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
+                )
+                Slot(
+                    catalog.find("new_task"), "New task", snapshot, inFlightIds,
+                    onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
+                )
+                Slot(
+                    catalog.find("approve"), "Accept", snapshot, inFlightIds,
+                    onInput, onVoiceStart, onVoiceStop, blocked, Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth().height(52.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                catalog.find("clear_input") to "Clear",
+                catalog.find("reject") to "Reject",
+                catalog.find("stop") to "Stop",
+            ).forEach { (control, label) ->
+                Slot(
+                    control, label, snapshot, inFlightIds, onInput, onVoiceStart, onVoiceStop,
+                    blocked, Modifier.weight(1f).fillMaxSize(),
                 )
             }
         }
@@ -142,8 +106,61 @@ private fun Controller(
 }
 
 @Composable
-private fun Error(
-    byId: Map<String, Input>,
+private fun Pad(
+    directions: Map<String, Control?>,
+    snapshot: Snapshot,
+    hidNavigationAvailable: Boolean,
+    inFlightIds: Set<String>,
+    onInput: (String, Gesture.Kind) -> Unit,
+    onNavigationRepeat: (String, Boolean) -> Unit,
+    onVoiceStart: (String) -> Boolean,
+    onVoiceStop: (String) -> Unit,
+    blocked: Boolean,
+    modifier: Modifier,
+) {
+    Box(modifier) {
+        listOf(
+            "up" to Alignment.TopCenter,
+            "down" to Alignment.BottomCenter,
+            "left" to Alignment.CenterStart,
+            "right" to Alignment.CenterEnd,
+        ).forEach { (direction, alignment) ->
+            val control = directions[direction]
+            if (control == null) {
+                Empty(direction, Modifier.align(alignment).size(68.dp))
+            } else {
+                InputButton(
+                    input = control.input,
+                    gesture = control.gesture,
+                    snapshot = snapshot,
+                    inFlightIds = inFlightIds,
+                    onInput = onInput,
+                    navigationRepeatEnabled = control.gesture == Gesture.Kind.TAP &&
+                        snapshot.supportsHidNavigationRepeat(control.input.id, hidNavigationAvailable),
+                    onNavigationRepeat = onNavigationRepeat,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
+                    blocked = blocked,
+                    labelPlacement = LabelPlacement.HIDDEN,
+                    shape = CircleShape,
+                    modifier = Modifier.align(alignment).size(68.dp),
+                )
+            }
+        }
+        Box(
+            Modifier.align(Alignment.Center).size(54.dp).clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(Modifier.size(12.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+        }
+    }
+}
+
+@Composable
+private fun Slot(
+    control: Control?,
+    label: String,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
@@ -152,22 +169,33 @@ private fun Error(
     blocked: Boolean,
     modifier: Modifier,
 ) {
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
+    if (control == null) {
+        Empty(label, modifier)
+        return
+    }
+    InputButton(
+        input = control.input,
+        gesture = control.gesture,
+        snapshot = snapshot,
+        inFlightIds = inFlightIds,
+        onInput = onInput,
+        onVoiceStart = onVoiceStart,
+        onVoiceStop = onVoiceStop,
+        blocked = blocked,
+        labelPlacement = LabelPlacement.TEXT,
+        labelOverride = label,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun Empty(label: String, modifier: Modifier) {
+    Box(
+        modifier.clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .alpha(0.52f),
+        contentAlignment = Alignment.Center,
     ) {
-        listOfNotNull(byId["key_attach"], byId["key_new_task"]).forEach { input ->
-            InputButton(
-                input = input,
-                snapshot = snapshot,
-                inFlightIds = inFlightIds,
-                onInput = onInput,
-                onVoiceStart = onVoiceStart,
-                onVoiceStop = onVoiceStop,
-                blocked = blocked,
-                labelPlacement = LabelPlacement.BESIDE,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
-            )
-        }
+        Text(label.replaceFirstChar(Char::uppercase), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium)
     }
 }

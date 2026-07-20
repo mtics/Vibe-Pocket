@@ -17,12 +17,22 @@ internal data class State(
         RUNNING,
         QUESTION,
         DECISION,
+        STALE,
         ERROR,
     }
 }
 
 internal fun Snapshot.state(): State {
     val desktop = desktop
+    if (!transportFresh) {
+        return State(
+            kind = State.Kind.STALE,
+            activity = desktop?.activity ?: Activity.ERROR,
+            title = "Connection stale",
+            task = desktop?.agents?.firstOrNull { it.id == desktop.focusedAgentId || it.focused }?.label,
+            detail = "Showing the last confirmed Codex state.",
+        )
+    }
     if (status.state != "ready" || desktop == null) {
         return State(
             kind = State.Kind.ERROR,

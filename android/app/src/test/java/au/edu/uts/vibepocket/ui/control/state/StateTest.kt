@@ -56,6 +56,14 @@ class StateTest {
         assertEquals("Desktop Codex is unavailable.", state.detail)
     }
 
+    @Test
+    fun staleTransportNeverLooksReady() {
+        val state = snapshot(Activity.IDLE).copy(transportFresh = false).state()
+
+        assertEquals(State.Kind.STALE, state.kind)
+        assertEquals("Connection stale", state.title)
+    }
+
     private fun snapshot(
         activity: Activity,
         question: Question? = null,

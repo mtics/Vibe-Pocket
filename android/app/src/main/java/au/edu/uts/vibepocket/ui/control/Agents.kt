@@ -43,11 +43,12 @@ internal fun Agents(
     inFlightIds: Set<String>,
     blocked: Boolean,
     onAgent: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val slots = snapshot.agentSlots().filter { it.agent != null }
     if (slots.isEmpty()) {
         Row(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
@@ -65,7 +66,7 @@ internal fun Agents(
         }
     } else {
         Row(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .horizontalScroll(rememberScrollState()),

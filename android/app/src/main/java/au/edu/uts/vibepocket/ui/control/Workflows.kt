@@ -2,20 +2,26 @@ package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Gesture
-import au.edu.uts.vibepocket.profile.Input
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun Workflows(
-    inputs: List<Input>,
+    catalog: Catalog,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
     onInput: (String, Gesture.Kind) -> Unit,
@@ -24,24 +30,35 @@ internal fun Workflows(
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    if (inputs.isEmpty()) return
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        inputs.chunked(4).forEach { rowInputs ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                rowInputs.forEach { input ->
-                    InputButton(
-                        input = input,
-                        snapshot = snapshot,
-                        inFlightIds = inFlightIds,
-                        onInput = onInput,
-                        onVoiceStart = onVoiceStart,
-                        onVoiceStop = onVoiceStop,
-                        blocked = blocked,
-                        labelPlacement = LabelPlacement.BELOW,
-                        modifier = Modifier.weight(1f).heightIn(min = 72.dp),
-                    )
-                }
-                repeat(4 - rowInputs.size) { Spacer(Modifier.weight(1f)) }
+    val items = listOf(
+        "review-pr" to "Review",
+        "debug" to "Debug",
+        "refactor" to "Refactor",
+        "test" to "Tests",
+    )
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        items.forEach { (id, label) ->
+            val control = catalog.find("workflow", workflowId = id)
+            if (control == null) {
+                Box(
+                    Modifier.weight(1f).fillMaxSize().clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant).alpha(0.52f),
+                    contentAlignment = Alignment.Center,
+                ) { Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium) }
+            } else {
+                InputButton(
+                    input = control.input,
+                    gesture = control.gesture,
+                    snapshot = snapshot,
+                    inFlightIds = inFlightIds,
+                    onInput = onInput,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceStop = onVoiceStop,
+                    blocked = blocked,
+                    labelPlacement = LabelPlacement.BELOW,
+                    labelOverride = label,
+                    modifier = Modifier.weight(1f).fillMaxSize(),
+                )
             }
         }
     }

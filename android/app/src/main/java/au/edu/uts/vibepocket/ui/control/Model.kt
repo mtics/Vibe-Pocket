@@ -61,6 +61,7 @@ internal fun Model(
         hasQuestion = snapshot.desktop?.question != null,
         foreground = snapshot.desktop?.foreground == true,
         fresh = snapshot.transportFresh,
+        voiceActive = snapshot.desktop?.voice?.active == true,
     )
     var showOptions by rememberSaveable { mutableStateOf(false) }
 
@@ -147,4 +148,5 @@ internal fun modelSelectionAllowed(
     hasQuestion: Boolean,
     foreground: Boolean,
     fresh: Boolean,
-): Boolean = !blocked && !pending && capability && available && !hasQuestion && foreground && fresh
+    voiceActive: Boolean = false,
+): Boolean = !blocked && !pending && capability && available && !hasQuestion && foreground && fresh && !voiceActive
