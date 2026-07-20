@@ -27,11 +27,231 @@ private struct CodexControlRequest: Decodable {
   let action: String
   let arguments: [String]
   let input: String
+  let deadlineMs: Int64
 }
 
 private let maximumControlRequestBytes = 128 * 1_024
 private let maximumConcurrentControlClients = 8
 private let controlClientTimeoutSeconds = 2
+private let maximumControlRequestLifetimeMilliseconds: Int64 = 10_000
+
+private enum CodexControlRequestError: LocalizedError {
+  case invalid
+  case expired
+  case unauthorized
+  case disconnected
+
+  var errorDescription: String? {
+    switch self {
+    case .invalid:
+      return "The Codex control request is invalid."
+    case .expired:
+      return "The Codex control request expired before execution."
+    case .unauthorized:
+      return "The Codex control client is not the supervised Bridge process."
+    case .disconnected:
+      return "The Codex control client disconnected before execution."
+    }
+  }
+}
+
+private func currentUnixTimeMilliseconds() -> Int64 {
+  Int64(Date().timeIntervalSince1970 * 1_000)
+}
+
+private func validateControlRequest(
+  _ request: CodexControlRequest,
+  nowMilliseconds: Int64
+) throws {
+  guard request.action.count <= 40,
+        request.arguments.count <= 4,
+        request.arguments.allSatisfy({ $0.count <= 200 }),
+        request.input.count <= 12_000 else {
+    throw CodexControlRequestError.invalid
+  }
+  let (remainingMilliseconds, overflow) = request.deadlineMs.subtractingReportingOverflow(
+    nowMilliseconds
+  )
+  guard !overflow else { throw CodexControlRequestError.invalid }
+  guard remainingMilliseconds > 0 else { throw CodexControlRequestError.expired }
+  guard remainingMilliseconds <= maximumControlRequestLifetimeMilliseconds else {
+    throw CodexControlRequestError.invalid
+  }
+}
+
+private func decodeControlRequest(_ data: Data, nowMilliseconds: Int64) throws -> CodexControlRequest {
+  let request = try JSONDecoder().decode(CodexControlRequest.self, from: data)
+  try validateControlRequest(request, nowMilliseconds: nowMilliseconds)
+  return request
+}
+
+private func executeControlRequestIfLive<Result>(
+  _ request: CodexControlRequest,
+  nowMilliseconds: Int64,
+  peerIsAuthorized: () -> Bool,
+  peerIsConnected: () -> Bool,
+  perform: () throws -> Result
+) throws -> Result {
+  try validateControlRequest(request, nowMilliseconds: nowMilliseconds)
+  guard peerIsAuthorized() else { throw CodexControlRequestError.unauthorized }
+  guard peerIsConnected() else { throw CodexControlRequestError.disconnected }
+  return try perform()
+}
+
+private func unixPeerProcessIdentifier(_ descriptor: Int32) -> pid_t? {
+  var effectiveUserIdentifier = uid_t.max
+  var effectiveGroupIdentifier = gid_t.max
+  guard Darwin.getpeereid(
+    descriptor,
+    &effectiveUserIdentifier,
+    &effectiveGroupIdentifier
+  ) == 0,
+  effectiveUserIdentifier == Darwin.geteuid() else {
+    return nil
+  }
+
+  var processIdentifier = pid_t(0)
+  var length = socklen_t(MemoryLayout.size(ofValue: processIdentifier))
+  guard Darwin.getsockopt(
+    descriptor,
+    SOL_LOCAL,
+    LOCAL_PEERPID,
+    &processIdentifier,
+    &length
+  ) == 0,
+  length == socklen_t(MemoryLayout.size(ofValue: processIdentifier)),
+  processIdentifier > 0 else {
+    return nil
+  }
+  return processIdentifier
+}
+
+private final class BridgeProcessLifetime {
+  private let lock = NSLock()
+  private weak var process: Process?
+  private var registeredProcessIdentifier: pid_t?
+  private var revoked = false
+
+  init(process: Process) {
+    self.process = process
+  }
+
+  func register() -> pid_t? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !revoked,
+          let process,
+          process.isRunning,
+          process.processIdentifier > 0 else {
+      return nil
+    }
+    registeredProcessIdentifier = process.processIdentifier
+    return process.processIdentifier
+  }
+
+  func revoke() {
+    lock.lock()
+    revoked = true
+    registeredProcessIdentifier = nil
+    lock.unlock()
+  }
+
+  func matches(processIdentifier: pid_t) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !revoked,
+          registeredProcessIdentifier == processIdentifier,
+          let process else {
+      return false
+    }
+    return process.isRunning && process.processIdentifier == processIdentifier
+  }
+
+  func belongs(to candidate: Process) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return process === candidate
+  }
+}
+
+private struct BridgeClientAuthorization {
+  fileprivate let lifetime: BridgeProcessLifetime
+  fileprivate let processIdentifier: pid_t
+}
+
+private final class BridgeProcessAuthorizer {
+  private let lock = NSLock()
+  private var current: BridgeProcessLifetime?
+
+  func register(_ lifetime: BridgeProcessLifetime) throws {
+    guard let processIdentifier = lifetime.register() else {
+      throw NSError(
+        domain: "VibePocketBridgeHost",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "The Bridge process exited before control authorization."],
+      )
+    }
+    lock.lock()
+    let accepted = current == nil || current === lifetime
+    if accepted { current = lifetime }
+    lock.unlock()
+    guard accepted else {
+      lifetime.revoke()
+      throw NSError(
+        domain: "VibePocketBridgeHost",
+        code: 16,
+        userInfo: [NSLocalizedDescriptionKey: "Another Bridge process is already authorized."],
+      )
+    }
+    guard lifetime.matches(processIdentifier: processIdentifier) else {
+      revoke(lifetime)
+      throw NSError(
+        domain: "VibePocketBridgeHost",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "The Bridge process exited during control authorization."],
+      )
+    }
+  }
+
+  func revoke(_ lifetime: BridgeProcessLifetime) {
+    lifetime.revoke()
+    lock.lock()
+    if current === lifetime { current = nil }
+    lock.unlock()
+  }
+
+  func authorize(processIdentifier: pid_t) -> BridgeClientAuthorization? {
+    lock.lock()
+    let candidate = current
+    lock.unlock()
+    guard let candidate, candidate.matches(processIdentifier: processIdentifier) else { return nil }
+    lock.lock()
+    let isCurrent = current === candidate
+    lock.unlock()
+    guard isCurrent else { return nil }
+    return BridgeClientAuthorization(lifetime: candidate, processIdentifier: processIdentifier)
+  }
+
+  func permits(
+    _ authorization: BridgeClientAuthorization,
+    processIdentifier: pid_t
+  ) -> Bool {
+    lock.lock()
+    let isCurrent = current === authorization.lifetime
+    lock.unlock()
+    guard isCurrent, authorization.processIdentifier == processIdentifier else {
+      return false
+    }
+    return authorization.lifetime.matches(processIdentifier: processIdentifier)
+  }
+
+  func hasRegisteredProcess() -> Bool {
+    lock.lock()
+    let registered = current != nil
+    lock.unlock()
+    return registered
+  }
+}
 
 private struct SocketIdentity: Equatable {
   let device: dev_t
@@ -47,7 +267,9 @@ private final class CodexControlServer {
   )
   private let controlQueue = DispatchQueue(label: "au.edu.uts.vibepocket.codex-control.execute")
   private let clientSlots = DispatchSemaphore(value: maximumConcurrentControlClients)
+  private let bridgeAuthorizer = BridgeProcessAuthorizer()
   private var listener: Int32 = -1
+  private var accepting = false
   private var ownershipDescriptor: Int32 = -1
   private var ownedSocketIdentity: SocketIdentity?
 
@@ -66,9 +288,8 @@ private final class CodexControlServer {
     guard descriptor >= 0 else { throw posixError("create the Codex control socket") }
     listener = descriptor
     var bound = false
-    var listening = false
     defer {
-      if !listening {
+      if !started {
         Darwin.close(descriptor)
         listener = -1
         if bound { unlinkOwnedSocket() }
@@ -87,10 +308,29 @@ private final class CodexControlServer {
     guard Darwin.chmod(socketPath, S_IRUSR | S_IWUSR) == 0 else {
       throw posixError("protect the Codex control socket")
     }
-    guard Darwin.listen(descriptor, 8) == 0 else { throw posixError("listen for Codex controls") }
-    listening = true
     started = true
+  }
 
+  func registerBridgeProcess(_ lifetime: BridgeProcessLifetime) throws {
+    try bridgeAuthorizer.register(lifetime)
+  }
+
+  func revokeBridgeProcess(_ lifetime: BridgeProcessLifetime) {
+    bridgeAuthorizer.revoke(lifetime)
+  }
+
+  func startAccepting() throws {
+    guard !accepting else { return }
+    guard listener >= 0, bridgeAuthorizer.hasRegisteredProcess() else {
+      throw NSError(
+        domain: "VibePocketBridgeHost",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "The Bridge process is not registered for controls."],
+      )
+    }
+    let descriptor = listener
+    guard Darwin.listen(descriptor, 8) == 0 else { throw posixError("listen for Codex controls") }
+    accepting = true
     acceptQueue.async { [weak self] in self?.acceptLoop(descriptor) }
   }
 
@@ -98,6 +338,7 @@ private final class CodexControlServer {
     let descriptor = listener
     guard descriptor >= 0 else { return }
     listener = -1
+    accepting = false
     Darwin.shutdown(descriptor, SHUT_RDWR)
     Darwin.close(descriptor)
     unlinkOwnedSocket()
@@ -112,6 +353,17 @@ private final class CodexControlServer {
         return
       }
       configure(client)
+      guard let peerProcessIdentifier = unixPeerProcessIdentifier(client),
+            let authorization = bridgeAuthorizer.authorize(
+              processIdentifier: peerProcessIdentifier
+            ) else {
+        writeResponse(
+          ["ok": false, "message": CodexControlRequestError.unauthorized.localizedDescription],
+          to: client
+        )
+        Darwin.close(client)
+        continue
+      }
       guard clientSlots.wait(timeout: .now()) == .success else {
         writeResponse(["ok": false, "message": "The Codex control server is busy."], to: client)
         Darwin.close(client)
@@ -122,7 +374,7 @@ private final class CodexControlServer {
           Darwin.close(client)
           self?.clientSlots.signal()
         }
-        self?.handle(client)
+        self?.handle(client, authorization: authorization)
       }
     }
   }
@@ -153,24 +405,28 @@ private final class CodexControlServer {
     )
   }
 
-  private func handle(_ client: Int32) {
+  private func handle(_ client: Int32, authorization: BridgeClientAuthorization) {
     let response: [String: Any]
     do {
       let request = try readRequest(client)
-      guard request.action.count <= 40,
-            request.arguments.count <= 4,
-            request.arguments.allSatisfy({ $0.count <= 200 }),
-            request.input.count <= 12_000 else {
-        throw NSError(
-          domain: "VibePocketBridgeHost",
-          code: 22,
-          userInfo: [NSLocalizedDescriptionKey: "The Codex control request is invalid."],
-        )
-      }
       response = try controlQueue.sync {
-        try runCodexControl(
-          arguments: [request.action] + request.arguments,
-          input: request.input,
+        try executeControlRequestIfLive(
+          request,
+          nowMilliseconds: currentUnixTimeMilliseconds(),
+          peerIsAuthorized: {
+            guard let peerProcessIdentifier = unixPeerProcessIdentifier(client) else { return false }
+            return self.bridgeAuthorizer.permits(
+              authorization,
+              processIdentifier: peerProcessIdentifier
+            )
+          },
+          peerIsConnected: { self.peerIsConnected(client) },
+          perform: {
+            try runCodexControl(
+              arguments: [request.action] + request.arguments,
+              input: request.input,
+            )
+          }
         )
       }
     } catch {
@@ -205,7 +461,23 @@ private final class CodexControlServer {
         userInfo: [NSLocalizedDescriptionKey: "The Codex control request was incomplete."],
       )
     }
-    return try JSONDecoder().decode(CodexControlRequest.self, from: data[..<newline])
+    return try decodeControlRequest(
+      Data(data[..<newline]),
+      nowMilliseconds: currentUnixTimeMilliseconds()
+    )
+  }
+
+  private func peerIsConnected(_ client: Int32) -> Bool {
+    var byte: UInt8 = 0
+    while true {
+      let received = withUnsafeMutableBytes(of: &byte) { bytes in
+        Darwin.recv(client, bytes.baseAddress, bytes.count, MSG_PEEK | MSG_DONTWAIT)
+      }
+      if received > 0 { return true }
+      if received == 0 { return false }
+      if errno == EINTR { continue }
+      return errno == EAGAIN || errno == EWOULDBLOCK
+    }
   }
 
   private func writeResponse(_ body: [String: Any], to client: Int32) {
@@ -448,13 +720,33 @@ private func runBridge(_ scriptPath: String) throws -> Int32 {
   child.standardOutput = FileHandle.standardOutput
   child.standardError = FileHandle.standardError
   child.environment = bridgeEnvironment()
+  let bridgeProcess = BridgeProcessLifetime(process: child)
+  let processTree = ProcessTreeTerminator()
+  child.terminationHandler = { [weak controlServer, weak bridgeProcess] terminatedProcess in
+    guard let controlServer,
+          let bridgeProcess,
+          bridgeProcess.belongs(to: terminatedProcess) else { return }
+    controlServer.revokeBridgeProcess(bridgeProcess)
+  }
 
   // Spawn before changing this process's dispositions so Node inherits the
   // default termination behavior across zsh's exec.
   try child.run()
+  do {
+    try controlServer.registerBridgeProcess(bridgeProcess)
+    try controlServer.startAccepting()
+  } catch {
+    controlServer.revokeBridgeProcess(bridgeProcess)
+    if child.isRunning {
+      processTree.terminate(rootPID: child.processIdentifier)
+      child.waitUntilExit()
+      processTree.finish(rootPID: child.processIdentifier)
+    }
+    throw error
+  }
+  defer { controlServer.revokeBridgeProcess(bridgeProcess) }
   signal(SIGTERM, SIG_IGN)
   signal(SIGINT, SIG_IGN)
-  let processTree = ProcessTreeTerminator()
   let childPID = child.processIdentifier
   let terminationSignals = [SIGTERM, SIGINT].map { signalNumber in
     let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
@@ -467,6 +759,7 @@ private func runBridge(_ scriptPath: String) throws -> Int32 {
   }
 
   child.waitUntilExit()
+  controlServer.revokeBridgeProcess(bridgeProcess)
   processTree.finish(rootPID: childPID)
   terminationSignals.forEach { $0.cancel() }
   return child.terminationStatus

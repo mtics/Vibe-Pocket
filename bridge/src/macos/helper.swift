@@ -997,11 +997,13 @@ private func press(
 }
 
 private func postKey(_ code: CGKeyCode, to processIdentifier: pid_t) throws {
-  guard let source = CGEventSource(stateID: .hidSystemState),
+  guard let source = CGEventSource(stateID: .privateState),
         let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
         let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
     throw HelperFailure.message("macOS could not create the requested keyboard event.")
   }
+  down.flags = []
+  up.flags = []
   down.postToPid(processIdentifier)
   up.postToPid(processIdentifier)
 }
@@ -1011,7 +1013,7 @@ private func postChord(
   flags: CGEventFlags,
   to processIdentifier: pid_t
 ) throws {
-  guard let source = CGEventSource(stateID: .hidSystemState),
+  guard let source = CGEventSource(stateID: .privateState),
         let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
         let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
     throw HelperFailure.message("macOS could not create the requested keyboard shortcut.")

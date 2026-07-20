@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Desktop } from "../../src/macos/desktop.mjs";
+import { Desktop, prepareControlRequest } from "../../src/macos/desktop.mjs";
 
 function effectBoundary(calls = []) {
   let crossed = false;
@@ -34,6 +34,27 @@ function controllerFixture() {
   });
   return { calls, controller };
 }
+
+test("sends a bounded absolute deadline in the Host IPC envelope", () => {
+  const nowMilliseconds = 1_700_000_000_000;
+  const request = prepareControlRequest(
+    "control",
+    ["new-task"],
+    "",
+    60_000,
+    () => nowMilliseconds,
+  );
+
+  assert.deepEqual(request, {
+    envelope: {
+      action: "control",
+      arguments: ["new-task"],
+      input: "",
+      deadlineMs: nowMilliseconds + 10_000,
+    },
+    timeoutMs: 10_000,
+  });
+});
 
 test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
   const { calls, controller } = controllerFixture();

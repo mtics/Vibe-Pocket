@@ -19,7 +19,13 @@ test("signed host sources type-check together", async () => {
     fileURLToPath(hostUrl),
     fileURLToPath(helperUrl),
     fileURLToPath(pairingUrl),
-  ]);
+  ], {
+    env: {
+      ...process.env,
+      CLANG_MODULE_CACHE_PATH: "/tmp/vibe-pocket-clang-module-cache",
+      SWIFT_MODULECACHE_PATH: "/tmp/vibe-pocket-swift-module-cache",
+    },
+  });
 });
 
 function callsNamed(source, name) {
@@ -98,6 +104,20 @@ test("all synthetic key delivery is PID-scoped and target revalidated", async ()
   assert.match(workflow, /revalidateFocusedDesktopTarget\(nextTarget[\s\S]*?postKey\(36, to: application\.processIdentifier\)/);
   assert.match(navigation, /revalidateFocusedDesktopTarget[\s\S]*?postKey\(try keyCode\(for: direction\), to: application\.processIdentifier\)/);
   assert.match(deletion, /focusPrompt[\s\S]*?revalidateFocusedDesktopTarget[\s\S]*?postKey\(51, to: application\.processIdentifier\)/);
+});
+
+test("synthetic keys isolate and explicitly set exact modifier flags", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const plainKey = source.slice(source.indexOf("private func postKey"), source.indexOf("private func postChord"));
+  const chord = source.slice(source.indexOf("private func postChord"), source.indexOf("private func focus("));
+  const eventSources = source.match(/CGEventSource\(stateID:/g) ?? [];
+  const privateSources = source.match(/CGEventSource\(stateID: \.privateState\)/g) ?? [];
+
+  assert.equal(eventSources.length, 2);
+  assert.equal(privateSources.length, eventSources.length);
+  assert.doesNotMatch(source, /hidSystemState/);
+  assert.match(plainKey, /down\.flags = \[\][\s\S]*?up\.flags = \[\]/);
+  assert.match(chord, /down\.flags = flags[\s\S]*?up\.flags = flags/);
 });
 
 test("mode switching targets ChatGPT without taking the foreground", async () => {
@@ -243,11 +263,17 @@ test("bridge child starts from an allowlisted environment without user shell sta
 
 test("control socket startup closes partial state and protects disconnected writes", async () => {
   const source = await readFile(hostUrl, "utf8");
-  const start = source.slice(source.indexOf("func start() throws"), source.indexOf("func stop()"));
+  const start = source.slice(
+    source.indexOf("func start() throws"),
+    source.indexOf("func registerBridgeProcess"),
+  );
+  const accepting = source.slice(source.indexOf("func startAccepting"), source.indexOf("func stop()"));
 
   await execFileAsync("/usr/bin/swiftc", ["-frontend", "-parse", fileURLToPath(hostUrl)]);
   assert.match(start, /defer \{[\s\S]*?Darwin\.close\(descriptor\)[\s\S]*?if bound \{ unlinkOwnedSocket\(\) \}/);
-  assert.match(start, /bound = true[\s\S]*?listening = true/);
+  assert.match(start, /bound = true[\s\S]*?started = true/);
+  assert.doesNotMatch(start, /Darwin\.listen/);
+  assert.match(accepting, /hasRegisteredProcess[\s\S]*?Darwin\.listen[\s\S]*?acceptQueue\.async/);
   assert.match(source, /socketIdentityIfPresent\(\)\) == ownedSocketIdentity[\s\S]*?Darwin\.unlink\(socketPath\)/);
   assert.match(source, /Darwin\.setsockopt\([\s\S]*?client,[\s\S]*?SOL_SOCKET,[\s\S]*?SO_NOSIGPIPE/);
 });

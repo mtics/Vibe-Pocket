@@ -3,6 +3,7 @@ import { createConnection } from "node:net";
 import { open } from "../task/open.mjs";
 
 const MUTATION_BINDING = Symbol("desktopMutationBinding");
+const MAXIMUM_CONTROL_REQUEST_LIFETIME_MS = 10_000;
 
 export class Desktop {
   #socketPath;
@@ -317,7 +318,45 @@ function requireEffects(value) {
   }
 }
 
-function runSocketRequest(socketPath, action, args, input = "", timeoutMs = 10_000) {
+export function prepareControlRequest(
+  action,
+  args,
+  input = "",
+  timeoutMs = MAXIMUM_CONTROL_REQUEST_LIFETIME_MS,
+  now = Date.now,
+) {
+  const boundedTimeoutMs = Math.min(
+    MAXIMUM_CONTROL_REQUEST_LIFETIME_MS,
+    Math.max(
+      1,
+      Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : MAXIMUM_CONTROL_REQUEST_LIFETIME_MS,
+    ),
+  );
+  const requestTimeMs = now();
+  const deadlineMs = requestTimeMs + boundedTimeoutMs;
+  if (!Number.isSafeInteger(requestTimeMs) || !Number.isSafeInteger(deadlineMs)) {
+    throw new TypeError("The control request clock must return integer milliseconds.");
+  }
+  return {
+    envelope: {
+      action,
+      arguments: args,
+      input,
+      deadlineMs,
+    },
+    timeoutMs: boundedTimeoutMs,
+  };
+}
+
+function runSocketRequest(
+  socketPath,
+  action,
+  args,
+  input = "",
+  timeoutMs = MAXIMUM_CONTROL_REQUEST_LIFETIME_MS,
+  now = Date.now,
+) {
+  const request = prepareControlRequest(action, args, input, timeoutMs, now);
   return new Promise((resolve, reject) => {
     const socket = createConnection({ path: socketPath });
     let response = "";
@@ -326,8 +365,8 @@ function runSocketRequest(socketPath, action, args, input = "", timeoutMs = 10_0
       if (settled) return;
       settled = true;
       socket.destroy();
-      reject(new Error(`The Vibe Pocket Bridge Host timed out after ${timeoutMs} ms.`));
-    }, timeoutMs);
+      reject(new Error(`The Vibe Pocket Bridge Host timed out after ${request.timeoutMs} ms.`));
+    }, request.timeoutMs);
     const finish = (error, body) => {
       if (settled) return;
       settled = true;
@@ -338,7 +377,7 @@ function runSocketRequest(socketPath, action, args, input = "", timeoutMs = 10_0
     };
     socket.setEncoding("utf8");
     socket.once("connect", () => {
-      socket.write(`${JSON.stringify({ action, arguments: args, input })}\n`);
+      socket.write(`${JSON.stringify(request.envelope)}\n`);
     });
     socket.on("data", (chunk) => {
       response += chunk;
