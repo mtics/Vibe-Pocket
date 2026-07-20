@@ -1,9 +1,10 @@
 package au.edu.uts.vibepocket.ui.control
 
 import au.edu.uts.vibepocket.control.Status
-import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.accessibility.enableAccessibilityChecks
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -51,8 +52,9 @@ class BoardAccessibilityTest {
         )
 
         rule.setContent { BoardPreview(snapshot) }
+        rule.onAllNodesWithText(detail).assertCountEquals(1)
         rule.onNodeWithText("Bridge unavailable").performClick()
-        rule.onNodeWithText(detail).assertIsDisplayed()
+        rule.onAllNodesWithText(detail).assertCountEquals(2)
         rule.onRoot().tryPerformAccessibilityChecks()
     }
 }
