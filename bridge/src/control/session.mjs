@@ -44,6 +44,7 @@ export class Session {
     operationPath = null,
     operations = null,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    actionDelaysMs,
     maxPendingCommands,
     maxPendingCommandsPerPrincipal,
   }) {
@@ -67,6 +68,7 @@ export class Session {
       state: this.#state,
       blocked: () => this.#queue.busy,
       intervalMs: pollIntervalMs,
+      actionDelaysMs,
     });
   }
 
@@ -456,13 +458,17 @@ export class Session {
 
   async #performDeferred(operation, fallbackMessage, authority) {
     const result = await authority.deferred(operation);
-    this.#completeAction(result, fallbackMessage);
+    this.#completeAction(result, fallbackMessage, { confirmedSettings: true });
   }
 
-  #completeAction(result, fallbackMessage) {
-    // The scheduled capability scan verifies desktop actions. Avoid publishing
-    // a transient success message before that scan changes the controller UI.
+  #completeAction(result, fallbackMessage, { confirmedSettings = false } = {}) {
+    const before = this.#state.fingerprint();
+    if (confirmedSettings) this.#state.setSettings(result?.settings);
+    // Ordinary desktop actions still rely on the scheduled capability scan.
+    // Native settings mutations return a post-update observation, so publish
+    // those confirmed values immediately and let the scan verify them later.
     this.#state.record(result?.message ?? fallbackMessage, { publish: false });
+    if (before !== this.#state.fingerprint()) this.#state.publish("snapshot_changed");
     this.#refresh.afterAction();
   }
 

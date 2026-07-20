@@ -1,6 +1,6 @@
 import { RefreshSequence } from "./refresh-sequence.mjs";
 
-const ACTION_DELAY_MS = 160;
+const ACTION_DELAYS_MS = Object.freeze([32, 64, 128]);
 const FAILURE_THRESHOLD = 3;
 
 export class Refresh {
@@ -12,15 +12,23 @@ export class Refresh {
   #poll = null;
   #action = null;
   #actionTimer = null;
+  #actionDelays;
+  #confirmation = null;
+  #confirmationGeneration = 0;
   #successful = false;
   #failures = 0;
   #sequence = new RefreshSequence();
 
-  constructor({ desktop, state, blocked, intervalMs }) {
+  constructor({ desktop, state, blocked, intervalMs, actionDelaysMs = ACTION_DELAYS_MS }) {
+    if (!Array.isArray(actionDelaysMs) || actionDelaysMs.length === 0
+      || actionDelaysMs.some((value) => !Number.isFinite(value) || value < 0)) {
+      throw new TypeError("Action confirmation delays must be a non-empty list of non-negative numbers.");
+    }
     this.#desktop = desktop;
     this.#state = state;
     this.#blocked = blocked;
     this.#intervalMs = intervalMs;
+    this.#actionDelays = [...actionDelaysMs];
   }
 
   async start() {
@@ -42,6 +50,8 @@ export class Refresh {
     this.#action = null;
     if (this.#actionTimer) clearTimeout(this.#actionTimer);
     this.#actionTimer = null;
+    this.#confirmation = null;
+    this.#confirmationGeneration += 1;
   }
 
   async now({ publishIfChanged = false } = {}) {
@@ -72,17 +82,47 @@ export class Refresh {
   afterAction() {
     if (this.#sequence.stopped) return;
     if (this.#actionTimer) clearTimeout(this.#actionTimer);
+    const confirmation = {
+      generation: ++this.#confirmationGeneration,
+      fingerprint: this.#state.fingerprint(),
+      step: 0,
+    };
+    this.#confirmation = confirmation;
+    this.#scheduleAction(confirmation);
+  }
+
+  #scheduleAction(confirmation) {
+    if (this.#sequence.stopped || this.#confirmation !== confirmation) return;
+    if (this.#actionTimer) clearTimeout(this.#actionTimer);
     this.#actionTimer = setTimeout(() => {
       this.#actionTimer = null;
-      if (this.#action) return;
+      if (this.#confirmation !== confirmation) return;
+      if (this.#action) {
+        this.#scheduleAction(confirmation);
+        return;
+      }
       this.#action = this.now({ publishIfChanged: true })
-        .finally(() => { this.#action = null; });
-    }, ACTION_DELAY_MS);
+        .finally(() => {
+          this.#action = null;
+          if (this.#confirmation !== confirmation) return;
+          if (this.#state.fingerprint() !== confirmation.fingerprint) {
+            this.#confirmation = null;
+            return;
+          }
+          confirmation.step += 1;
+          if (confirmation.step >= this.#actionDelays.length) {
+            this.#confirmation = null;
+            return;
+          }
+          this.#scheduleAction(confirmation);
+        });
+    }, this.#actionDelays[confirmation.step]);
     this.#actionTimer.unref?.();
   }
 
   #schedulePoll() {
-    if (this.#sequence.stopped || this.#poll || this.#blocked() || this.#action || this.#actionTimer) return;
+    if (this.#sequence.stopped || this.#poll || this.#blocked() || this.#action
+      || this.#actionTimer || this.#confirmation) return;
     this.#poll = this.now({ publishIfChanged: true })
       .finally(() => { this.#poll = null; });
   }

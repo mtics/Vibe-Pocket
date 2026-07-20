@@ -484,7 +484,7 @@ test("does not publish or arm polling when stopped during initial discovery", as
   await service.dispose();
 });
 
-test("publishes model and reasoning only after a fresh desktop scan", async () => {
+test("publishes confirmed native settings without waiting for a desktop rescan", async () => {
   class NativeSettingsDesktop extends FakeDesktop {
     statusCalls = 0;
 
@@ -543,17 +543,21 @@ test("publishes model and reasoning only after a fresh desktop scan", async () =
 
   const desktop = new NativeSettingsDesktop();
   const events = new FakeEvents();
-  const service = makeService(desktop, events);
+  const service = makeService(desktop, events, { actionDelaysMs: [5, 50, 100] });
   await service.start();
   const initialEvents = events.published.length;
 
   await service.command({ kind: "select_model", modelId: "gpt-new" }, "native-model");
-  assert.equal((await service.snapshot()).controller.model.id, "gpt-old");
-  await new Promise((resolve) => setTimeout(resolve, 220));
+  assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
+  assert.equal(desktop.statusCalls, 1);
+  assert.equal(events.published.length, initialEvents + 1);
+  await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
   await service.command(bindingCommand("dial_cw"), "native-reasoning");
-  assert.equal((await service.snapshot()).controller.reasoning.level, "minimal");
-  await new Promise((resolve) => setTimeout(resolve, 220));
+  assert.equal((await service.snapshot()).controller.reasoning.level, "low");
+  assert.equal(desktop.statusCalls, 2);
+  assert.equal(events.published.length, initialEvents + 2);
+  await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal((await service.snapshot()).controller.reasoning.level, "low");
 
   assert.equal(desktop.statusCalls, 3);
@@ -562,6 +566,61 @@ test("publishes model and reasoning only after a fresh desktop scan", async () =
     ["adjustReasoning", 1],
   ]);
   assert.equal(events.published.length, initialEvents + 2);
+  await service.dispose();
+});
+
+test("retries action confirmation when the first fresh scan is too early", async () => {
+  class LaggingSettingsDesktop extends FakeDesktop {
+    statusCalls = 0;
+    pendingModel = null;
+
+    async status() {
+      this.statusCalls += 1;
+      if (this.pendingModel && this.statusCalls >= 3) {
+        this.model = {
+          ...this.model,
+          id: this.pendingModel,
+          label: "New",
+          options: this.model.options.map((option) => ({
+            ...option,
+            selected: option.id === this.pendingModel,
+          })),
+        };
+        this.pendingModel = null;
+      }
+      return super.status();
+    }
+
+    async selectModel(modelId, effects) {
+      return effects.commit(() => {
+        this.calls.push(["selectModel", modelId]);
+        this.pendingModel = modelId;
+      });
+    }
+  }
+
+  const desktop = new LaggingSettingsDesktop();
+  desktop.model = {
+    available: true,
+    id: "gpt-old",
+    label: "Old",
+    options: [
+      { id: "gpt-old", label: "Old", selected: true },
+      { id: "gpt-new", label: "New", selected: false },
+    ],
+  };
+  const events = new FakeEvents();
+  const service = makeService(desktop, events, { actionDelaysMs: [2, 4, 8] });
+  await service.start();
+  const initialEvents = events.published.length;
+
+  await service.command({ kind: "select_model", modelId: "gpt-new" }, "lagging-model");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(desktop.statusCalls, 3);
+  assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
+  assert.equal(events.published.length, initialEvents + 1);
+  await service.dispose();
 });
 
 test("ignores returned mode settings until a fresh desktop scan", async () => {
@@ -612,15 +671,71 @@ test("ignores returned mode settings until a fresh desktop scan", async () => {
 });
 
 test("defers ordinary action snapshots until the controller surface changes", async () => {
+  class CountingDesktop extends FakeDesktop {
+    statusCalls = 0;
+
+    async status() {
+      this.statusCalls += 1;
+      return super.status();
+    }
+  }
+
+  const desktop = new CountingDesktop();
   const events = new FakeEvents();
-  const service = makeService(new FakeDesktop(), events);
+  const service = makeService(desktop, events, { actionDelaysMs: [2, 4, 8] });
   await service.start();
   const publishedBeforeAction = events.published.length;
 
   await service.command(bindingCommand("key_accept"), "deferred-action");
-  await new Promise((resolve) => setTimeout(resolve, 240));
+  await new Promise((resolve) => setTimeout(resolve, 30));
 
   assert.equal(events.published.length, publishedBeforeAction);
+  assert.equal(desktop.statusCalls, 4);
+  await service.dispose();
+});
+
+test("coalesces rapid actions into one bounded confirmation plan", async () => {
+  class CountingDesktop extends FakeDesktop {
+    statusCalls = 0;
+
+    async status() {
+      this.statusCalls += 1;
+      return super.status();
+    }
+  }
+
+  const desktop = new CountingDesktop();
+  const service = makeService(desktop, new FakeEvents(), { actionDelaysMs: [15, 15, 15] });
+  await service.start();
+
+  await service.command(bindingCommand("key_accept"), "rapid-action-1");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await service.command(bindingCommand("key_accept"), "rapid-action-2");
+  await new Promise((resolve) => setTimeout(resolve, 70));
+
+  assert.equal(desktop.statusCalls, 4);
+  await service.dispose();
+});
+
+test("cancels a pending action confirmation when the session stops", async () => {
+  class CountingDesktop extends FakeDesktop {
+    statusCalls = 0;
+
+    async status() {
+      this.statusCalls += 1;
+      return super.status();
+    }
+  }
+
+  const desktop = new CountingDesktop();
+  const service = makeService(desktop, new FakeEvents(), { actionDelaysMs: [20, 20, 20] });
+  await service.start();
+  await service.command(bindingCommand("key_accept"), "stopped-confirmation");
+
+  await service.stop();
+  await new Promise((resolve) => setTimeout(resolve, 35));
+
+  assert.equal(desktop.statusCalls, 1);
   await service.dispose();
 });
 
