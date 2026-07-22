@@ -26,6 +26,13 @@ import org.junit.Test
 
 class PresentationTest {
     @Test
+    fun settingsLabelsDistinguishCurrentAndNextTurnValues() {
+        assertEquals("Model", settingsLabel("Model", Activity.IDLE))
+        assertEquals("Next model", settingsLabel("Model", Activity.EXECUTING))
+        assertEquals("Next reasoning", settingsLabel("Reasoning", Activity.THINKING))
+    }
+
+    @Test
     fun inputLabelsFollowRemappedActionRatherThanPhysicalInput() {
         val input = Input("joystick_up", Input.Kind.JOYSTICK, "Up", "up")
         val workflow = Action(type = "workflow", workflowId = "debug")
@@ -73,6 +80,20 @@ class PresentationTest {
             selectionDescription("Model", "GPT-5.3", "GPT-5.4"),
         )
         assertEquals("Model, GPT-5.4", selectionDescription("Model", "GPT-5.4", "GPT-5.4"))
+    }
+
+    @Test
+    fun targetScopedSelectorIdsExposeTheRequestedValue() {
+        val digest = "a".repeat(64)
+
+        assertEquals(
+            "openai:gpt-5.4",
+            pendingSelectionId("model", setOf("model:$digest:openai:gpt-5.4")),
+        )
+        assertEquals(
+            Reasoning.Level.HIGH,
+            reasoningPendingTarget(setOf("reasoning:$digest:high")),
+        )
     }
 
     @Test

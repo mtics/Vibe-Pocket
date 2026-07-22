@@ -13,22 +13,27 @@ sealed interface Command {
     ) : Command
 
     data class SelectLayer(val layerId: String) : Command
-    data class FocusAgent(val agentId: String) : Command {
+    data class SelectAgent(val agentId: String) : Command {
         init {
             require(AgentId.matches(agentId))
         }
     }
-    data class SelectModel(val modelId: String) : Command {
+    data class SelectModel(val target: TargetRef, val modelId: String) : Command {
         init {
             require(modelId.matches(Regex("^[a-zA-Z0-9._-]{1,128}$")))
         }
     }
-    data class SelectMode(val modeId: String) : Command {
+    data class SelectMode(val target: TargetRef, val modeId: String) : Command {
         init {
             require(modeId == "default" || modeId == "plan")
         }
     }
-    data class SelectReasoning(val level: Reasoning.Level) : Command
+    data class SelectReasoning(val target: TargetRef, val level: Reasoning.Level) : Command
+    data class AdjustReasoning(val target: TargetRef, val delta: Int) : Command {
+        init {
+            require(delta == -1 || delta == 1)
+        }
+    }
     data class UpdateBinding(
         val layerId: String,
         val inputId: String,

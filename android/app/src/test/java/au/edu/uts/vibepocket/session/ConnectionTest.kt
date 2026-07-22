@@ -550,6 +550,15 @@ class ConnectionTest {
             }
         }
 
+        override fun markPendingCommandAcknowledged(operationId: String): PendingCommand {
+            val current = pendingCommand
+                ?.takeIf { it.operationId == operationId }
+                ?: error("Different pending command")
+            return current.copy(phase = PendingCommand.Phase.ACKNOWLEDGED).also {
+                pendingCommand = it
+            }
+        }
+
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false

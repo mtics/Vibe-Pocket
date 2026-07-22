@@ -28,11 +28,13 @@ internal class Refresh(
     private data class Request(
         val lease: Lease,
         val version: Long,
+        val silent: Boolean,
     )
 
     private class Flight(
         val first: Request,
         var job: Job? = null,
+        var skippedSupersededSuccess: Boolean = false,
     )
 
     private val lock = Any()
@@ -52,13 +54,14 @@ internal class Refresh(
     fun request(
         generation: Long? = null,
         stale: Boolean = false,
+        silent: Boolean = false,
         onPrepared: (Long) -> Unit = {},
     ): Long? {
         var launch: Flight? = null
         val request = synchronized(lock) {
             val current = lease ?: return null
             if (generation != null && current.generation != generation) return null
-            val request = Request(current, ++version)
+            val request = Request(current, ++version, silent)
             if (flight == null) {
                 launch = Flight(request).also { flight = it }
             } else {
@@ -120,9 +123,12 @@ internal class Refresh(
     ) {
         val applied = synchronized(lock) {
             if (flight !== owner || lease !== request.lease) return
-            if (result.isSuccess && queued != null) {
+            if (result.isSuccess && queued != null && !owner.skippedSupersededSuccess) {
+                owner.skippedSupersededSuccess = true
                 false
-            } else result.fold(
+            } else {
+                if (result.isSuccess) owner.skippedSupersededSuccess = false
+                result.fold(
                 onSuccess = { remote ->
                     var updated = false
                     state.update { current ->
@@ -134,7 +140,9 @@ internal class Refresh(
                             current.copy(
                                 snapshot = reconcile(remote, current.snapshot),
                                 isRefreshing = false,
-                                error = persistentError(),
+                                error = persistentError() ?: current.error.takeIf {
+                                    current.operation?.phase == Operation.Phase.UNKNOWN
+                                },
                             )
                         }
                     }
@@ -148,13 +156,18 @@ internal class Refresh(
                             current.copy(
                                 snapshot = current.snapshot?.copy(transportFresh = false),
                                 isRefreshing = current.snapshot == null && queued != null,
-                                error = error.message ?: persistentError(),
+                                error = if (request.silent) {
+                                    current.error ?: persistentError()
+                                } else {
+                                    error.message ?: persistentError()
+                                },
                             )
                         }
                     }
                     false
                 },
             )
+            }
         }
         if (applied) reconciled(result.getOrThrow(), request.version)
     }
@@ -174,7 +187,11 @@ internal class Refresh(
                 if (current.config != owner.first.lease.config) current else current.copy(
                     snapshot = current.snapshot?.copy(transportFresh = false),
                     isRefreshing = false,
-                    error = error.message ?: persistentError(),
+                    error = if (owner.first.silent) {
+                        current.error ?: persistentError()
+                    } else {
+                        error.message ?: persistentError()
+                    },
                 )
             }
         }
@@ -207,4 +224,5 @@ internal class Refresh(
     }
 
     private fun isCurrent(candidate: Lease): Boolean = synchronized(lock) { lease === candidate }
+
 }

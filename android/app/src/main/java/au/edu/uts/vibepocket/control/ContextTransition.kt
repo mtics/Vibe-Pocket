@@ -34,10 +34,8 @@ sealed interface ContextTransition {
 
 internal fun Command.contextTransition(snapshot: Snapshot): ContextTransition? = when (this) {
     is Command.Binding -> action.contextTransition(snapshot)
-    is Command.FocusAgent -> ContextTransition.Agent(agentId)
-    is Command.SelectModel -> ContextTransition.Model(modelId)
+    is Command.SelectAgent -> ContextTransition.Agent(agentId)
     is Command.SelectMode -> ContextTransition.Mode(modeId)
-    is Command.SelectReasoning -> ContextTransition.Reasoning(level)
     is Command.SelectLayer -> ContextTransition.Layer(layerId)
     Command.Attach -> ContextTransition.Attached
     Command.NewTask -> ContextTransition.NewDesktop(snapshot.desktop?.focusedAgentId)

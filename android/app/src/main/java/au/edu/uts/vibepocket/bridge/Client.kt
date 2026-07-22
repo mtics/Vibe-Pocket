@@ -257,10 +257,18 @@ internal fun decodeFailure(response: String, statusCode: Int): Failure {
         .getOrNull()
         ?.let(::decodeRemoteError)
     return Failure(
-        message = error?.message ?: "The Vibe Pocket bridge rejected this action.",
+        message = error?.message ?: unstructuredFailureMessage(statusCode),
         statusCode = statusCode,
         errorCode = error?.code,
     )
+}
+
+private fun unstructuredFailureMessage(statusCode: Int): String = when (statusCode) {
+    HttpURLConnection.HTTP_BAD_GATEWAY,
+    HttpURLConnection.HTTP_UNAVAILABLE,
+    HttpURLConnection.HTTP_GATEWAY_TIMEOUT,
+    -> "The Vibe Pocket Bridge is temporarily unavailable. It will reconnect automatically."
+    else -> "The Vibe Pocket bridge rejected this action."
 }
 
 private fun decodeRemoteError(error: JSONObject): RemoteError = RemoteError(
@@ -389,7 +397,7 @@ class Events(
         val stream = (URL(config.normalizedUrl + "/v1/pocket/events").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 20_000
-            readTimeout = 0
+            readTimeout = DefaultReadTimeoutMillis
             setRequestProperty("Accept", "text/event-stream")
             setRequestProperty("Authorization", "Bearer ${config.credential}")
             currentLastEventId?.takeIf(String::isNotBlank)?.let { setRequestProperty("Last-Event-ID", it) }
@@ -488,7 +496,7 @@ class Failure(
     val errorCode: String? = null,
 ) : IllegalStateException(message)
 
-internal const val ProtocolVersion = 11
+internal const val ProtocolVersion = 12
 internal const val MaxResponseBytes = 1_048_576
 internal const val MaxEventLineBytes = 8_192
 private const val MaxEventFieldChars = 128

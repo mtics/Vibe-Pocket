@@ -66,6 +66,7 @@ interface Store {
     fun loadPendingCommand(): PendingCommand?
     fun loadPendingCommands(): List<PendingCommand> = listOfNotNull(loadPendingCommand())
     fun markPendingCommandDispatched(operationId: String): PendingCommand
+    fun markPendingCommandAcknowledged(operationId: String): PendingCommand
     fun clearPendingCommand(operationId: String): Boolean
     fun clearPendingCommands() {
         loadPendingCommands().forEach { command ->
@@ -208,6 +209,7 @@ data class PendingCommand(
     enum class Phase {
         PREPARED,
         DISPATCH_ATTEMPTED,
+        ACKNOWLEDGED,
     }
 
     init {
@@ -463,6 +465,30 @@ class Vault(context: Context) : Store {
     }
 
     @Synchronized
+    override fun markPendingCommandAcknowledged(operationId: String): PendingCommand {
+        val encrypted = preferences.getString(COMMAND_OUTBOX_KEY, null)
+            ?: throw IllegalStateException("Vibe Pocket could not find the pending command to acknowledge.")
+        val queued = decodePendingCommands(decrypt(encrypted))
+        val current = queued.firstOrNull()
+            ?.takeIf { it.operationId == operationId }
+            ?: throw IllegalStateException("Vibe Pocket found a different pending command before acknowledgment.")
+        if (current.phase == PendingCommand.Phase.ACKNOWLEDGED) return current
+        check(current.phase == PendingCommand.Phase.DISPATCH_ATTEMPTED) {
+            "Vibe Pocket cannot acknowledge a command before dispatch."
+        }
+
+        val acknowledged = current.copy(phase = PendingCommand.Phase.ACKNOWLEDGED)
+        check(
+            preferences.edit()
+                .putString(COMMAND_OUTBOX_KEY, encrypt(encodePendingCommands(listOf(acknowledged) + queued.drop(1))))
+                .commit(),
+        ) {
+            "Vibe Pocket could not record the pending command acknowledgment."
+        }
+        return acknowledged
+    }
+
+    @Synchronized
     override fun clearPendingCommand(operationId: String): Boolean {
         val encrypted = preferences.getString(COMMAND_OUTBOX_KEY, null) ?: return true
         val queued = decodePendingCommands(decrypt(encrypted))
@@ -645,6 +671,15 @@ internal fun decodePendingCommand(value: String): PendingCommand {
     require(version in 2..PendingCommandVersion) { "The pending command version is unsupported." }
     val encodedCommand = payload.optJSONObject("command")
         ?: throw IllegalArgumentException("The pending command body is invalid.")
+    if (
+        version < 4 &&
+        encodedCommand.optString("kind") in LegacyTargetlessSettingKinds &&
+        !encodedCommand.has("target")
+    ) {
+        throw LegacyPendingCommand(
+            "The legacy settings command has no target reference and was retired without replay.",
+        )
+    }
     return PendingCommand(
         config = Config(
             baseUrl = payload.getString("baseUrl"),
@@ -671,11 +706,13 @@ private val PendingCommand.Phase.wireValue: String
     get() = when (this) {
         PendingCommand.Phase.PREPARED -> "prepared"
         PendingCommand.Phase.DISPATCH_ATTEMPTED -> "dispatch_attempted"
+        PendingCommand.Phase.ACKNOWLEDGED -> "acknowledged"
     }
 
 private fun decodePendingCommandPhase(value: String): PendingCommand.Phase = when (value) {
     "prepared" -> PendingCommand.Phase.PREPARED
     "dispatch_attempted" -> PendingCommand.Phase.DISPATCH_ATTEMPTED
+    "acknowledged" -> PendingCommand.Phase.ACKNOWLEDGED
     else -> throw IllegalArgumentException("The pending command dispatch phase is invalid.")
 }
 
@@ -687,7 +724,7 @@ internal fun encodePendingCommands(commands: List<PendingCommand>): String = JSO
 internal fun decodePendingCommands(value: String): List<PendingCommand> {
     val payload = JSONObject(value)
     if (!payload.has("commands")) return listOf(decodePendingCommand(value))
-    require(payload.optInt("version") == PendingCommandQueueVersion) {
+    require(payload.optInt("version") in 3..PendingCommandQueueVersion) {
         "The pending command queue version is unsupported."
     }
     val commands = payload.optJSONArray("commands")
@@ -740,10 +777,11 @@ private fun decodeTransition(value: JSONObject): ContextTransition = when (value
     else -> throw IllegalArgumentException("The pending command transition target is invalid.")
 }
 
-private const val PendingCommandVersion = 3
-private const val PendingCommandQueueVersion = 3
+private const val PendingCommandVersion = 5
+private const val PendingCommandQueueVersion = 5
 internal const val PendingCommandLimit = 32
+private val LegacyTargetlessSettingKinds = setOf("select_model", "select_mode", "select_reasoning")
 
-private class LegacyPendingCommand : IllegalArgumentException(
-    "The legacy pending command has no replayable command body.",
-)
+private class LegacyPendingCommand(
+    message: String = "The legacy pending command has no replayable command body.",
+) : IllegalArgumentException(message)

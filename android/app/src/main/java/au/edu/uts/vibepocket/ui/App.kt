@@ -3,11 +3,13 @@ package au.edu.uts.vibepocket.ui
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import au.edu.uts.vibepocket.hid.Keyboard
 import au.edu.uts.vibepocket.connection.Invitation
 import au.edu.uts.vibepocket.control.ConflictGroup
+import au.edu.uts.vibepocket.experiment.Provider
 import au.edu.uts.vibepocket.input.Dispatch
 import au.edu.uts.vibepocket.input.remote
 import au.edu.uts.vibepocket.profile.Gesture
@@ -67,6 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -77,6 +80,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 
 internal fun voiceStopTarget(ownerInputId: String?, visibleInputId: String): String =
@@ -84,6 +88,13 @@ internal fun voiceStopTarget(ownerInputId: String?, visibleInputId: String): Str
 
 internal fun useLandscapeBoard(widthDp: Int, heightDp: Int): Boolean =
     widthDp > heightDp && widthDp >= 544 && heightDp >= 324
+
+internal fun classicHidPermissions(sdk: Int): Array<String> = buildList {
+    if (sdk >= Build.VERSION_CODES.S) {
+        add(Manifest.permission.BLUETOOTH_CONNECT)
+        add(Manifest.permission.BLUETOOTH_ADVERTISE)
+    }
+}.toTypedArray()
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -101,6 +112,7 @@ internal fun App(
     var voiceOwnerInputId by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmReset by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
     val view = LocalView.current
     val inputOrchestrator = remember(hidController, viewModel) {
         Dispatch(
@@ -130,13 +142,7 @@ internal fun App(
         hidController.start()
         if (pairRequested && hidController.state.value.enabled) launchDiscoverable()
     }
-    val pairPermissions = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
-        } else {
-            emptyArray()
-        }
-    }
+    val pairPermissions = remember { classicHidPermissions(Build.VERSION.SDK_INT) }
     val nearbyPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
@@ -150,6 +156,33 @@ internal fun App(
             pairRequested = false
             viewModel.reportLocalError("Nearby devices permission is required for Bluetooth keyboard.")
         }
+    }
+    val experimentPermissions = remember { Provider.permissions(Build.VERSION.SDK_INT) }
+    val startExperiment: () -> Unit = {
+        runCatching {
+            Provider.start(context)
+        }.onFailure { error ->
+            viewModel.reportLocalError(Provider.failure(error))
+        }
+        Unit
+    }
+    val experimentPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        val granted = experimentPermissions.all { permission ->
+            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        }
+        if (granted) {
+            startExperiment()
+        } else {
+            viewModel.reportLocalError(Provider.permissionFailure)
+        }
+    }
+    val onEnableExperiment: () -> Unit = {
+        val granted = experimentPermissions.all { permission ->
+            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        }
+        if (granted) startExperiment() else experimentPermissionLauncher.launch(experimentPermissions)
     }
 
     LaunchedEffect(hidController) {
@@ -254,7 +287,7 @@ internal fun App(
         voiceOwnerInputId = null
     }
     val onAgent: (String) -> Unit = { agentId ->
-        if (inputOrchestrator.focusAgent(state.snapshot, agentId)) {
+        if (inputOrchestrator.selectAgent(state.snapshot, agentId)) {
             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
     }
@@ -283,7 +316,8 @@ internal fun App(
     val onPairHid: () -> Unit = {
         pairRequested = true
         when {
-            !hidController.hasConnectPermission() || !hidController.hasAdvertisePermission() ->
+            !hidController.hasConnectPermission() ||
+                !hidController.hasAdvertisePermission() ->
                 nearbyPermissionLauncher.launch(pairPermissions)
             !hidState.enabled -> bluetoothEnableLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             else -> launchDiscoverable()
@@ -336,6 +370,14 @@ internal fun App(
                         )
                     },
                     actions = {
+                        if (Provider.available) {
+                            IconButton(
+                                onClick = onEnableExperiment,
+                                modifier = Modifier.semantics { contentDescription = Provider.description },
+                            ) {
+                                Icon(Icons.Filled.Build, contentDescription = null)
+                            }
+                        }
                         IconButton(
                             onClick = { showSettings = true },
                             modifier = Modifier.semantics { contentDescription = "Open settings" },
@@ -363,6 +405,7 @@ internal fun App(
                     inFlightIds = state.inFlightIds,
                     busyGroups = state.busyGroups,
                     operation = state.operation,
+                    modelTarget = state.modelTarget,
                     reasoningTarget = state.reasoningTarget,
                     contextTransitionPending = state.contextTransitionPending,
                     onInput = onInput,

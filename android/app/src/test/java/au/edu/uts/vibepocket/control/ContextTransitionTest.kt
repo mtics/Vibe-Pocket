@@ -59,16 +59,14 @@ class ContextTransitionTest {
     }
 
     @Test
-    fun directAgentModelAndLayerCommandsAreClassifiedStructurally() {
+    fun directCommandsSeparateSettingsFromContextTransitions() {
         val snapshot = snapshot()
 
-        assertEquals(ContextTransition.Agent(AgentB), Command.FocusAgent(AgentB).contextTransition(snapshot))
-        assertEquals(ContextTransition.Model("model-2"), Command.SelectModel("model-2").contextTransition(snapshot))
-        assertEquals(ContextTransition.Mode("plan"), Command.SelectMode("plan").contextTransition(snapshot))
-        assertEquals(
-            ContextTransition.Reasoning(Reasoning.Level.HIGH),
-            Command.SelectReasoning(Reasoning.Level.HIGH).contextTransition(snapshot),
-        )
+        assertEquals(ContextTransition.Agent(AgentB), Command.SelectAgent(AgentB).contextTransition(snapshot))
+        assertEquals(null, Command.SelectModel(Target, "model-2").contextTransition(snapshot))
+        assertEquals(ContextTransition.Mode("plan"), Command.SelectMode(Target, "plan").contextTransition(snapshot))
+        assertEquals(null, Command.SelectReasoning(Target, Reasoning.Level.HIGH).contextTransition(snapshot))
+        assertEquals(null, Command.AdjustReasoning(Target, 1).contextTransition(snapshot))
         assertEquals(ContextTransition.Layer("layer-2"), Command.SelectLayer("layer-2").contextTransition(snapshot))
         assertEquals(ContextTransition.NewDesktop(AgentA), Command.NewTask.contextTransition(snapshot))
         assertEquals(ContextTransition.Attached, Command.Attach.contextTransition(snapshot))
@@ -143,5 +141,6 @@ class ContextTransitionTest {
         const val InputId = "key_test"
         const val AgentA = "agent-aaaaaaaaaaaaaaaaaaaaaaaa"
         const val AgentB = "agent-bbbbbbbbbbbbbbbbbbbbbbbb"
+        val Target = TargetRef("thread-1", AgentA, 4, "bridge-1", 7, "workspace-1")
     }
 }

@@ -85,6 +85,7 @@ internal fun BoardPreview(
                         inFlightIds = inFlightIds,
                         busyGroups = busyGroups,
                         operation = operation,
+                        modelTarget = null,
                         reasoningTarget = reasoningTarget,
                         contextTransitionPending = false,
                         onInput = { _, _ -> },
@@ -196,6 +197,7 @@ internal object Fixtures {
         voiceActive: Boolean = false,
         agentCount: Int = 8,
         focusNext: Boolean = true,
+        firstAgentLabel: String = "Vibe Pocket UI",
     ): Snapshot = Snapshot(
         revision = "preview-${activity.wireValue}",
         status = Status("ready", message),
@@ -218,7 +220,7 @@ internal object Fixtures {
             agents = (1..agentCount.coerceIn(0, 24)).map { index ->
                 Agent(
                     id = "agent-${index.toString(16).padStart(24, '0')}",
-                    label = if (index == 1) "Vibe Pocket UI" else "Recent task $index",
+                    label = if (index == 1) firstAgentLabel else "Recent task $index",
                     activity = if (index == 2) Activity.WAITING else Activity.IDLE,
                     focused = index == 1,
                 )

@@ -15,7 +15,7 @@ internal fun remote(session: Session): Bridge = object : Bridge {
 
     override fun contextTransitionPending(): Boolean = session.contextTransitionPending()
 
-    override fun focusAgent(agentId: String): Boolean = session.focusAgent(agentId)
+    override fun selectAgent(agentId: String): Boolean = session.selectAgent(agentId)
 
     override fun selectModel(modelId: String): Boolean = session.selectModel(modelId)
 
@@ -27,6 +27,11 @@ internal fun remote(session: Session): Bridge = object : Bridge {
     override fun selectLayer(layerId: String): Boolean = session.selectLayer(layerId)
 
     override fun reportLocalDeliveryFailure(message: String) = session.reportLocalDeliveryFailure(message)
+
+    override fun reportLocalDeliveryIndeterminate(message: String) =
+        session.reportLocalDeliveryIndeterminate(message)
+
+    override fun observeSetting() = session.observeSetting()
 
     override fun refresh() {
         session.refresh()

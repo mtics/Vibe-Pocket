@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -176,6 +177,20 @@ internal class Delivery(
         return true
     }
 
+    fun clearRetainedSetting(command: PendingCommand): Boolean {
+        val retained = synchronized(lock) {
+            outbox.firstOrNull()?.takeIf {
+                it.operationId == command.operationId &&
+                    it.uiId == command.uiId &&
+                    it.transition == null &&
+                    it.phase == PendingCommand.Phase.ACKNOWLEDGED
+            }
+        } ?: return false
+        val cleared = settle(retained) {}
+        if (cleared) requestWorker()
+        return cleared
+    }
+
     private fun replaceOwner(config: Config?) {
         val cancelled = synchronized(lock) {
             owner = Owner(config, owner.epoch + 1)
@@ -231,6 +246,7 @@ internal class Delivery(
                 PendingCommand.Phase.PREPARED -> dispatchAndSettle(work)
                 PendingCommand.Phase.DISPATCH_ATTEMPTED ->
                     queryAndSettle(work, replayNotFound = false)
+                PendingCommand.Phase.ACKNOWLEDGED -> restoreAcknowledged(work)
             }
             if (!settled) return
         }
@@ -304,6 +320,7 @@ internal class Delivery(
     private suspend fun queryAndSettle(
         persisted: PendingCommand,
         replayNotFound: Boolean,
+        pollsRemaining: Int = CommandStatusMaxPollAttempts - 1,
     ): Boolean {
         currentCoroutineContext().ensureActive()
         val result = try {
@@ -323,7 +340,12 @@ internal class Delivery(
                 -> {
                     changed(persisted, Operation.Phase.OBSERVING, null)
                     publishPending()
-                    false
+                    if (pollsRemaining <= 0) {
+                        retainRunning(persisted)
+                    } else {
+                        delay(CommandStatusPollIntervalMillis)
+                        queryAndSettle(persisted, replayNotFound, pollsRemaining - 1)
+                    }
                 }
                 CommandStatus.SUCCEEDED -> completeSuccess(persisted)
                 CommandStatus.FAILED -> {
@@ -364,14 +386,52 @@ internal class Delivery(
     }
 
     private fun completeSuccess(persisted: PendingCommand): Boolean {
+        val observationRequired = persisted.command is Command.SelectModel ||
+            persisted.command is Command.SelectReasoning ||
+            persisted.command is Command.AdjustReasoning
+        if (persisted.transition == null && observationRequired) {
+            val acknowledged = try {
+                store.markPendingCommandAcknowledged(persisted.operationId)
+            } catch (error: Throwable) {
+                changed(persisted, Operation.Phase.FAILED, error.message)
+                retain(persisted, error)
+                return false
+            }
+            synchronized(lock) {
+                if (outbox.firstOrNull()?.operationId != persisted.operationId) return false
+                outbox.removeFirst()
+                outbox.addFirst(acknowledged)
+            }
+            changed(acknowledged, Operation.Phase.ACKNOWLEDGED, null)
+            accepted(acknowledged)
+            publishPending()
+            return false
+        }
         changed(
             persisted,
-            if (persisted.transition == null) Operation.Phase.OBSERVED else Operation.Phase.ACKNOWLEDGED,
+            if (persisted.transition == null) {
+                Operation.Phase.OBSERVED
+            } else {
+                Operation.Phase.ACKNOWLEDGED
+            },
             null,
         )
         if (persisted.transition == null) return settle(persisted) { accepted(persisted) }
         accepted(persisted)
         publishPending()
+        return false
+    }
+
+    private fun restoreAcknowledged(persisted: PendingCommand): Boolean {
+        changed(persisted, Operation.Phase.ACKNOWLEDGED, null)
+        accepted(persisted)
+        publishPending()
+        return false
+    }
+
+    private fun retainRunning(persisted: PendingCommand): Boolean {
+        changed(persisted, Operation.Phase.OBSERVING, CommandResultUnconfirmed)
+        retain(persisted, null)
         return false
     }
 
@@ -417,6 +477,8 @@ internal const val CommandOutcomeIndeterminate = "command_outcome_indeterminate"
 internal const val AmbiguousOutcome =
     "The command may have completed, but its outcome could not be confirmed."
 internal const val CommandResultUnconfirmed = "The command result is not yet confirmed."
+internal const val CommandStatusPollIntervalMillis = 250L
+internal const val CommandStatusMaxPollAttempts = 3
 
 private fun Command.isQueuedRepeatOf(other: Command): Boolean =
     this == other && this is Command.Binding && action.allowsQueuedRepeat()

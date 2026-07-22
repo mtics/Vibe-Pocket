@@ -13,7 +13,11 @@ data class Snapshot(
     val desktop: Desktop? = null,
     val observedAtMillis: Long? = null,
     val transportFresh: Boolean = true,
+    val sources: Sources = Sources.Unavailable,
 ) {
+    @Transient
+    var receivedAtMillis: Long? = null
+
     val activeLayer: Layer?
         get() = desktop?.profile?.layers?.firstOrNull { it.id == desktop.activeLayerId }
 
@@ -48,6 +52,31 @@ data class Snapshot(
             }
     }
 
+    fun modelSelectionEnabled(modelId: String? = null): Boolean {
+        val state = desktop ?: return false
+        val model = state.model
+        if (!settingsSelectionEnabled(state) || !capabilities.model || !model.available) return false
+        return modelId == null || model.id != modelId && model.options.any { it.id == modelId }
+    }
+
+    fun modeSelectionEnabled(modeId: String? = null): Boolean {
+        return false
+    }
+
+    fun reasoningSelectionEnabled(level: Reasoning.Level? = null): Boolean {
+        val state = desktop ?: return false
+        val reasoning = state.reasoning
+        if (!settingsSelectionEnabled(state) || !capabilities.reasoning || !reasoning.available) return false
+        if (level == null) return true
+        val selectable = level in reasoning.options ||
+            level == reasoning.increaseTo ||
+            level == reasoning.decreaseTo
+        return reasoning.level != level && selectable
+    }
+
+    private fun settingsSelectionEnabled(state: Desktop): Boolean =
+        transportFresh && sources.appServer.fresh && state.binding.target.boundRef != null
+
     private fun canFocusAgents(): Boolean = desktop?.let { state ->
         capabilities.focusAgent &&
             state.tasks.availability == Tasks.Availability.FRESH &&
@@ -71,15 +100,11 @@ data class Snapshot(
         "delete_backward", "clear_input" -> capabilities.clearInput
         "focus_next", "focus_agent" -> canFocusAgents()
         "select_layer" -> desktop?.profile?.layers?.any { it.id == action.layerId } == true
-        "navigate" -> capabilities.navigate && desktop?.foreground == true
+        "navigate" -> capabilities.navigate
         "reasoning_depth" -> desktop?.let {
-            capabilities.reasoning &&
-                it.foreground &&
-                it.activity != Activity.THINKING &&
-                it.activity != Activity.EXECUTING &&
-                it.reasoning.allows(action.delta)
+            reasoningSelectionEnabled() && it.reasoning.allows(action.delta)
         } == true
-        "workflow" -> capabilities.workflow && desktop?.foreground == true
+        "workflow" -> capabilities.workflow
         "attach" -> status.state == "ready"
         else -> false
     }
@@ -97,6 +122,43 @@ data class Snapshot(
         }
     }
 }
+
+data class Sources(
+    val appServer: Source,
+    val desktopUI: Source,
+) {
+    data class Source(
+        val fresh: Boolean,
+        val observedAtMillis: Long? = null,
+    )
+
+    companion object {
+        val Unavailable = Sources(Source(false), Source(false))
+    }
+}
+
+data class TargetRef(
+    val threadId: String,
+    val agentId: String,
+    val bindingEpoch: Long,
+    val bridgeInstanceId: String,
+    val appServerGeneration: Long,
+    val canonicalWorkspaceId: String,
+) {
+    init {
+        require(threadId.isSafeTargetField(512)) { "The target thread ID is invalid." }
+        require(AgentId.matches(agentId)) { "The target agent ID is invalid." }
+        require(bindingEpoch >= 1L) { "The target binding epoch is invalid." }
+        require(bridgeInstanceId.isSafeTargetField(256)) { "The target Bridge instance ID is invalid." }
+        require(appServerGeneration >= 0L) { "The target app-server generation is invalid." }
+        require(canonicalWorkspaceId.isSafeTargetField(2_048)) {
+            "The target canonical workspace ID is invalid."
+        }
+    }
+}
+
+private fun String.isSafeTargetField(limit: Int): Boolean =
+    length in 1..limit && none(Char::isISOControl)
 
 data class Status(
     val state: String,
@@ -142,12 +204,39 @@ data class Desktop(
     data class Binding(
         val state: State,
         val contextId: String?,
+        val target: Target = Target.Unbound,
     ) {
         enum class State {
             CONFIRMED,
             RECONCILING,
             CONFLICT,
             UNBOUND,
+        }
+
+        data class Target(
+            val state: State,
+            val ref: TargetRef?,
+        ) {
+            enum class State {
+                BOUND,
+                INVALID,
+                UNBOUND,
+            }
+
+            val boundRef: TargetRef?
+                get() = ref.takeIf { state == State.BOUND }
+
+            init {
+                require((state == State.BOUND) == (ref != null)) {
+                    "A bound target must contain exactly one target reference."
+                }
+            }
+
+            companion object {
+                val Invalid = Target(State.INVALID, null)
+                val Unbound = Target(State.UNBOUND, null)
+                fun bound(ref: TargetRef) = Target(State.BOUND, ref)
+            }
         }
 
         companion object {

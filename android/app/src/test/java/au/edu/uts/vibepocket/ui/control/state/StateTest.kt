@@ -9,7 +9,9 @@ import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.Sources
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.session.Operation
@@ -123,6 +125,44 @@ class StateTest {
         assertEquals("Confirming task", reconciling.title)
         assertEquals(State.Kind.STALE, unbound.kind)
         assertEquals("No task attached", unbound.title)
+    }
+
+    @Test
+    fun boundAppServerTaskRemainsUsableWhileDesktopIdentityReconciles() {
+        val snapshot = snapshot(Activity.IDLE)
+        val desktop = requireNotNull(snapshot.desktop)
+        val target = TargetRef(
+            threadId = "thread-1",
+            agentId = "agent-222222222222222222222222",
+            bindingEpoch = 4,
+            bridgeInstanceId = "bridge-1",
+            appServerGeneration = 7,
+            canonicalWorkspaceId = "workspace-1",
+        )
+
+        val state = snapshot.copy(
+            sources = Sources(
+                appServer = Sources.Source(true),
+                desktopUI = Sources.Source(false),
+            ),
+            desktop = desktop.copy(
+                agents = desktop.agents + Agent(
+                    id = target.agentId,
+                    label = "Bound settings task",
+                    activity = Activity.THINKING,
+                    focused = false,
+                ),
+                binding = Desktop.Binding(
+                    state = Desktop.Binding.State.RECONCILING,
+                    contextId = desktop.focusedAgentId,
+                    target = Desktop.Binding.Target.bound(target),
+                ),
+            ),
+        ).state()
+
+        assertEquals(State.Kind.RUNNING, state.kind)
+        assertEquals("Codex is thinking", state.title)
+        assertEquals("Bound settings task", state.task)
     }
 
     @Test

@@ -10,6 +10,7 @@ data class State(
     val config: Config? = null,
     val invitation: Invitation? = null,
     val snapshot: Snapshot? = null,
+    val modelTarget: String? = null,
     val reasoningTarget: Reasoning.Level? = null,
     val isRefreshing: Boolean = false,
     val inFlightIds: Set<String> = emptySet(),

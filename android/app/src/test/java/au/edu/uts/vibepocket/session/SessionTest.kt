@@ -25,7 +25,9 @@ import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.Sources
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.control.Voice as VoiceState
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
@@ -37,10 +39,13 @@ import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.input.Plan
 import au.edu.uts.vibepocket.input.activation
 import java.io.IOException
+import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
@@ -125,6 +130,25 @@ class SessionTest {
     }
 
     @Test
+    fun bridgeOutageDisablesTheStaleControllerAndKeepsTheSpecificError() = runTest(dispatcher) {
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = UnavailableCommandClient(),
+            dispatcher = dispatcher,
+        )
+        runCurrent()
+
+        assertTrue(viewModel.activateInput("key_accept"))
+        advanceUntilIdle()
+
+        assertFalse(requireNotNull(viewModel.state.value.snapshot).transportFresh)
+        assertEquals(
+            "The Vibe Pocket Bridge is temporarily unavailable. It will reconnect automatically.",
+            viewModel.state.value.error,
+        )
+    }
+
+    @Test
     fun recreatedSessionRestoresPendingUiAndQueriesWithoutReplayingPost() = runTest(dispatcher) {
         val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
         val firstStore = FakeStore(config)
@@ -159,7 +183,7 @@ class SessionTest {
     }
 
     @Test
-    fun observingOperationBecomesUnknownAfterConfirmationTimeout() = runTest(dispatcher) {
+    fun observingOperationKeepsItsRecoveryBarrierAfterBoundedStatusPolls() = runTest(dispatcher) {
         val config = Config("https://m5.example.test", "0123456789abcdefghijklmn")
         val viewModel = Session(
             store = FakeStore(config),
@@ -172,15 +196,13 @@ class SessionTest {
         runCurrent()
         assertEquals(Operation.Phase.OBSERVING, viewModel.state.value.operation?.phase)
 
-        advanceTimeBy(10_000L)
+        advanceTimeBy(CommandStatusPollIntervalMillis * (CommandStatusMaxPollAttempts - 1))
         runCurrent()
 
-        assertEquals(Operation.Phase.UNKNOWN, viewModel.state.value.operation?.phase)
-        assertEquals(
-            "The Mac has not confirmed this command. Its outcome may be unknown.",
-            viewModel.state.value.operation?.message,
-        )
+        assertEquals(Operation.Phase.OBSERVING, viewModel.state.value.operation?.phase)
+        assertEquals(CommandResultUnconfirmed, viewModel.state.value.operation?.message)
         assertEquals(null, viewModel.state.value.error)
+        assertEquals(setOf("input:key_accept:tap"), viewModel.state.value.inFlightIds)
     }
 
     @Test
@@ -301,7 +323,7 @@ class SessionTest {
     }
 
     @Test
-    fun successfulManualRefreshRecoversARetainedCommandResult() = runTest(dispatcher) {
+    fun scheduledPollRecoversARetainedCommandResult() = runTest(dispatcher) {
         val store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn"))
         val client = RecoverableCommandClient(CommandResult.Found(CommandStatus.RUNNING))
         val viewModel = Session(store = store, client = client, dispatcher = dispatcher)
@@ -313,12 +335,385 @@ class SessionTest {
         assertEquals(listOf(pending.operationId), client.queriedOperationIds)
 
         client.result = CommandResult.Found(CommandStatus.SUCCEEDED)
-        viewModel.refresh()
+        advanceTimeBy(CommandStatusPollIntervalMillis)
         runCurrent()
 
         assertEquals(listOf(pending.operationId, pending.operationId), client.queriedOperationIds)
         assertEquals(null, store.pendingCommand)
         assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+    }
+
+    @Test
+    fun reasoningAcknowledgmentRequiresTransportAndAppServerFreshness() = runTest(dispatcher) {
+        val baseline = REASONING_SNAPSHOT.copy(
+            desktop = REASONING_SNAPSHOT.desktop?.copy(
+                reasoning = REASONING_SNAPSHOT.desktop.reasoning.copy(
+                    options = listOf(Reasoning.Level.LOW, Reasoning.Level.MEDIUM, Reasoning.Level.HIGH),
+                ),
+            ),
+        )
+        val confirmed = baseline.copy(
+            revision = "r_high",
+            desktop = baseline.desktop?.copy(
+                reasoning = baseline.desktop.reasoning.copy(label = "High", level = Reasoning.Level.HIGH),
+            ),
+        )
+        val client = CountingSnapshotClient(
+            baseline,
+            baseline,
+            confirmed.copy(transportFresh = false),
+            confirmed.copy(sources = confirmed.sources.copy(appServer = Sources.Source(false))),
+            confirmed,
+        )
+        val viewModel = Session(
+            store = FakeStore(DEVICE_CONFIG),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        val feedback = mutableListOf<Feedback>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.feedback.collect(feedback::add)
+        }
+        runCurrent()
+
+        assertTrue(viewModel.selectReasoning(Reasoning.Level.HIGH))
+        runCurrent()
+
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
+        assertEquals(Operation.Phase.ACKNOWLEDGED, viewModel.state.value.operation?.phase)
+        assertTrue(feedback.isEmpty())
+
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
+        assertEquals(Operation.Phase.ACKNOWLEDGED, viewModel.state.value.operation?.phase)
+        assertTrue(feedback.isEmpty())
+
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
+        assertEquals(Operation.Phase.ACKNOWLEDGED, viewModel.state.value.operation?.phase)
+        assertTrue(feedback.isEmpty())
+
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(null, viewModel.state.value.reasoningTarget)
+        assertEquals(Operation.Phase.OBSERVED, viewModel.state.value.operation?.phase)
+        assertEquals(listOf(Feedback.Success), feedback)
+    }
+
+    @Test
+    fun modelAcknowledgmentWaitsForFreshMatchingSnapshotBeforeSuccess() = runTest(dispatcher) {
+        val baseline = VOICE_SNAPSHOT.copy(
+            capabilities = VOICE_SNAPSHOT.capabilities.copy(model = true),
+            desktop = VOICE_SNAPSHOT.desktop?.copy(
+                model = Model(
+                    available = true,
+                    id = "sol",
+                    label = "Sol",
+                    options = listOf(
+                        Model.Option("sol", "Sol", true),
+                        Model.Option("terra", "Terra", false),
+                    ),
+                ),
+            ),
+        )
+        val confirmed = baseline.copy(
+            revision = "r_terra",
+            desktop = baseline.desktop?.copy(
+                model = baseline.desktop.model.copy(
+                    id = "terra",
+                    label = "Terra",
+                    options = listOf(
+                        Model.Option("sol", "Sol", false),
+                        Model.Option("terra", "Terra", true),
+                    ),
+                ),
+            ),
+        )
+        val client = CountingSnapshotClient(baseline, baseline, confirmed)
+        val viewModel = Session(
+            store = FakeStore(DEVICE_CONFIG),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        val feedback = mutableListOf<Feedback>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.feedback.collect(feedback::add)
+        }
+        runCurrent()
+
+        assertTrue(viewModel.selectModel("terra"))
+        runCurrent()
+
+        assertEquals("terra", viewModel.state.value.modelTarget)
+        assertEquals(Operation.Phase.ACKNOWLEDGED, viewModel.state.value.operation?.phase)
+        assertTrue(feedback.isEmpty())
+
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(null, viewModel.state.value.modelTarget)
+        assertEquals(Operation.Phase.OBSERVED, viewModel.state.value.operation?.phase)
+        assertEquals(listOf(Feedback.Success), feedback)
+    }
+
+    @Test
+    fun matchingSnapshotCannotConfirmOrExpireBeforeDurableAcknowledgement() = runTest(dispatcher) {
+        val baseline = modelSnapshot("sol")
+        val confirmed = modelSnapshot("terra").copy(revision = "r_terra")
+        val client = BlockingSettingClient(baseline)
+        val store = FakeStore(DEVICE_CONFIG)
+        val viewModel = Session(
+            store = store,
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        val feedback = mutableListOf<Feedback>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.feedback.collect(feedback::add)
+        }
+        runCurrent()
+
+        assertTrue(viewModel.selectModel("terra"))
+        runCurrent()
+        client.snapshot = confirmed
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals("terra", viewModel.state.value.modelTarget)
+        assertFalse(Feedback.Success in feedback)
+        assertEquals(PendingCommand.Phase.DISPATCH_ATTEMPTED, store.pendingCommand?.phase)
+
+        advanceTimeBy(4_000L)
+        runCurrent()
+        assertEquals("terra", viewModel.state.value.modelTarget)
+        assertEquals(null, viewModel.state.value.error)
+
+        client.commandRelease.complete(Unit)
+        runCurrent()
+
+        assertEquals(null, viewModel.state.value.modelTarget)
+        assertEquals(Operation.Phase.OBSERVED, viewModel.state.value.operation?.phase)
+        assertEquals(null, store.pendingCommand)
+        assertEquals(listOf(Feedback.Success), feedback)
+    }
+
+    @Test
+    fun temporarySettingUnavailabilityKeepsAcknowledgementUntilTargetAppears() = runTest(dispatcher) {
+        val baseline = modelSnapshot("sol")
+        val unavailable = modelSnapshot("", available = false, modelCapability = false)
+            .copy(revision = "r_unavailable")
+        val confirmed = modelSnapshot("terra").copy(revision = "r_terra")
+        val client = CountingSnapshotClient(baseline, baseline, unavailable, confirmed)
+        val store = FakeStore(DEVICE_CONFIG)
+        val viewModel = Session(
+            store = store,
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        runCurrent()
+
+        assertTrue(viewModel.selectModel("terra"))
+        runCurrent()
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals("terra", viewModel.state.value.modelTarget)
+        assertEquals(Operation.Phase.ACKNOWLEDGED, viewModel.state.value.operation?.phase)
+        assertEquals(PendingCommand.Phase.ACKNOWLEDGED, store.pendingCommand?.phase)
+
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(null, viewModel.state.value.modelTarget)
+        assertEquals(Operation.Phase.OBSERVED, viewModel.state.value.operation?.phase)
+        assertEquals(null, store.pendingCommand)
+    }
+
+    @Test
+    fun recreatedSessionRestoresAcknowledgedModelUntilFreshObservation() = runTest(dispatcher) {
+        val baseline = VOICE_SNAPSHOT.copy(
+            capabilities = VOICE_SNAPSHOT.capabilities.copy(model = true),
+            desktop = VOICE_SNAPSHOT.desktop?.copy(
+                model = Model(
+                    available = true,
+                    id = "sol",
+                    label = "Sol",
+                    options = listOf(
+                        Model.Option("sol", "Sol", true),
+                        Model.Option("terra", "Terra", false),
+                    ),
+                ),
+            ),
+        )
+        val confirmed = baseline.copy(
+            revision = "r_terra",
+            desktop = baseline.desktop?.copy(
+                model = baseline.desktop.model.copy(
+                    id = "terra",
+                    label = "Terra",
+                    options = listOf(
+                        Model.Option("sol", "Sol", false),
+                        Model.Option("terra", "Terra", true),
+                    ),
+                ),
+            ),
+        )
+        val command = PendingCommand(
+            config = DEVICE_CONFIG,
+            command = Command.SelectModel(
+                requireNotNull(baseline.desktop?.binding?.target?.boundRef),
+                "terra",
+            ),
+            operationId = UUID.randomUUID().toString(),
+            uiId = "model:terra",
+            phase = PendingCommand.Phase.ACKNOWLEDGED,
+        )
+        val store = FakeStore(DEVICE_CONFIG).apply { pendingCommand = command }
+        val client = CountingSnapshotClient(baseline, confirmed)
+
+        val recreated = Session(
+            store = store,
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        runCurrent()
+
+        assertEquals(2, client.snapshotCalls)
+        assertEquals(null, store.pendingCommand)
+        assertTrue(recreated.state.value.inFlightIds.isEmpty())
+        assertEquals(null, recreated.state.value.modelTarget)
+        assertEquals(Operation.Phase.OBSERVED, recreated.state.value.operation?.phase)
+        assertEquals("terra", recreated.state.value.snapshot?.desktop?.model?.id)
+    }
+
+    @Test
+    fun recreatedAcknowledgementForAnotherTaskFailsAndReleasesTheQueue() = runTest(dispatcher) {
+        val active = modelSnapshot("sol")
+        val command = PendingCommand(
+            config = DEVICE_CONFIG,
+            command = Command.SelectModel(
+                target("agent-222222222222222222222222"),
+                "terra",
+            ),
+            operationId = UUID.randomUUID().toString(),
+            uiId = "model:terra",
+            phase = PendingCommand.Phase.ACKNOWLEDGED,
+        )
+        val store = FakeStore(DEVICE_CONFIG).apply { pendingCommand = command }
+
+        val recreated = Session(
+            store = store,
+            client = StaticClient(active),
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        runCurrent()
+
+        assertEquals(null, store.pendingCommand)
+        assertTrue(recreated.state.value.inFlightIds.isEmpty())
+        assertEquals(Operation.Phase.FAILED, recreated.state.value.operation?.phase)
+        assertEquals(
+            "The setting command no longer matches the active desktop task.",
+            recreated.state.value.error,
+        )
+        assertTrue(recreated.selectModel("terra"))
+    }
+
+    @Test
+    fun modelAcknowledgmentRejectsMatchingValueForDifferentTargetRef() = runTest(dispatcher) {
+        val baseline = VOICE_SNAPSHOT.copy(
+            capabilities = VOICE_SNAPSHOT.capabilities.copy(model = true),
+            desktop = VOICE_SNAPSHOT.desktop?.copy(
+                model = Model(
+                    available = true,
+                    id = "sol",
+                    label = "Sol",
+                    options = listOf(
+                        Model.Option("sol", "Sol", true),
+                        Model.Option("terra", "Terra", false),
+                    ),
+                ),
+            ),
+        )
+        val otherAgent = "agent-222222222222222222222222"
+        val wrongTarget = baseline.copy(
+            revision = "r_wrong_target",
+            desktop = baseline.desktop?.copy(
+                focusedAgentId = otherAgent,
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.CONFIRMED,
+                    otherAgent,
+                    Desktop.Binding.Target.bound(target(otherAgent)),
+                ),
+                model = baseline.desktop.model.copy(id = "terra", label = "Terra"),
+            ),
+        )
+        val client = CountingSnapshotClient(baseline, baseline, wrongTarget)
+        val viewModel = Session(
+            store = FakeStore(DEVICE_CONFIG),
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        val feedback = mutableListOf<Feedback>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.feedback.collect(feedback::add)
+        }
+        runCurrent()
+
+        assertTrue(viewModel.selectModel("terra"))
+        runCurrent()
+        viewModel.refresh()
+        runCurrent()
+
+        assertEquals(null, viewModel.state.value.modelTarget)
+        assertEquals(Operation.Phase.FAILED, viewModel.state.value.operation?.phase)
+        assertFalse(Feedback.Success in feedback)
+        assertTrue(Feedback.Error in feedback)
+    }
+
+    @Test
+    fun failedSettingConfirmationRefreshReleasesPredictionHonestly() = runTest(dispatcher) {
+        val client = SettingRefreshFailureClient()
+        val store = FakeStore(DEVICE_CONFIG)
+        val viewModel = Session(
+            store = store,
+            client = client,
+            dispatcher = dispatcher,
+            nowMillis = { testScheduler.currentTime },
+        )
+        val feedback = mutableListOf<Feedback>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.feedback.collect(feedback::add)
+        }
+        runCurrent()
+
+        assertTrue(viewModel.selectReasoning(Reasoning.Level.HIGH))
+        runCurrent()
+
+        assertFalse(requireNotNull(viewModel.state.value.snapshot).transportFresh)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
+        assertFalse(Feedback.Success in feedback)
+
+        advanceTimeBy(3_000L)
+        runCurrent()
+
+        assertEquals(null, viewModel.state.value.reasoningTarget)
+        assertEquals(Operation.Phase.FAILED, viewModel.state.value.operation?.phase)
+        assertEquals(null, store.pendingCommand)
+        assertTrue(viewModel.state.value.inFlightIds.isEmpty())
+        assertTrue(Feedback.Error in feedback)
+        assertFalse(Feedback.Success in feedback)
     }
 
     @Test
@@ -384,7 +779,7 @@ class SessionTest {
         assertFalse(visible?.capabilities?.reasoning == true)
         assertFalse(visible?.desktop?.reasoning?.available == true)
         assertEquals(null, visible?.desktop?.reasoning?.level)
-        assertEquals(null, viewModel.state.value.reasoningTarget)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -414,7 +809,7 @@ class SessionTest {
         assertFalse(visible?.capabilities?.reasoning == true)
         assertFalse(visible?.desktop?.reasoning?.available == true)
         assertEquals(null, visible?.desktop?.reasoning?.level)
-        assertEquals(null, viewModel.state.value.reasoningTarget)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.reasoningTarget)
     }
 
     @Test
@@ -690,37 +1085,153 @@ class SessionTest {
     }
 
     @Test
-    fun sseFailureKeepsDisplayContentButForcesBridgeFallback() = runTest(dispatcher) {
+    fun sseFailureImmediatelyDisablesSettingsUntilSnapshotRecovery() = runTest(dispatcher) {
         val events = FakeEvents()
+        val settings = REASONING_SNAPSHOT.copy(
+            capabilities = REASONING_SNAPSHOT.capabilities.copy(model = true),
+            desktop = REASONING_SNAPSHOT.desktop?.copy(
+                reasoning = REASONING_SNAPSHOT.desktop.reasoning.copy(
+                    options = listOf(Reasoning.Level.MEDIUM, Reasoning.Level.HIGH),
+                ),
+                model = Model(
+                    available = true,
+                    id = "sol",
+                    label = "Sol",
+                    options = listOf(
+                        Model.Option("sol", "Sol", true),
+                        Model.Option("terra", "Terra", false),
+                    ),
+                ),
+            ),
+        )
+        val client = BlockingSseRefreshClient(settings)
         val viewModel = Session(
             store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
-            client = StaticClient(),
+            client = client,
             dispatcher = dispatcher,
             eventFactory = events,
         )
         runCurrent()
         viewModel.setForeground(true)
+        events.callbacks.connected()
+        runCurrent()
+        assertTrue(viewModel.state.value.snapshot?.modelSelectionEnabled("terra") == true)
+        assertTrue(viewModel.state.value.snapshot?.reasoningSelectionEnabled(Reasoning.Level.HIGH) == true)
 
         events.callbacks.disconnected("Event stream lost.")
 
-        val stale = requireNotNull(viewModel.state.value.snapshot)
-        assertFalse(stale.transportFresh)
-        assertEquals("Default", stale.desktop?.profile?.layers?.first()?.name)
-        assertTrue(activation(stale, "key_accept", Gesture.Kind.TAP) is Plan.Bridge)
+        val visible = requireNotNull(viewModel.state.value.snapshot)
+        assertFalse(visible.transportFresh)
+        assertEquals("Default", visible.desktop?.profile?.layers?.first()?.name)
+        assertFalse(visible.modelSelectionEnabled("terra"))
+        assertFalse(visible.reasoningSelectionEnabled(Reasoning.Level.HIGH))
+        assertEquals(null, viewModel.state.value.error)
 
-        events.callbacks.connected()
-        val connected = requireNotNull(viewModel.state.value.snapshot)
-        assertFalse(connected.transportFresh)
-        assertTrue(activation(connected, "key_accept", Gesture.Kind.TAP) is Plan.Bridge)
+        runCurrent()
+        assertEquals(3, client.snapshotCalls)
+        assertFalse(viewModel.state.value.snapshot?.modelSelectionEnabled("terra") == true)
+        assertFalse(
+            viewModel.state.value.snapshot?.reasoningSelectionEnabled(Reasoning.Level.HIGH) == true,
+        )
 
+        client.refreshRelease.complete(Unit)
         runCurrent()
         val fresh = requireNotNull(viewModel.state.value.snapshot)
         assertTrue(fresh.transportFresh)
-        assertTrue(activation(fresh, "key_accept", Gesture.Kind.TAP) is Plan.HidTap)
+        assertTrue(fresh.modelSelectionEnabled("terra"))
+        assertTrue(fresh.reasoningSelectionEnabled(Reasoning.Level.HIGH))
     }
 
     @Test
-    fun ordinarySseRefreshKeepsTheConfirmedControllerFreshWhileLoading() = runTest(dispatcher) {
+    fun foregroundReasoningSelectionRefreshesWithoutAnSseEvent() = runTest(dispatcher) {
+        val baseline = REASONING_SNAPSHOT.copy(
+            desktop = REASONING_SNAPSHOT.desktop?.copy(
+                reasoning = REASONING_SNAPSHOT.desktop.reasoning.copy(
+                    options = listOf(Reasoning.Level.LOW, Reasoning.Level.MEDIUM, Reasoning.Level.HIGH),
+                ),
+            ),
+        )
+        val confirmed = baseline.copy(
+            revision = "r_high",
+            desktop = baseline.desktop?.copy(
+                reasoning = baseline.desktop.reasoning.copy(
+                    label = "High",
+                    level = Reasoning.Level.HIGH,
+                ),
+            ),
+        )
+        val client = CountingSnapshotClient(baseline, baseline, confirmed)
+        val events = FakeEvents()
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+            eventFactory = events,
+        )
+        runCurrent()
+        viewModel.setForeground(true)
+        events.callbacks.connected()
+        runCurrent()
+
+        assertTrue(viewModel.selectReasoning(Reasoning.Level.HIGH))
+        runCurrent()
+
+        assertEquals(3, client.snapshotCalls)
+        assertEquals(Reasoning.Level.HIGH, viewModel.state.value.snapshot?.desktop?.reasoning?.level)
+        assertEquals(null, viewModel.state.value.reasoningTarget)
+    }
+
+    @Test
+    fun foregroundModelSelectionRefreshesWithoutAnSseEvent() = runTest(dispatcher) {
+        val baseline = VOICE_SNAPSHOT.copy(
+            capabilities = VOICE_SNAPSHOT.capabilities.copy(model = true),
+            desktop = VOICE_SNAPSHOT.desktop?.copy(
+                model = Model(
+                    available = true,
+                    id = "sol",
+                    label = "Sol",
+                    options = listOf(
+                        Model.Option("sol", "Sol", true),
+                        Model.Option("terra", "Terra", false),
+                    ),
+                ),
+            ),
+        )
+        val confirmed = baseline.copy(
+            revision = "r_terra",
+            desktop = baseline.desktop?.copy(
+                model = baseline.desktop.model.copy(
+                    id = "terra",
+                    label = "Terra",
+                    options = listOf(
+                        Model.Option("sol", "Sol", false),
+                        Model.Option("terra", "Terra", true),
+                    ),
+                ),
+            ),
+        )
+        val client = CountingSnapshotClient(baseline, baseline, confirmed)
+        val events = FakeEvents()
+        val viewModel = Session(
+            store = FakeStore(Config("https://m5.example.test", "0123456789abcdefghijklmn")),
+            client = client,
+            dispatcher = dispatcher,
+            eventFactory = events,
+        )
+        runCurrent()
+        viewModel.setForeground(true)
+        events.callbacks.connected()
+        runCurrent()
+
+        assertTrue(viewModel.selectModel("terra"))
+        runCurrent()
+
+        assertEquals(3, client.snapshotCalls)
+        assertEquals("terra", viewModel.state.value.snapshot?.desktop?.model?.id)
+    }
+
+    @Test
+    fun sseSnapshotChangeMarksSettingsStaleWhileLoadingTheReplacement() = runTest(dispatcher) {
         val events = FakeEvents()
         val client = BlockingSseRefreshClient()
         val viewModel = Session(
@@ -739,8 +1250,10 @@ class SessionTest {
         runCurrent()
 
         val visible = requireNotNull(viewModel.state.value.snapshot)
-        assertTrue(visible.transportFresh)
-        assertTrue(activation(visible, "key_accept", Gesture.Kind.TAP) is Plan.HidTap)
+        assertFalse(visible.transportFresh)
+        assertTrue(activation(visible, "key_accept", Gesture.Kind.TAP) is Plan.Bridge)
+        assertFalse(visible.modelSelectionEnabled("terra"))
+        assertFalse(visible.reasoningSelectionEnabled(Reasoning.Level.HIGH))
         assertEquals(3, client.snapshotCalls)
 
         client.refreshRelease.complete(Unit)
@@ -749,8 +1262,9 @@ class SessionTest {
     }
 
     @Test
-    fun sseRefreshRejectsAProtocolChangeAndDoesNotUseItsCommands() = runTest(dispatcher) {
-        val initial = reasoningSnapshot("agent-a", "model-a").copy(
+    fun sseRefreshRejectsAProtocolChangeWithoutSurfacingABackgroundError() = runTest(dispatcher) {
+        val agentA = "agent-aaaaaaaaaaaaaaaaaaaaaaaa"
+        val initial = reasoningSnapshot(agentA, "model-a").copy(
             revision = "r_compatible",
             capabilities = REASONING_SNAPSHOT.capabilities.copy(model = true),
         )
@@ -773,10 +1287,7 @@ class SessionTest {
         assertEquals("r_compatible", visible.revision)
         assertEquals("model-a", visible.desktop?.model?.id)
         assertFalse(visible.transportFresh)
-        assertEquals(
-            "The Vibe Pocket bridge returned an incompatible snapshot protocol version.",
-            viewModel.state.value.error,
-        )
+        assertEquals(null, viewModel.state.value.error)
         assertFalse(viewModel.selectModel("future-model"))
         assertTrue(client.commands.isEmpty())
     }
@@ -854,8 +1365,10 @@ class SessionTest {
 
     @Test
     fun reasoningPredictionDoesNotCrossAgentOrModelIdentity() = runTest(dispatcher) {
-        val first = reasoningSnapshot("agent-a", "model-a")
-        val second = reasoningSnapshot("agent-b", "model-b")
+        val agentA = "agent-aaaaaaaaaaaaaaaaaaaaaaaa"
+        val agentB = "agent-bbbbbbbbbbbbbbbbbbbbbbbb"
+        val first = reasoningSnapshot(agentA, "model-a")
+        val second = reasoningSnapshot(agentB, "model-b")
         val client = SnapshotQueueClient(first, second)
         val viewModel = Session(
             store = FakeStore(DEVICE_CONFIG),
@@ -873,7 +1386,7 @@ class SessionTest {
         runCurrent()
 
         val visible = requireNotNull(viewModel.state.value.snapshot)
-        assertEquals("agent-b", visible.desktop?.focusedAgentId)
+        assertEquals(agentB, visible.desktop?.focusedAgentId)
         assertEquals("model-b", visible.desktop?.model?.id)
         assertEquals(Reasoning.Level.MEDIUM, visible.desktop?.reasoning?.level)
         assertEquals(null, viewModel.state.value.reasoningTarget)
@@ -1236,6 +1749,30 @@ class SessionTest {
     }
 
     @Test
+    fun indeterminateVoiceStopIsRetiredWithoutRetryingForever() = runTest(dispatcher) {
+        val disk = FakeStore(DEVICE_CONFIG)
+        val stop = VoiceStop(DEVICE_CONFIG, "00000000-0000-4000-8000-000000000001")
+        disk.saveVoiceStop(stop)
+        val client = RecreatedVoiceClient(
+            stopFailure = Failure(
+                "The controller action may have completed.",
+                statusCode = 409,
+                errorCode = CommandOutcomeIndeterminate,
+            ),
+        )
+
+        Session(store = disk, client = client, dispatcher = dispatcher)
+        runCurrent()
+
+        assertEquals(listOf(stop), client.stops)
+        assertEquals(null, disk.voiceStop)
+
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(listOf(stop), client.stops)
+    }
+
+    @Test
     fun replacementKeepsFailedStopBoundToOriginalCredentialAfterRecreation() = runTest(dispatcher) {
         val replacement = Config(
             "https://replacement.example.test",
@@ -1397,6 +1934,15 @@ class SessionTest {
             }
         }
 
+        override fun markPendingCommandAcknowledged(operationId: String): PendingCommand {
+            val current = pendingCommand
+                ?.takeIf { it.operationId == operationId }
+                ?: error("Different pending command")
+            return current.copy(phase = PendingCommand.Phase.ACKNOWLEDGED).also {
+                pendingCommands[0] = it
+            }
+        }
+
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false
@@ -1440,6 +1986,36 @@ class SessionTest {
         }
     }
 
+    private class UnavailableCommandClient : Client {
+        private var snapshotCalls = 0
+        private val unavailable = Failure(
+            "The Vibe Pocket Bridge is temporarily unavailable. It will reconnect automatically.",
+            503,
+        )
+
+        override suspend fun snapshot(config: Config): Snapshot {
+            snapshotCalls += 1
+            if (snapshotCalls == 1) return VOICE_SNAPSHOT
+            throw unavailable
+        }
+
+        override suspend fun command(config: Config, command: Command) {
+            throw unavailable
+        }
+    }
+
+    private class SettingRefreshFailureClient : Client {
+        private var snapshotCalls = 0
+
+        override suspend fun snapshot(config: Config): Snapshot {
+            snapshotCalls += 1
+            if (snapshotCalls == 1) return REASONING_SNAPSHOT
+            throw Failure("Setting confirmation refresh failed.", 503)
+        }
+
+        override suspend fun command(config: Config, command: Command) = Unit
+    }
+
     private class RecoverableCommandClient(
         var result: CommandResult,
     ) : Client {
@@ -1473,6 +2049,18 @@ class SessionTest {
         }
     }
 
+    private class BlockingSettingClient(
+        var snapshot: Snapshot,
+    ) : Client {
+        val commandRelease = CompletableDeferred<Unit>()
+
+        override suspend fun snapshot(config: Config): Snapshot = snapshot
+
+        override suspend fun command(config: Config, command: Command) {
+            commandRelease.await()
+        }
+    }
+
     private class BlockingRefreshClient : Client {
         var snapshotCalls = 0
         val refreshRelease = CompletableDeferred<Unit>()
@@ -1486,14 +2074,16 @@ class SessionTest {
         override suspend fun command(config: Config, command: Command) = Unit
     }
 
-    private class BlockingSseRefreshClient : Client {
+    private class BlockingSseRefreshClient(
+        private val snapshot: Snapshot = VOICE_SNAPSHOT,
+    ) : Client {
         var snapshotCalls = 0
         val refreshRelease = CompletableDeferred<Unit>()
 
         override suspend fun snapshot(config: Config): Snapshot {
             snapshotCalls += 1
             if (snapshotCalls >= 3) refreshRelease.await()
-            return VOICE_SNAPSHOT
+            return snapshot
         }
 
         override suspend fun command(config: Config, command: Command) = Unit
@@ -1800,6 +2390,7 @@ class SessionTest {
         private val startRelease: CompletableDeferred<Unit>? = null,
         private var stopFailures: Int = 0,
         private val stopRelease: CompletableDeferred<Unit>? = null,
+        private val stopFailure: Failure? = null,
     ) : Client {
         val starts = mutableListOf<Config>()
         val stops = mutableListOf<VoiceStop>()
@@ -1819,6 +2410,7 @@ class SessionTest {
                 stopFailures -= 1
                 throw Failure("The stop response was lost.")
             }
+            stopFailure?.let { throw it }
             stopRelease?.await()
         }
 
@@ -1880,7 +2472,13 @@ class SessionTest {
                 voice = VoiceState(available = true, active = false),
                 mode = Selector(false, ""),
                 reasoning = Reasoning.Unavailable,
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.CONFIRMED,
+                    "agent-111111111111111111111111",
+                    Desktop.Binding.Target.bound(target("agent-111111111111111111111111")),
+                ),
             ),
+            sources = Sources(Sources.Source(true), Sources.Source(true)),
         )
 
         val REASONING_SNAPSHOT = VOICE_SNAPSHOT.copy(
@@ -1901,6 +2499,11 @@ class SessionTest {
         fun reasoningSnapshot(agentId: String, modelId: String): Snapshot = REASONING_SNAPSHOT.copy(
             desktop = REASONING_SNAPSHOT.desktop?.copy(
                 focusedAgentId = agentId,
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.CONFIRMED,
+                    agentId,
+                    Desktop.Binding.Target.bound(target(agentId)),
+                ),
                 model = Model(
                     available = true,
                     id = modelId,
@@ -1910,7 +2513,35 @@ class SessionTest {
             ),
         )
 
+        fun modelSnapshot(
+            modelId: String,
+            available: Boolean = true,
+            modelCapability: Boolean = true,
+        ): Snapshot = VOICE_SNAPSHOT.copy(
+            capabilities = VOICE_SNAPSHOT.capabilities.copy(model = modelCapability),
+            desktop = VOICE_SNAPSHOT.desktop?.copy(
+                model = Model(
+                    available = available,
+                    id = modelId,
+                    label = modelId.replaceFirstChar(Char::uppercase),
+                    options = listOf(
+                        Model.Option("sol", "Sol", modelId == "sol"),
+                        Model.Option("terra", "Terra", modelId == "terra"),
+                    ),
+                ),
+            ),
+        )
+
         fun invitation(code: String): String =
             "vibepocket://pair?origin=https%3A%2F%2Fm5.example.test&code=$code&expiresAt=2099-01-01T00%3A05%3A00Z"
+
+        fun target(agentId: String) = TargetRef(
+            "thread-$agentId",
+            agentId,
+            4,
+            "bridge-1",
+            7,
+            "workspace-1",
+        )
     }
 }

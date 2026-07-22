@@ -135,6 +135,18 @@ class ClientCommandTest {
         assertEquals("Rejected by policy.", failure.message)
     }
 
+    @Test
+    fun unstructuredGatewayFailureReportsAnUnavailableBridge() {
+        val failure = decodeFailure("upstream unavailable", HttpURLConnection.HTTP_BAD_GATEWAY)
+
+        assertEquals(HttpURLConnection.HTTP_BAD_GATEWAY, failure.statusCode)
+        assertEquals(null, failure.errorCode)
+        assertEquals(
+            "The Vibe Pocket Bridge is temporarily unavailable. It will reconnect automatically.",
+            failure.message,
+        )
+    }
+
     private class FakeConnection(
         url: URL,
         private val status: Int,

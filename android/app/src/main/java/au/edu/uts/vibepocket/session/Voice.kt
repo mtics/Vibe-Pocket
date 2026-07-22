@@ -156,7 +156,7 @@ internal class Voice(
                     }
                     val failure = result.exceptionOrNull()
                     if (failure != null) rejected(current.stop.config, failure)
-                    val terminal = (failure as? Failure)?.statusCode == 401
+                    val terminal = failure.isTerminalStopFailure()
                     val cleared = (result.isSuccess || terminal) && runCatching {
                         store.clearVoiceStop(current.stop.idempotencyKey)
                     }.onFailure {
@@ -188,4 +188,9 @@ internal class Voice(
             }
         }
     }
+}
+
+private fun Throwable?.isTerminalStopFailure(): Boolean {
+    val failure = this as? Failure ?: return false
+    return failure.statusCode == 401 || failure.errorCode == CommandOutcomeIndeterminate
 }

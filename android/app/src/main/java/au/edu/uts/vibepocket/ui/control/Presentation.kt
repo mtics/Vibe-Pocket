@@ -1,5 +1,6 @@
 package au.edu.uts.vibepocket.ui.control
 
+import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.control.Snapshot
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Choice
@@ -84,8 +85,20 @@ internal fun voiceAccessibilityAction(active: Boolean): String =
 
 internal fun pendingSelectionId(prefix: String, inFlightIds: Set<String>): String? = inFlightIds
     .firstNotNullOfOrNull { id ->
-        id.removePrefix("$prefix:").takeIf { it != id && it.isNotBlank() }
+        val payload = id.removePrefix("$prefix:").takeIf { it != id && it.isNotBlank() }
+            ?: return@firstNotNullOfOrNull null
+        val separator = payload.indexOf(':')
+        if (
+            separator == TARGET_DIGEST_LENGTH &&
+            payload.take(separator).all { it.isDigit() || it in 'a'..'f' }
+        ) {
+            payload.substring(separator + 1).takeIf(String::isNotBlank)
+        } else {
+            payload
+        }
     }
+
+private const val TARGET_DIGEST_LENGTH = 64
 
 internal fun selectionDisplay(confirmed: String, target: String?): String =
     target?.takeIf { it != confirmed }?.let { "$confirmed -> $it" } ?: confirmed
@@ -94,3 +107,10 @@ internal fun selectionDescription(name: String, confirmed: String, target: Strin
     target?.takeIf { it != confirmed }
         ?.let { "$name, $confirmed, changing to $it" }
         ?: "$name, $confirmed"
+
+internal fun settingsLabel(name: String, activity: Activity?): String =
+    if (activity == Activity.THINKING || activity == Activity.EXECUTING) {
+        "Next ${name.lowercase()}"
+    } else {
+        name
+    }

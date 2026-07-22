@@ -48,10 +48,15 @@ internal fun Snapshot.state(operation: Operation? = null): State {
         )
     }
 
-    val task = desktop.agents
-        .firstOrNull { it.id == desktop.focusedAgentId || it.focused }
-        ?.label
-        ?.takeIf(String::isNotBlank)
+    val target = desktop.binding.target.boundRef
+    val targetAgent = target?.agentId?.let { agentId ->
+        desktop.agents.firstOrNull { it.id == agentId }
+    }
+    val visibleAgent = desktop.agents.firstOrNull {
+        it.id == desktop.focusedAgentId || it.focused
+    }
+    val task = (targetAgent ?: visibleAgent)?.label?.takeIf(String::isNotBlank)
+    val activity = targetAgent?.activity ?: desktop.activity
     when (desktop.binding.state) {
         Desktop.Binding.State.CONFLICT -> return State(
             kind = State.Kind.CONFLICT,
@@ -60,13 +65,15 @@ internal fun Snapshot.state(operation: Operation? = null): State {
             task = task,
             detail = "The visible Codex task and Agent identity disagree. Reconfirming the desktop context.",
         )
-        Desktop.Binding.State.RECONCILING -> return State(
-            kind = State.Kind.STALE,
-            activity = Activity.WAITING,
-            title = "Confirming task",
-            task = task,
-            detail = "Waiting for the Mac and Agent list to confirm the same Codex task.",
-        )
+        Desktop.Binding.State.RECONCILING -> if (target == null || !sources.appServer.fresh) {
+            return State(
+                kind = State.Kind.STALE,
+                activity = Activity.WAITING,
+                title = "Confirming task",
+                task = task,
+                detail = "Waiting for the Mac and Agent list to confirm the same Codex task.",
+            )
+        }
         Desktop.Binding.State.UNBOUND -> return State(
             kind = State.Kind.STALE,
             activity = Activity.IDLE,
@@ -99,13 +106,13 @@ internal fun Snapshot.state(operation: Operation? = null): State {
     if (desktop.tasks.availability != Tasks.Availability.FRESH) {
         return State(
             kind = State.Kind.STALE,
-            activity = desktop.activity,
+            activity = activity,
             title = if (desktop.tasks.availability == Tasks.Availability.STALE) {
                 "Task list stale"
             } else {
                 "Task list unavailable"
             },
-            task = desktop.agents.firstOrNull()?.label,
+            task = task,
             detail = desktop.tasks.message ?: "Showing the last confirmed Codex tasks.",
         )
     }
@@ -128,45 +135,45 @@ internal fun Snapshot.state(operation: Operation? = null): State {
     }
 
     val message = status.message?.takeIf(String::isNotBlank)
-    return when (desktop.activity) {
+    return when (activity) {
         Activity.THINKING, Activity.EXECUTING -> State(
             kind = State.Kind.RUNNING,
-            activity = desktop.activity,
-            title = if (desktop.activity == Activity.THINKING) "Codex is thinking" else "Codex is working",
+            activity = activity,
+            title = if (activity == Activity.THINKING) "Codex is thinking" else "Codex is working",
             task = task,
             detail = message,
         )
         Activity.WAITING -> State(
             kind = State.Kind.DECISION,
-            activity = desktop.activity,
+            activity = activity,
             title = "Codex needs your decision",
             task = task,
             detail = message,
         )
         Activity.ERROR -> State(
             kind = State.Kind.ERROR,
-            activity = desktop.activity,
+            activity = activity,
             title = "Task unavailable",
             task = task,
             detail = message,
         )
         Activity.COMPLETE -> State(
             kind = State.Kind.READY,
-            activity = desktop.activity,
+            activity = activity,
             title = "Task complete",
             task = task,
             detail = message,
         )
         Activity.UNREAD -> State(
             kind = State.Kind.READY,
-            activity = desktop.activity,
+            activity = activity,
             title = "Result ready",
             task = task,
             detail = message,
         )
         Activity.IDLE -> State(
             kind = State.Kind.READY,
-            activity = desktop.activity,
+            activity = activity,
             title = "Ready",
             task = task,
             detail = message,

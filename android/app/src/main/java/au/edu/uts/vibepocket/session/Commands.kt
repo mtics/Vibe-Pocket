@@ -2,10 +2,12 @@ package au.edu.uts.vibepocket.session
 
 import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.control.commandFor
 import au.edu.uts.vibepocket.profile.Gesture
 import au.edu.uts.vibepocket.profile.allowsQueuedRepeat
 import java.util.concurrent.atomic.AtomicLong
+import java.security.MessageDigest
 
 internal class Commands(
     private val snapshot: () -> Snapshot?,
@@ -16,11 +18,22 @@ internal class Commands(
     fun activate(inputId: String, gesture: Gesture.Kind): Boolean {
         val current = snapshot() ?: return false
         if (!current.inputEnabled(inputId, gesture)) return false
-        val repeatable = current.actionFor(inputId, gesture)?.allowsQueuedRepeat() == true
+        val action = current.actionFor(inputId, gesture)
+        val repeatable = action?.allowsQueuedRepeat() == true
         val id = if (repeatable) {
             "input:$inputId:${gesture.wireValue}:${sequence.incrementAndGet()}"
         } else {
             "input:$inputId:${gesture.wireValue}"
+        }
+        if (action?.type == "reasoning_depth") {
+            val desktop = current.desktop ?: return false
+            val target = desktop.binding.target.boundRef ?: return false
+            val delta = action.delta ?: return false
+            val level = desktop.reasoning.shifted(delta)?.level ?: return false
+            return deliver(
+                Command.SelectReasoning(target, level),
+                target.uiId("reasoning", level.wireValue),
+            )
         }
         return deliver(current.commandFor(inputId, gesture), id)
     }
@@ -32,40 +45,31 @@ internal class Commands(
         return deliver(Command.ModelPicker, "model-picker")
     }
 
-    fun focusAgent(agentId: String): Boolean {
+    fun selectAgent(agentId: String): Boolean {
         val current = snapshot() ?: return false
         if (!current.agentFocusEnabled(agentId)) return false
-        return deliver(Command.FocusAgent(agentId), "agent:$agentId")
+        return deliver(Command.SelectAgent(agentId), "agent:$agentId")
     }
 
     fun selectModel(modelId: String): Boolean {
         val current = snapshot() ?: return false
-        val desktop = current.desktop ?: return false
-        val model = desktop.model
-        if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
-        if (!current.capabilities.model || !model.available || model.id == modelId) return false
-        if (model.options.none { it.id == modelId }) return false
-        return deliver(Command.SelectModel(modelId), "model:$modelId")
+        if (!current.modelSelectionEnabled(modelId)) return false
+        val target = current.desktop?.binding?.target?.boundRef ?: return false
+        return deliver(Command.SelectModel(target, modelId), target.uiId("model", modelId))
     }
 
     fun selectMode(modeId: String): Boolean {
-        val current = snapshot() ?: return false
-        val desktop = current.desktop ?: return false
-        val mode = desktop.mode
-        if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
-        if (!current.capabilities.modeCycle || !mode.available || mode.id == modeId) return false
-        if (mode.options.none { it.id == modeId }) return false
-        return deliver(Command.SelectMode(modeId), "mode:$modeId")
+        return false
     }
 
     fun selectReasoning(level: au.edu.uts.vibepocket.control.Reasoning.Level): Boolean {
         val current = snapshot() ?: return false
-        val desktop = current.desktop ?: return false
-        val reasoning = desktop.reasoning
-        if (!current.transportFresh || !desktop.foreground || desktop.question != null) return false
-        if (!current.capabilities.reasoning || !reasoning.available || reasoning.level == level) return false
-        if (reasoning.options.none { it == level }) return false
-        return deliver(Command.SelectReasoning(level), "reasoning:${level.wireValue}")
+        if (!current.reasoningSelectionEnabled(level)) return false
+        val target = current.desktop?.binding?.target?.boundRef ?: return false
+        return deliver(
+            Command.SelectReasoning(target, level),
+            target.uiId("reasoning", level.wireValue),
+        )
     }
 
     fun selectLayer(layerId: String): Boolean {
@@ -129,4 +133,21 @@ internal class Commands(
         if (snapshot()?.desktop?.profile == null) return false
         return deliver(Command.ResetProfile, "reset-profile")
     }
+}
+
+private fun TargetRef.uiId(kind: String, value: String): String =
+    "$kind:${identityDigest()}:$value"
+
+private fun TargetRef.identityDigest(): String {
+    val identity = listOf(
+        threadId,
+        agentId,
+        bindingEpoch.toString(),
+        bridgeInstanceId,
+        appServerGeneration.toString(),
+        canonicalWorkspaceId,
+    ).joinToString("\u001f")
+    return MessageDigest.getInstance("SHA-256")
+        .digest(identity.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 }

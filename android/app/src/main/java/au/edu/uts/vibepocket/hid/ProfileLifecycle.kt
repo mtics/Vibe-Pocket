@@ -50,13 +50,6 @@ internal class ProfileLifecycle {
         return Registration(profileGeneration, registrationGeneration)
     }
 
-    fun rejectRegistration(token: Registration): Boolean {
-        if (!matches(token) || !registrationPending) return false
-        registrationPending = false
-        registrationGeneration += 1
-        return true
-    }
-
     fun registrationChanged(token: Registration, value: Boolean): Boolean {
         if (!matches(token)) return false
         registrationPending = false
@@ -83,6 +76,19 @@ internal class ProfileLifecycle {
     fun currentGeneration(): Long? = profileGeneration.takeIf { !closed && proxyActive }
 
     fun isRegistered(): Boolean = registered
+
+    fun hasRegistration(): Boolean = registrationPending || registered
+
+    fun isReleased(): Boolean = !proxyPending && !proxyActive && !registrationPending && !registered
+
+    fun reset() {
+        profileGeneration += 1
+        registrationGeneration = 0
+        proxyPending = false
+        proxyActive = false
+        registrationPending = false
+        registered = false
+    }
 
     fun close() {
         closed = true

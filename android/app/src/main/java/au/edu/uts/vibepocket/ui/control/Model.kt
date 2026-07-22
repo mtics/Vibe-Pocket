@@ -58,26 +58,23 @@ internal fun Model(
     state: State,
     snapshot: Snapshot,
     inFlightIds: Set<String>,
+    targetId: String?,
     onModel: (String) -> Boolean,
     blocked: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val largeText = largeText(LocalDensity.current.fontScale)
-    val pendingId = pendingSelectionId("model", inFlightIds)
+    val pendingId = pendingSelectionId("model", inFlightIds) ?: targetId
     val pending = pendingId != null
     val confirmed = state.label.ifBlank { "Choose" }
     val target = state.options.firstOrNull { it.id == pendingId }?.label ?: pendingId
     val display = selectionDisplay(confirmed, target)
     val showProgress = progressVisible(pending)
+    val label = settingsLabel("Model", snapshot.desktop?.activity)
     val enabled = modelSelectionAllowed(
         blocked = blocked,
         pending = pending,
-        capability = snapshot.capabilities.model,
-        available = state.available,
-        hasQuestion = snapshot.desktop?.question != null,
-        foreground = snapshot.desktop?.foreground == true,
-        fresh = snapshot.transportFresh,
-        voiceActive = snapshot.desktop?.voice?.active == true,
+        selectionAvailable = snapshot.modelSelectionEnabled(),
     )
     var showOptions by rememberSaveable(snapshot.desktop?.focusedAgentId) { mutableStateOf(false) }
 
@@ -93,7 +90,7 @@ internal fun Model(
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
             .semantics {
                 role = Role.Button
-                contentDescription = selectionDescription("Model", confirmed, target)
+                contentDescription = selectionDescription(label, confirmed, target)
                 if (!enabled) disabled()
             }
             .clickable(enabled = enabled) { if (enabled) showOptions = true }
@@ -112,10 +109,10 @@ internal fun Model(
         }
         Column(Modifier.weight(1f)) {
             if (!largeText) {
-                Text("Model", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
             Text(
-                if (largeText) "Model: $display" else display,
+                if (largeText) "$label: $display" else display,
                 maxLines = if (largeText) 2 else 1,
                 overflow = TextOverflow.Ellipsis,
                 style = if (largeText) {
@@ -152,7 +149,7 @@ internal fun Model(
                     fontWeight = FontWeight.SemiBold,
                 )
                 state.options.forEach { option ->
-                    val optionPending = inFlightIds.contains("model:${option.id}")
+                    val optionPending = option.id == pendingId
                     val optionEnabled = enabled && !optionPending
                     ListItem(
                         headlineContent = { Text(option.label) },
@@ -180,10 +177,5 @@ internal fun Model(
 internal fun modelSelectionAllowed(
     blocked: Boolean,
     pending: Boolean,
-    capability: Boolean,
-    available: Boolean,
-    hasQuestion: Boolean,
-    foreground: Boolean,
-    fresh: Boolean,
-    voiceActive: Boolean = false,
-): Boolean = !blocked && !pending && capability && available && !hasQuestion && foreground && fresh && !voiceActive
+    selectionAvailable: Boolean,
+): Boolean = !blocked && !pending && selectionAvailable

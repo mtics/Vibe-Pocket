@@ -13,11 +13,12 @@ enum class ConflictGroup {
 
 internal fun Command.conflictGroups(): Set<ConflictGroup> = when (this) {
     is Command.Binding -> action.conflictGroups()
-    is Command.FocusAgent,
+    is Command.SelectAgent,
     is Command.SelectLayer,
     is Command.SelectModel,
     is Command.SelectMode,
     is Command.SelectReasoning,
+    is Command.AdjustReasoning,
     Command.Attach,
     Command.ModelPicker,
     -> setOf(ConflictGroup.CONTEXT)

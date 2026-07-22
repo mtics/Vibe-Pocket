@@ -25,7 +25,9 @@ import au.edu.uts.vibepocket.control.Model
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.Sources
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
@@ -74,7 +76,7 @@ class TransitionBarrierTest {
         val session = Session(store, client, dispatcher)
         runCurrent()
 
-        assertTrue(session.focusAgent(AgentB))
+        assertTrue(session.selectAgent(AgentB))
         assertTrue(session.state.value.contextTransitionPending)
         assertTrue(session.activateInput("key_accept"))
         assertFalse(session.openModel())
@@ -102,7 +104,7 @@ class TransitionBarrierTest {
         val session = Session(store, client, dispatcher)
         runCurrent()
 
-        assertTrue(session.focusAgent(AgentB))
+        assertTrue(session.selectAgent(AgentB))
         session.refresh()
         runCurrent()
 
@@ -132,7 +134,7 @@ class TransitionBarrierTest {
         session.setForeground(true)
         session.setForeground(false)
 
-        assertTrue(session.focusAgent(AgentB))
+        assertTrue(session.selectAgent(AgentB))
         runCurrent()
 
         assertEquals(1, client.snapshotCalls)
@@ -159,7 +161,7 @@ class TransitionBarrierTest {
         val session = Session(store, client, dispatcher)
         runCurrent()
 
-        assertTrue(session.focusAgent(AgentB))
+        assertTrue(session.selectAgent(AgentB))
         runCurrent()
 
         assertEquals(2, client.snapshotCalls)
@@ -175,7 +177,7 @@ class TransitionBarrierTest {
     }
 
     @Test
-    fun successfulDeliveryReconcilesEveryExactTarget() = runTest(dispatcher) {
+    fun successfulDeliveryReconcilesEveryDesktopContextTarget() = runTest(dispatcher) {
         data class Case(
             val baseline: Snapshot,
             val target: Snapshot,
@@ -187,8 +189,7 @@ class TransitionBarrierTest {
                 it.activateInput(TransitionInput)
             },
             Case(snapshot(Action("attach")), snapshot()) { it.activateInput(TransitionInput) },
-            Case(snapshot(), snapshot(focusedAgentId = AgentB)) { it.focusAgent(AgentB) },
-            Case(snapshot(), snapshot(modelId = "model-2")) { it.selectModel("model-2") },
+            Case(snapshot(), snapshot(focusedAgentId = AgentB)) { it.selectAgent(AgentB) },
             Case(snapshot(), snapshot(activeLayerId = "layer-2")) { it.selectLayer("layer-2") },
         )
 
@@ -241,7 +242,7 @@ class TransitionBarrierTest {
         val preDispatchClient = ImmediateSuccessClient(snapshot())
         val preDispatch = Session(preDispatchStore, preDispatchClient, dispatcher)
         runCurrent()
-        assertFalse(preDispatch.focusAgent(AgentB))
+        assertFalse(preDispatch.selectAgent(AgentB))
         runCurrent()
         assertFalse(preDispatch.state.value.contextTransitionPending)
         assertEquals(0, preDispatchClient.postCalls)
@@ -249,7 +250,7 @@ class TransitionBarrierTest {
         val definiteStore = MemoryStore()
         val definite = Session(definiteStore, DefiniteFailureClient(snapshot()), dispatcher)
         runCurrent()
-        assertTrue(definite.focusAgent(AgentB))
+        assertTrue(definite.selectAgent(AgentB))
         runCurrent()
         assertFalse(definite.state.value.contextTransitionPending)
         assertNull(definiteStore.pendingCommand)
@@ -266,7 +267,7 @@ class TransitionBarrierTest {
             dispatcher,
         )
         runCurrent()
-        assertTrue(unknown.focusAgent(AgentB))
+        assertTrue(unknown.selectAgent(AgentB))
         runCurrent()
         assertFalse(unknown.state.value.contextTransitionPending)
         assertNull(unknownStore.pendingCommand)
@@ -285,7 +286,7 @@ class TransitionBarrierTest {
             dispatcher,
         )
         runCurrent()
-        assertTrue(network.focusAgent(AgentB))
+        assertTrue(network.selectAgent(AgentB))
         runCurrent()
         assertTrue(network.state.value.contextTransitionPending)
         assertNotNull(networkStore.pendingCommand)
@@ -324,7 +325,7 @@ class TransitionBarrierTest {
         val owner = ViewModelStore().apply { put("first", first) }
         runCurrent()
 
-        assertTrue(first.focusAgent(AgentB))
+        assertTrue(first.selectAgent(AgentB))
         runCurrent()
         val persisted = requireNotNull(store.pendingCommand)
         assertEquals(ContextTransition.Agent(AgentB), persisted.transition)
@@ -355,7 +356,7 @@ class TransitionBarrierTest {
         val session = Session(MemoryStore(), client, dispatcher)
         runCurrent()
 
-        assertTrue(session.focusAgent(AgentB))
+        assertTrue(session.selectAgent(AgentB))
         assertFalse(session.startVoice("key_voice"))
         assertTrue(session.stopVoice("key_voice"))
         runCurrent()
@@ -556,6 +557,14 @@ class TransitionBarrierTest {
                 pendingCommands[0] = it
             }
         }
+        override fun markPendingCommandAcknowledged(operationId: String): PendingCommand {
+            val current = pendingCommand
+                ?.takeIf { it.operationId == operationId }
+                ?: error("Different pending command")
+            return current.copy(phase = PendingCommand.Phase.ACKNOWLEDGED).also {
+                pendingCommands[0] = it
+            }
+        }
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false
@@ -621,7 +630,15 @@ class TransitionBarrierTest {
                     options = listOf(Model.Option("model-2", "Model 2", false)),
                 ),
                 reasoning = Reasoning.Unavailable,
+                binding = Desktop.Binding(
+                    Desktop.Binding.State.CONFIRMED,
+                    focusedAgentId,
+                    Desktop.Binding.Target.bound(
+                        TargetRef("thread-$focusedAgentId", focusedAgentId, 4, "bridge-1", 7, "workspace-1"),
+                    ),
+                ),
             ),
+            sources = Sources(Sources.Source(true), Sources.Source(true)),
         )
     }
 

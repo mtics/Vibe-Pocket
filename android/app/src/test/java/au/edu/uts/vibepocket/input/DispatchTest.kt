@@ -9,7 +9,9 @@ import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.Sources
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
@@ -112,36 +114,6 @@ class DispatchTest {
 
         assertTrue(hid.sent.isEmpty())
         assertEquals(listOf(BridgeCall.Activate(INPUT_ID, Gesture.Kind.TAP)), bridge.calls)
-    }
-
-    @Test
-    fun reasoningUsesHidAndPredictsTheVisibleDesktopSetting() {
-        val hid = FakeHid()
-        val bridge = FakeBridge()
-        val delivered = mutableListOf<Action>()
-        val orchestrator = Dispatch(hid, bridge, delivered::add)
-        val action = Action("reasoning_depth", delta = 1)
-
-        assertTrue(orchestrator.activate(snapshot(action), INPUT_ID, Gesture.Kind.TAP))
-
-        assertEquals(listOf(action), delivered)
-        assertEquals(listOf(action), hid.sent)
-        assertTrue(bridge.calls.isEmpty())
-    }
-
-    @Test
-    fun predictionWaitsForTheCompleteReportTransaction() {
-        val hid = FakeHid(deferSend = true)
-        val delivered = mutableListOf<Action>()
-        val action = Action("reasoning_depth", delta = 1)
-        val orchestrator = Dispatch(hid, FakeBridge(), delivered::add)
-
-        assertTrue(orchestrator.activate(snapshot(action), INPUT_ID, Gesture.Kind.TAP))
-        assertTrue(delivered.isEmpty())
-
-        hid.completeSend(true)
-
-        assertEquals(listOf(action), delivered)
     }
 
     @Test
@@ -371,8 +343,8 @@ class DispatchTest {
                 Gesture.Kind.TAP,
             ),
         )
-        assertEquals(listOf(Action("reasoning_depth", delta = 1)), hid.sent)
-        assertTrue(bridge.calls.isEmpty())
+        assertTrue(hid.sent.isEmpty())
+        assertEquals(listOf(BridgeCall.Activate(INPUT_ID, Gesture.Kind.TAP)), bridge.calls)
     }
 
     @Test
@@ -456,10 +428,10 @@ class DispatchTest {
         val orchestrator = Dispatch(hid, bridge)
 
         assertTrue(orchestrator.activate(snapshot(Action("mode_cycle")), INPUT_ID, Gesture.Kind.TAP))
-        assertTrue(orchestrator.focusAgent(transitionSnapshot(Action("approve")), AGENT_B))
+        assertTrue(orchestrator.selectAgent(transitionSnapshot(Action("approve")), AGENT_B))
         hid.completeSend(false)
 
-        assertEquals(listOf(BridgeCall.FocusAgent(AGENT_B)), bridge.calls)
+        assertEquals(listOf(BridgeCall.SelectAgent(AGENT_B)), bridge.calls)
         assertEquals(1, hid.stopRepeatCount)
         assertEquals(1, hid.quiesceCount)
     }
@@ -481,6 +453,60 @@ class DispatchTest {
     }
 
     @Test
+    fun backgroundModelReasoningAndModeUseExactBridgeCommandsWithoutHid() {
+        val bridge = FakeBridge()
+        val hid = FakeHid()
+        val orchestrator = Dispatch(hid, bridge)
+        val base = transitionSnapshot(Action("approve"))
+        val desktop = requireNotNull(base.desktop)
+        val background = base.copy(
+            desktop = desktop.copy(
+                foreground = false,
+                mode = Selector(
+                    available = true,
+                    label = "Default",
+                    id = "default",
+                    options = listOf(Selector.Option("plan", "Plan", false)),
+                ),
+                reasoning = Reasoning(
+                    available = true,
+                    label = "High",
+                    level = Reasoning.Level.HIGH,
+                    canIncrease = true,
+                    canDecrease = true,
+                    options = listOf(Reasoning.Level.MEDIUM, Reasoning.Level.HIGH),
+                ),
+            ),
+        )
+
+        assertTrue(orchestrator.selectModel(background, "model-2"))
+        assertFalse(orchestrator.selectMode(background, "plan"))
+        assertTrue(orchestrator.selectReasoning(background, Reasoning.Level.MEDIUM))
+
+        assertEquals(
+            listOf(
+                BridgeCall.SelectModel("model-2"),
+                BridgeCall.SelectReasoning(Reasoning.Level.MEDIUM),
+            ),
+            bridge.calls,
+        )
+        assertTrue(hid.sent.isEmpty())
+    }
+
+    @Test
+    fun reasoningDepthProfileActionUsesTheSemanticBridgePath() {
+        val hid = FakeHid()
+        val bridge = FakeBridge()
+        val orchestrator = Dispatch(hid, bridge)
+        val state = transitionSnapshot(Action("reasoning_depth", delta = 1))
+
+        assertTrue(orchestrator.activate(state, INPUT_ID, Gesture.Kind.TAP))
+
+        assertEquals(listOf(BridgeCall.Activate(INPUT_ID, Gesture.Kind.TAP)), bridge.calls)
+        assertTrue(hid.sent.isEmpty())
+    }
+
+    @Test
     fun heldVoiceRejectsTransitionWithoutRacingVoiceStop() {
         val hid = FakeHid()
         val bridge = FakeBridge()
@@ -488,7 +514,7 @@ class DispatchTest {
         val snapshot = transitionSnapshot(Action("voice"))
 
         assertTrue(orchestrator.startVoice(snapshot, INPUT_ID))
-        assertFalse(orchestrator.focusAgent(snapshot, AGENT_B))
+        assertFalse(orchestrator.selectAgent(snapshot, AGENT_B))
         assertEquals(0, hid.quiesceCount)
         assertTrue(orchestrator.stopVoice(INPUT_ID))
 
@@ -508,7 +534,7 @@ class DispatchTest {
         assertTrue(orchestrator.startRepeat(transitionSnapshot(Action("navigate", direction = "up")), INPUT_ID))
         assertTrue(orchestrator.activate(transitionSnapshot(Action("approve")), INPUT_ID, Gesture.Kind.TAP))
         assertFalse(orchestrator.startVoice(transitionSnapshot(Action("voice")), INPUT_ID))
-        assertFalse(orchestrator.focusAgent(ordinary, AGENT_B))
+        assertFalse(orchestrator.selectAgent(ordinary, AGENT_B))
         assertTrue(orchestrator.stopVoice(INPUT_ID))
         orchestrator.release()
 
@@ -579,8 +605,10 @@ class DispatchTest {
         data class Activate(val inputId: String, val gesture: Gesture.Kind) : BridgeCall
         data class VoiceStart(val inputId: String) : BridgeCall
         data class VoiceStop(val inputId: String) : BridgeCall
-        data class FocusAgent(val agentId: String) : BridgeCall
+        data class SelectAgent(val agentId: String) : BridgeCall
         data class SelectModel(val modelId: String) : BridgeCall
+        data class SelectMode(val modeId: String) : BridgeCall
+        data class SelectReasoning(val level: Reasoning.Level) : BridgeCall
         data class SelectLayer(val layerId: String) : BridgeCall
         data object OpenModel : BridgeCall
     }
@@ -615,13 +643,23 @@ class DispatchTest {
 
         override fun contextTransitionPending(): Boolean = transitionPending
 
-        override fun focusAgent(agentId: String): Boolean {
-            calls += BridgeCall.FocusAgent(agentId)
+        override fun selectAgent(agentId: String): Boolean {
+            calls += BridgeCall.SelectAgent(agentId)
             return true
         }
 
         override fun selectModel(modelId: String): Boolean {
             calls += BridgeCall.SelectModel(modelId)
+            return true
+        }
+
+        override fun selectMode(modeId: String): Boolean {
+            calls += BridgeCall.SelectMode(modeId)
+            return true
+        }
+
+        override fun selectReasoning(level: Reasoning.Level): Boolean {
+            calls += BridgeCall.SelectReasoning(level)
             return true
         }
 
@@ -634,7 +672,16 @@ class DispatchTest {
             deliveryFailures += message
         }
 
+        override fun reportLocalDeliveryIndeterminate(message: String) {
+            deliveryFailures += message
+            refreshCount += 1
+        }
+
         override fun refresh() {
+            refreshCount += 1
+        }
+
+        override fun observeSetting() {
             refreshCount += 1
         }
     }
@@ -714,14 +761,24 @@ class DispatchTest {
             mode = Selector(available = true, label = "Default"),
             reasoning = reasoning,
             question = question,
+            binding = Desktop.Binding(
+                Desktop.Binding.State.CONFIRMED,
+                AGENT_A,
+                Desktop.Binding.Target.bound(Target),
+            ),
         ),
         transportFresh = transportFresh,
+        sources = Sources(
+            appServer = Sources.Source(true),
+            desktopUI = Sources.Source(true),
+        ),
     )
 
     private companion object {
         const val INPUT_ID = "key_test"
         const val AGENT_A = "agent-aaaaaaaaaaaaaaaaaaaaaaaa"
         const val AGENT_B = "agent-bbbbbbbbbbbbbbbbbbbbbbbb"
+        val Target = TargetRef("thread-1", AGENT_A, 4, "bridge-1", 7, "workspace-1")
         val allCapabilities = Capabilities(
             voice = true,
             stop = true,

@@ -65,10 +65,8 @@ internal fun Mode(
     val target = state.options.firstOrNull { it.id == pendingId }?.label ?: pendingId
     val display = selectionDisplay(confirmed, target)
     val showProgress = progressVisible(pending)
-    val enabled = !blocked && !pending && snapshot.transportFresh &&
-        snapshot.capabilities.modeCycle && state.available && state.options.isNotEmpty() &&
-        snapshot.desktop?.foreground == true && snapshot.desktop.question == null &&
-        snapshot.desktop.voice?.active != true
+    val label = settingsLabel("Mode", snapshot.desktop?.activity)
+    val enabled = !blocked && !pending && state.options.isNotEmpty() && snapshot.modeSelectionEnabled()
 
     LaunchedEffect(enabled) { if (!enabled) showOptions = false }
 
@@ -78,7 +76,7 @@ internal fun Mode(
             .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.34f), RoundedCornerShape(8.dp))
             .semantics {
                 role = Role.Button
-                contentDescription = selectionDescription("Mode", confirmed, target)
+                contentDescription = selectionDescription(label, confirmed, target)
                 if (!enabled) disabled()
             }
             .clickable(enabled = enabled) { showOptions = true }
@@ -92,10 +90,10 @@ internal fun Mode(
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
             ) {
                 if (!largeText) {
-                    Text("Mode", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                    Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
                 Text(
-                    if (largeText) "Mode: $display" else display,
+                    if (largeText) "$label: $display" else display,
                     maxLines = if (largeText) 2 else 1,
                     overflow = TextOverflow.Ellipsis,
                     style = if (largeText) {

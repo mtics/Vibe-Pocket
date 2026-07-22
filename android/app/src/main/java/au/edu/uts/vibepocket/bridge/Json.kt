@@ -12,7 +12,9 @@ import au.edu.uts.vibepocket.control.Question
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Selector
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.Sources
 import au.edu.uts.vibepocket.control.Status
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.control.Tasks
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.control.decodeAction
@@ -60,6 +62,7 @@ internal fun decode(root: JSONObject): Snapshot {
         desktop = decodeDesktop(root.optJSONObject("controller")),
         observedAtMillis = observation.observedAtMillis,
         transportFresh = observation.fresh,
+        sources = decodeSources(root.optJSONObject("sources")),
     )
 }
 
@@ -76,6 +79,23 @@ private fun decodeObservation(value: JSONObject?): Observation {
     }
     return Observation(
         fresh = value.opt("fresh") == true && observedAt != null,
+        observedAtMillis = observedAt,
+    )
+}
+
+private fun decodeSources(value: JSONObject?): Sources = Sources(
+    appServer = decodeSource(value?.optJSONObject("appServer")),
+    desktopUI = decodeSource(value?.optJSONObject("desktopUI")),
+)
+
+private fun decodeSource(value: JSONObject?): Sources.Source {
+    value ?: return Sources.Source(false)
+    val raw = value.opt("observedAt") as? Number
+    val observedAt = raw?.toLong()?.takeIf {
+        it > 0L && raw.toDouble().isFinite() && raw.toDouble() == it.toDouble()
+    }
+    return Sources.Source(
+        fresh = value.opt("fresh") == true,
         observedAtMillis = observedAt,
     )
 }
@@ -127,8 +147,11 @@ private fun decodeDesktop(value: JSONObject?): Desktop? {
 }
 
 private fun decodeBinding(value: JSONObject?, focusedAgentId: String?): Desktop.Binding {
-    val contextId = value?.safeString("contextId")?.takeIf(AgentId::matches)
-    val state = when (value?.safeString("state")) {
+    val visible = value?.optJSONObject("visible")
+    val visibleState = visible?.safeString("state") ?: value?.safeString("state")
+    val contextId = (visible?.safeString("contextId") ?: visible?.safeString("agentId")
+        ?: value?.safeString("contextId"))?.takeIf(AgentId::matches)
+    val state = when (visibleState) {
         "confirmed" -> if (contextId != null && contextId == focusedAgentId) {
             Desktop.Binding.State.CONFIRMED
         } else {
@@ -146,7 +169,45 @@ private fun decodeBinding(value: JSONObject?, focusedAgentId: String?): Desktop.
     return Desktop.Binding(
         state = state,
         contextId = contextId.takeUnless { state == Desktop.Binding.State.UNBOUND },
+        target = decodeBindingTarget(value?.optJSONObject("target")),
     )
+}
+
+private fun decodeBindingTarget(value: JSONObject?): Desktop.Binding.Target {
+    value ?: return Desktop.Binding.Target.Unbound
+    return when (value.safeString("state")) {
+        "bound" -> runCatching {
+            val encoded = value.optJSONObject("ref") ?: value
+            Desktop.Binding.Target.bound(decodeTargetRef(encoded))
+        }.getOrElse { Desktop.Binding.Target.Invalid }
+        "invalid" -> Desktop.Binding.Target.Invalid
+        "unbound" -> Desktop.Binding.Target.Unbound
+        else -> Desktop.Binding.Target.Invalid
+    }
+}
+
+internal fun decodeTargetRef(value: JSONObject): TargetRef = TargetRef(
+    threadId = value.requiredTargetString("threadId", 512),
+    agentId = value.requiredTargetString("agentId", 64),
+    bindingEpoch = value.requiredTargetLong("bindingEpoch"),
+    bridgeInstanceId = value.requiredTargetString("bridgeInstanceId", 256),
+    appServerGeneration = value.requiredTargetLong("appServerGeneration"),
+    canonicalWorkspaceId = value.requiredTargetString("canonicalWorkspaceId", 2_048),
+)
+
+private fun JSONObject.requiredTargetString(key: String, limit: Int): String =
+    requireNotNull(safeString(key)?.takeIf { it.length <= limit }) {
+        "The target reference is missing $key."
+    }
+
+private fun JSONObject.requiredTargetLong(key: String): Long {
+    val raw = opt(key) as? Number
+        ?: throw IllegalArgumentException("The target reference is missing $key.")
+    val value = raw.toLong()
+    require(raw.toDouble().isFinite() && raw.toDouble() == value.toDouble()) {
+        "The target reference $key is invalid."
+    }
+    return value
 }
 
 private fun decodeTasks(value: JSONObject?): Tasks {

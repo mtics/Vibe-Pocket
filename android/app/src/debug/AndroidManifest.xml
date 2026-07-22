@@ -8,5 +8,14 @@
             android:name="au.edu.uts.vibepocket.ui.control.LandscapeBoardTestActivity"
             android:exported="false"
             android:screenOrientation="landscape" />
+        <receiver
+            android:name="au.edu.uts.vibepocket.hardware.hid.Control"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="au.edu.uts.vibepocket.hid.REASONING" />
+                <action android:name="au.edu.uts.vibepocket.hid.MODEL" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

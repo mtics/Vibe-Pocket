@@ -13,12 +13,14 @@ import au.edu.uts.vibepocket.connection.VoiceStop
 import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.ContextTransition
 import au.edu.uts.vibepocket.control.Snapshot
+import au.edu.uts.vibepocket.control.TargetRef
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -68,6 +70,25 @@ class DeliveryTest {
             listOf(restored.copy(phase = PendingCommand.Phase.DISPATCH_ATTEMPTED)),
             harness.accepted,
         )
+        assertNull(store.pendingCommand)
+        assertTrue(harness.pending.snapshot().isEmpty())
+    }
+
+    @Test
+    fun settingSuccessRemainsDurableUntilTheFreshValueIsObserved() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val store = MemoryStore()
+        val harness = delivery(dispatcher, RecordingClient(), store)
+
+        assertTrue(harness.delivery.send(Command.SelectModel(Target, "model-2"), "model:model-2"))
+        runCurrent()
+
+        val acknowledged = requireNotNull(store.pendingCommand)
+        assertEquals(PendingCommand.Phase.ACKNOWLEDGED, acknowledged.phase)
+        assertEquals(listOf(acknowledged), harness.accepted)
+        assertEquals(setOf("model:model-2"), harness.pending.snapshot())
+
+        assertTrue(harness.delivery.clearRetainedSetting(acknowledged))
         assertNull(store.pendingCommand)
         assertTrue(harness.pending.snapshot().isEmpty())
     }
@@ -188,13 +209,13 @@ class DeliveryTest {
 
         assertTrue(
             harness.delivery.send(
-                Command.FocusAgent(agentId),
+                Command.SelectAgent(agentId),
                 "agent:one",
                 ContextTransition.Agent(agentId),
             ),
         )
         assertTrue(harness.delivery.send(Command.Approve, "approve"))
-        assertFalse(harness.delivery.send(Command.SelectModel("model-2"), "model:model-2"))
+        assertFalse(harness.delivery.send(Command.SelectModel(Target, "model-2"), "model:model-2"))
 
         assertEquals(listOf("agent:one", "approve"), store.pendingCommands.map(PendingCommand::uiId))
         runCurrent()
@@ -217,13 +238,41 @@ class DeliveryTest {
         assertEquals(Operation.Phase.OBSERVING, harness.updates.last().phase)
 
         client.result = CommandResult.Found(CommandStatus.SUCCEEDED)
-        harness.delivery.recover()
+        advanceTimeBy(CommandStatusPollIntervalMillis)
         runCurrent()
 
         assertEquals(1, client.posts.size)
         assertEquals(listOf(retained.operationId, retained.operationId), client.queries.map(Query::operationId))
         assertEquals(listOf(retained), harness.accepted)
         assertNull(store.pendingCommand)
+    }
+
+    @Test
+    fun terminalRunningStatusRetainsItsRecoveryBarrierAfterBoundedPolls() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val store = MemoryStore()
+        val client = TimeoutClient(CommandResult.Found(CommandStatus.RUNNING))
+        val harness = delivery(dispatcher, client, store)
+
+        assertTrue(harness.delivery.send(Command.Approve, "approve"))
+        runCurrent()
+        advanceTimeBy(CommandStatusPollIntervalMillis * (CommandStatusMaxPollAttempts - 1))
+        runCurrent()
+
+        assertEquals(CommandStatusMaxPollAttempts, client.queries.size)
+        val retained = requireNotNull(store.pendingCommand)
+        assertEquals(PendingCommand.Phase.DISPATCH_ATTEMPTED, retained.phase)
+        assertEquals(setOf("approve"), harness.pending.snapshot())
+        assertTrue(harness.rejected.isEmpty())
+
+        client.result = CommandResult.Found(CommandStatus.SUCCEEDED)
+        harness.delivery.recover()
+        runCurrent()
+
+        assertEquals(CommandStatusMaxPollAttempts + 1, client.queries.size)
+        assertNull(store.pendingCommand)
+        assertTrue(harness.pending.snapshot().isEmpty())
+        assertEquals(listOf(retained), harness.accepted)
     }
 
     @Test
@@ -424,6 +473,15 @@ class DeliveryTest {
             }
         }
 
+        override fun markPendingCommandAcknowledged(operationId: String): PendingCommand {
+            val current = pendingCommand
+                ?.takeIf { it.operationId == operationId }
+                ?: error("Different pending command")
+            return current.copy(phase = PendingCommand.Phase.ACKNOWLEDGED).also {
+                pendingCommands[0] = it
+            }
+        }
+
         override fun clearPendingCommand(operationId: String): Boolean {
             val current = pendingCommand ?: return true
             if (current.operationId != operationId) return false
@@ -435,5 +493,13 @@ class DeliveryTest {
     private companion object {
         val ConfigValue = Config("https://m5.example.test", "0123456789abcdefghijklmn")
         val OtherConfig = Config("https://other.example.test", "abcdefghijklmnopqrstuvwxyz")
+        val Target = TargetRef(
+            "thread-1",
+            "agent-111111111111111111111111",
+            4,
+            "bridge-1",
+            7,
+            "workspace-1",
+        )
     }
 }

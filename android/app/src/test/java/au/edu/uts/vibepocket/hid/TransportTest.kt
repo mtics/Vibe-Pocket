@@ -7,8 +7,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 class TransportTest {
@@ -50,7 +48,7 @@ class TransportTest {
     }
 
     @Test
-    fun closeIsBoundedWhenAReportWorkerDoesNotReturn() {
+    fun closeMakesABoundedFallbackReleaseWhenTheReportWorkerDoesNotReturn() {
         val reports = ReportQueue(Executors.newSingleThreadExecutor(), waitTimeoutMillis = 75)
         val workStarted = CountDownLatch(1)
         val continueWork = CountDownLatch(1)
@@ -59,7 +57,13 @@ class TransportTest {
         assertTrue(
             reports.submit(block = {
                 workStarted.countDown()
-                continueWork.await()
+                while (continueWork.count > 0) {
+                    try {
+                        continueWork.await()
+                    } catch (_: InterruptedException) {
+                        Unit
+                    }
+                }
                 synchronized(order) { order += "work" }
             }),
         )
@@ -67,13 +71,13 @@ class TransportTest {
 
         val started = System.nanoTime()
         assertEquals(
-            QueueResult.TimedOut,
+            QueueResult.Completed(Unit),
             reports.close { synchronized(order) { order += "release" } },
         )
         val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
 
         assertTrue(elapsedMillis < 1_000)
-        assertEquals(emptyList<String>(), synchronized(order) { order.toList() })
+        assertEquals(listOf("release"), synchronized(order) { order.toList() })
         continueWork.countDown()
         assertFalse(reports.submit(block = { synchronized(order) { order += "late" } }))
     }
@@ -109,15 +113,138 @@ class TransportTest {
     }
 
     @Test
-    fun synchronousWaitReportsLifecycleCancellation() {
-        val executor = ThreadPoolExecutor(
-            1,
-            1,
-            0L,
-            TimeUnit.MILLISECONDS,
-            LinkedBlockingQueue(),
+    fun blockedWorkerRejectsReportsBeyondTheAdmissionBound() {
+        val reports = ReportQueue(
+            Executors.newSingleThreadExecutor(),
+            maxPendingReports = 2,
         )
-        val reports = ReportQueue(executor)
+        val entered = CountDownLatch(1)
+        val continueReport = CountDownLatch(1)
+
+        assertTrue(
+            reports.submit(block = {
+                entered.countDown()
+                continueReport.await()
+            }),
+        )
+        assertTrue(entered.await(1, TimeUnit.SECONDS))
+        assertTrue(reports.submit(block = {}))
+        assertTrue(reports.submit(block = {}))
+        assertFalse(reports.submit(block = {}))
+
+        assertTrue(reports.cancelPending())
+        continueReport.countDown()
+        assertEquals(QueueResult.Completed(Unit), reports.close {})
+    }
+
+    @Test
+    fun pauseDrainsCurrentWorkCancelsQueuedReportsAndSerializesRelease() {
+        val reports = ReportQueue(
+            Executors.newSingleThreadExecutor(),
+            maxPendingReports = 4,
+        )
+        val entered = CountDownLatch(1)
+        val continueReport = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val order = mutableListOf<String>()
+
+        assertTrue(
+            reports.submit(block = {
+                entered.countDown()
+                continueReport.await()
+                synchronized(order) { order += "current" }
+            }),
+        )
+        assertTrue(entered.await(1, TimeUnit.SECONDS))
+        repeat(4) { index ->
+            assertTrue(reports.submit(block = { synchronized(order) { order += "queued-$index" } }))
+        }
+
+        assertTrue(
+            reports.pause(
+                finalRelease = { synchronized(order) { order += "release" } },
+                completed = {
+                    assertEquals(QueueResult.Completed(Unit), it)
+                    completed.countDown()
+                },
+            ),
+        )
+        assertFalse(reports.submit(block = { synchronized(order) { order += "late" } }))
+        continueReport.countDown()
+
+        assertTrue(completed.await(1, TimeUnit.SECONDS))
+        assertEquals(listOf("current", "release"), synchronized(order) { order.toList() })
+        assertTrue(reports.resume())
+        assertEquals(
+            QueueResult.Completed(Unit),
+            reports.submitAndWait { synchronized(order) { order += "resumed" } },
+        )
+        assertEquals(QueueResult.Completed(Unit), reports.close {})
+        assertEquals(listOf("current", "release", "resumed"), synchronized(order) { order.toList() })
+    }
+
+    @Test
+    fun closeDropsQueuedReportsAndRunsFinalReleaseNext() {
+        val reports = ReportQueue(
+            Executors.newSingleThreadExecutor(),
+            waitTimeoutMillis = 1_000,
+            maxPendingReports = 4,
+        )
+        val entered = CountDownLatch(1)
+        val continueReport = CountDownLatch(1)
+        val order = mutableListOf<String>()
+        val caller = Executors.newSingleThreadExecutor()
+
+        assertTrue(
+            reports.submit(block = {
+                entered.countDown()
+                continueReport.await()
+                synchronized(order) { order += "current" }
+            }),
+        )
+        assertTrue(entered.await(1, TimeUnit.SECONDS))
+        repeat(4) { index ->
+            assertTrue(reports.submit(block = { synchronized(order) { order += "queued-$index" } }))
+        }
+
+        val closing = caller.submit<QueueResult<Unit>> {
+            reports.close { synchronized(order) { order += "release" } }
+        }
+        val releaseQueuedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+        while (reports.pendingCount() != 1 && System.nanoTime() < releaseQueuedDeadline) Thread.yield()
+        assertEquals(1, reports.pendingCount())
+        continueReport.countDown()
+
+        assertEquals(QueueResult.Completed(Unit), closing.get(1, TimeUnit.SECONDS))
+        assertEquals(listOf("current", "release"), synchronized(order) { order.toList() })
+        caller.shutdownNow()
+    }
+
+    @Test
+    fun failedFinalReleaseStillLeavesADrainedResumableQueue() {
+        val reports = ReportQueue(Executors.newSingleThreadExecutor())
+        val completed = CountDownLatch(1)
+        var outcome: QueueResult<Unit>? = null
+
+        assertTrue(
+            reports.pause(
+                finalRelease = { error("release rejected") },
+                completed = {
+                    outcome = it
+                    completed.countDown()
+                },
+            ),
+        )
+        assertTrue(completed.await(1, TimeUnit.SECONDS))
+        assertEquals(QueueResult.Failed, outcome)
+        assertTrue(reports.resume())
+        assertEquals(QueueResult.Completed(true), reports.submitAndWait { true })
+        assertEquals(QueueResult.Completed(Unit), reports.close {})
+    }
+
+    @Test
+    fun synchronousWaitReportsLifecycleCancellation() {
+        val reports = ReportQueue(Executors.newSingleThreadExecutor())
         val workStarted = CountDownLatch(1)
         val continueWork = CountDownLatch(1)
         val caller = Executors.newSingleThreadExecutor()
@@ -131,8 +258,8 @@ class TransportTest {
         assertTrue(workStarted.await(1, TimeUnit.SECONDS))
         val waiting = caller.submit<QueueResult<Boolean>> { reports.submitAndWait { true } }
         val queuedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
-        while (executor.queue.isEmpty() && System.nanoTime() < queuedDeadline) Thread.yield()
-        assertFalse(executor.queue.isEmpty())
+        while (reports.pendingCount() == 0 && System.nanoTime() < queuedDeadline) Thread.yield()
+        assertEquals(1, reports.pendingCount())
 
         assertTrue(reports.cancelPending())
         continueWork.countDown()
@@ -217,6 +344,40 @@ class TransportTest {
     }
 
     @Test
+    fun sequenceFailureBeforeTheFirstReportIsSafeToRetryElsewhere() {
+        val result = sendSequence(
+            transactions = listOf(listOf(Chord(usage = Report.USAGE_M))),
+            send = { false },
+            pause = {},
+            ready = { true },
+            holdMillis = 24,
+            gapMillis = 12,
+            intervalMillis = 140,
+        )
+
+        assertEquals(TransactionResult.NOT_DISPATCHED, result)
+    }
+
+    @Test
+    fun transportLossAfterOpeningAMenuHasAnIndeterminateOutcome() {
+        var readyChecks = 0
+        val result = sendSequence(
+            transactions = listOf(
+                listOf(Chord(usage = Report.USAGE_M)),
+                listOf(Chord(usage = Report.USAGE_DOWN)),
+            ),
+            send = { true },
+            pause = {},
+            ready = { ++readyChecks == 1 },
+            holdMillis = 24,
+            gapMillis = 12,
+            intervalMillis = 140,
+        )
+
+        assertEquals(TransactionResult.INDETERMINATE, result)
+    }
+
+    @Test
     fun laterChordFailureIsConsumedAndIndeterminate() {
         var sends = 0
 
@@ -249,6 +410,7 @@ class TransportTest {
 
         assertNull(cleared.connectedHostAddress)
         assertNull(cleared.connectingHostAddress)
+        assertFalse(cleared.registered)
         assertTrue(cleared.pairedHosts.isEmpty())
         assertFalse(cleared.connected)
     }

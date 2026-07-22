@@ -156,6 +156,16 @@ fun darkPortrait() = BoardPreview(Fixtures.snapshot(), dark = true)
 fun chinesePortrait() = BoardPreview(Fixtures.snapshot())
 
 @PreviewTest
+@Preview(name = "Expanded English", widthDp = 393, heightDp = 873, locale = "en-rXA", showBackground = true)
+@Composable
+fun expandedEnglishPortrait() = BoardPreview(
+    Fixtures.snapshot(
+        message = "Waiting for confirmation from the currently selected desktop task",
+        firstAgentLabel = "Implement accessible controller interactions across compact displays",
+    ),
+)
+
+@PreviewTest
 @Preview(name = "RTL", widthDp = 393, heightDp = 873, locale = "ar-rXB", showBackground = true)
 @Composable
 fun rtlPortrait() = BoardPreview(Fixtures.snapshot())

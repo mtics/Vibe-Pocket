@@ -2,6 +2,7 @@ package au.edu.uts.vibepocket.connection
 
 import au.edu.uts.vibepocket.control.Command
 import au.edu.uts.vibepocket.control.ContextTransition
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import java.util.UUID
@@ -26,10 +27,9 @@ class PendingCommandTest {
         val commands = listOf(
             Command.Binding("key_test", Gesture.Kind.DOUBLE_TAP, "layer-1", action),
             Command.SelectLayer("layer-2"),
-            Command.FocusAgent(AgentId),
-            Command.SelectModel("model-2"),
-            Command.SelectMode("plan"),
-            Command.SelectReasoning(au.edu.uts.vibepocket.control.Reasoning.Level.HIGH),
+            Command.SelectAgent(AgentId),
+            Command.SelectModel(Target, "model-2"),
+            Command.SelectReasoning(Target, au.edu.uts.vibepocket.control.Reasoning.Level.HIGH),
             Command.UpdateBinding("layer-1", "key_test", Gesture.Kind.HOLD, action),
             Command.ClearBinding("layer-1", "key_test", Gesture.Kind.TAP),
             Command.RenameLayer("layer-1", "Research"),
@@ -102,6 +102,24 @@ class PendingCommandTest {
     }
 
     @Test
+    fun legacyTargetlessSettingsCommandRetiresTheWholeQueue() {
+        val valid = JSONObject(encodePendingCommand(pending(command = Command.Approve)))
+            .put("version", 3)
+        val legacy = JSONObject(encodePendingCommand(pending(command = Command.SelectModel(Target, "model-2"))))
+            .put("version", 3)
+        legacy.getJSONObject("command").remove("target")
+        val queue = JSONObject()
+            .put("version", 3)
+            .put("commands", org.json.JSONArray().put(valid).put(legacy))
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            decodePendingCommands(queue.toString())
+        }
+
+        assertTrue(error.message.orEmpty().contains("retired without replay"))
+    }
+
+    @Test
     fun malformedTransitionCannotSilentlyDowngradeToALegacyOutbox() {
         val payload = JSONObject(encodePendingCommand(pending(ContextTransition.Agent(AgentId))))
             .put("transition", "corrupt")
@@ -153,6 +171,14 @@ class PendingCommandTest {
     }
 
     @Test
+    fun acknowledgedSettingRoundTripsAsAnObservationObligation() {
+        val acknowledged = pending(command = Command.SelectModel(Target, "model-2"))
+            .copy(phase = PendingCommand.Phase.ACKNOWLEDGED)
+
+        assertEquals(acknowledged, decodePendingCommand(encodePendingCommand(acknowledged)))
+    }
+
+    @Test
     fun durableQueueRejectsDuplicateUiIdsAndOversizedPayloads() {
         val duplicate = pending()
         val duplicatePayload = JSONObject(encodePendingCommands(listOf(duplicate)))
@@ -195,5 +221,13 @@ class PendingCommandTest {
 
     private companion object {
         const val AgentId = "agent-aaaaaaaaaaaaaaaaaaaaaaaa"
+        val Target = TargetRef(
+            threadId = "thread-1",
+            agentId = AgentId,
+            bindingEpoch = 4,
+            bridgeInstanceId = "bridge-1",
+            appServerGeneration = 7,
+            canonicalWorkspaceId = "workspace-1",
+        )
     }
 }

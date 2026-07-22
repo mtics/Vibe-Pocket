@@ -12,6 +12,14 @@ internal fun Action.encode(): JSONObject = JSONObject().put("type", type).also {
     layerId?.let { root.put("layerId", it) }
 }
 
+internal fun TargetRef.encode(): JSONObject = JSONObject()
+    .put("threadId", threadId)
+    .put("agentId", agentId)
+    .put("bindingEpoch", bindingEpoch)
+    .put("bridgeInstanceId", bridgeInstanceId)
+    .put("appServerGeneration", appServerGeneration)
+    .put("canonicalWorkspaceId", canonicalWorkspaceId)
+
 internal fun decodeAction(value: JSONObject?): Action? {
     value ?: return null
     val type = value.text("type") ?: return null
@@ -45,10 +53,23 @@ internal fun Command.encode(): JSONObject = when (this) {
         .put("layerId", layerId)
         .put("action", action.encode())
     is Command.SelectLayer -> JSONObject().put("kind", "select_layer").put("layerId", layerId)
-    is Command.FocusAgent -> JSONObject().put("kind", "focus_agent").put("agentId", agentId)
-    is Command.SelectModel -> JSONObject().put("kind", "select_model").put("modelId", modelId)
-    is Command.SelectMode -> JSONObject().put("kind", "select_mode").put("modeId", modeId)
-    is Command.SelectReasoning -> JSONObject().put("kind", "select_reasoning").put("level", level.wireValue)
+    is Command.SelectAgent -> JSONObject().put("kind", "select_agent").put("agentId", agentId)
+    is Command.SelectModel -> JSONObject()
+        .put("kind", "select_model")
+        .put("target", target.encode())
+        .put("modelId", modelId)
+    is Command.SelectMode -> JSONObject()
+        .put("kind", "select_mode")
+        .put("target", target.encode())
+        .put("modeId", modeId)
+    is Command.SelectReasoning -> JSONObject()
+        .put("kind", "select_reasoning")
+        .put("target", target.encode())
+        .put("level", level.wireValue)
+    is Command.AdjustReasoning -> JSONObject()
+        .put("kind", "adjust_reasoning")
+        .put("target", target.encode())
+        .put("delta", delta)
     is Command.UpdateBinding -> JSONObject()
         .put("kind", "update_binding")
         .put("layerId", layerId)
@@ -95,17 +116,26 @@ internal fun decodeCommand(value: JSONObject): Command {
         value.optJSONObject("action")
             ?: error("The pending command action is invalid."),
     )
+    fun target(): TargetRef = decodeCommandTarget(
+        value.optJSONObject("target")
+            ?: throw IllegalArgumentException("The pending settings command is missing its target."),
+    )
 
     return when (field("kind", 64)) {
         "binding" -> Command.Binding(field("inputId"), gesture(), field("layerId"), action())
         "select_layer" -> Command.SelectLayer(field("layerId"))
-        "focus_agent" -> Command.FocusAgent(field("agentId"))
-        "select_model" -> Command.SelectModel(field("modelId", 128))
-        "select_mode" -> Command.SelectMode(field("modeId", 32))
+        "focus_agent", "select_agent" -> Command.SelectAgent(field("agentId"))
+        "select_model" -> Command.SelectModel(target(), field("modelId", 128))
+        "select_mode" -> throw IllegalArgumentException("Mode selection is disabled by protocol v12.")
         "select_reasoning" -> Command.SelectReasoning(
+            target(),
             requireNotNull(Reasoning.Level.fromWire(field("level", 32))) {
                 "The pending command reasoning level is invalid."
             },
+        )
+        "adjust_reasoning" -> Command.AdjustReasoning(
+            target(),
+            value.optInt("delta", 0),
         )
         "update_binding" -> Command.UpdateBinding(field("layerId"), field("inputId"), gesture(), action())
         "clear_binding" -> Command.ClearBinding(field("layerId"), field("inputId"), gesture())
@@ -124,6 +154,30 @@ internal fun decodeCommand(value: JSONObject): Command {
         "reject" -> Command.Reject
         else -> error("The pending command kind is invalid.")
     }
+}
+
+private fun decodeCommandTarget(value: JSONObject): TargetRef = TargetRef(
+    threadId = value.requiredTargetText("threadId", 512),
+    agentId = value.requiredTargetText("agentId", 64),
+    bindingEpoch = value.requiredTargetLong("bindingEpoch"),
+    bridgeInstanceId = value.requiredTargetText("bridgeInstanceId", 256),
+    appServerGeneration = value.requiredTargetLong("appServerGeneration"),
+    canonicalWorkspaceId = value.requiredTargetText("canonicalWorkspaceId", 2_048),
+)
+
+private fun JSONObject.requiredTargetText(key: String, limit: Int): String =
+    requireNotNull(text(key)?.takeIf { it.length <= limit }) {
+        "The pending settings command target is missing $key."
+    }
+
+private fun JSONObject.requiredTargetLong(key: String): Long {
+    val raw = opt(key) as? Number
+        ?: throw IllegalArgumentException("The pending settings command target is missing $key.")
+    val value = raw.toLong()
+    require(raw.toDouble().isFinite() && raw.toDouble() == value.toDouble()) {
+        "The pending settings command target $key is invalid."
+    }
+    return value
 }
 
 private fun decodeCommandAction(value: JSONObject): Action = Action(

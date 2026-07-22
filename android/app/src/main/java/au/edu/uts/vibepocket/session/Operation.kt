@@ -23,6 +23,7 @@ internal fun PendingCommand.operation(
     phase: Operation.Phase = when (this.phase) {
         PendingCommand.Phase.PREPARED -> Operation.Phase.QUEUED
         PendingCommand.Phase.DISPATCH_ATTEMPTED -> Operation.Phase.OBSERVING
+        PendingCommand.Phase.ACKNOWLEDGED -> Operation.Phase.ACKNOWLEDGED
     },
     message: String? = null,
 ): Operation = Operation(operationId, uiId, phase, message)

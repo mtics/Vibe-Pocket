@@ -1,5 +1,8 @@
 package au.edu.uts.vibepocket.ui
 
+import android.Manifest
+import android.os.Build
+import au.edu.uts.vibepocket.control.Activity
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Binding
 import au.edu.uts.vibepocket.profile.Gesture
@@ -7,6 +10,7 @@ import au.edu.uts.vibepocket.profile.Input
 import au.edu.uts.vibepocket.profile.Layer
 import au.edu.uts.vibepocket.profile.Profile
 import au.edu.uts.vibepocket.ui.control.modelSelectionAllowed
+import au.edu.uts.vibepocket.ui.control.settingsLabel
 import au.edu.uts.vibepocket.ui.control.inputInteractive
 import au.edu.uts.vibepocket.ui.control.voiceControlAvailable
 import au.edu.uts.vibepocket.ui.preference.Hand
@@ -16,6 +20,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class UiRobustnessTest {
@@ -76,6 +81,22 @@ class UiRobustnessTest {
     }
 
     @Test
+    fun classicHidPairingNeverRequestsNotificationPermission() {
+        assertArrayEquals(emptyArray<String>(), classicHidPermissions(Build.VERSION_CODES.R))
+        assertArrayEquals(
+            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE),
+            classicHidPermissions(Build.VERSION_CODES.S),
+        )
+        assertArrayEquals(
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+            ),
+            classicHidPermissions(Build.VERSION_CODES.TIRAMISU),
+        )
+    }
+
+    @Test
     fun activeVoiceKeepsTheDedicatedControlAvailableAfterRemapping() {
         assertTrue(voiceControlAvailable("key_voice", mapped = false, active = true))
         assertTrue(voiceControlAvailable("key_delete", mapped = true, active = true))
@@ -102,14 +123,10 @@ class UiRobustnessTest {
 
     @Test
     fun modelSheetGuardRejectsEveryForbiddenParentState() {
-        assertTrue(modelSelectionAllowed(false, false, true, true, false, true, true))
-        assertFalse(modelSelectionAllowed(true, false, true, true, false, true, true))
-        assertFalse(modelSelectionAllowed(false, true, true, true, false, true, true))
-        assertFalse(modelSelectionAllowed(false, false, false, true, false, true, true))
-        assertFalse(modelSelectionAllowed(false, false, true, false, false, true, true))
-        assertFalse(modelSelectionAllowed(false, false, true, true, true, true, true))
-        assertFalse(modelSelectionAllowed(false, false, true, true, false, false, true))
-        assertFalse(modelSelectionAllowed(false, false, true, true, false, true, false))
+        assertTrue(modelSelectionAllowed(false, false, true))
+        assertFalse(modelSelectionAllowed(true, false, true))
+        assertFalse(modelSelectionAllowed(false, true, true))
+        assertFalse(modelSelectionAllowed(false, false, false))
     }
 
     @Test
@@ -167,6 +184,13 @@ class UiRobustnessTest {
         assertEquals("Layer 1", layerSemanticsLabel(0, "Layer 1"))
         assertEquals("Layer 1: Default", layerSemanticsLabel(0, "Default"))
         assertEquals("Layer 2", layerSemanticsLabel(1, ""))
+    }
+
+    @Test
+    fun runningTaskLabelsSettingsAsNextTurnWithoutAddingAnotherPage() {
+        assertEquals("Model", settingsLabel("Model", Activity.IDLE))
+        assertEquals("Next model", settingsLabel("Model", Activity.EXECUTING))
+        assertEquals("Next reasoning", settingsLabel("Reasoning", Activity.THINKING))
     }
 
     private fun profile(layers: List<Layer>) = Profile(1, listOf(input), emptyList(), layers)

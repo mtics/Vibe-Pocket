@@ -45,6 +45,11 @@ class Session internal constructor(
     private val eventFactory: EventFactory = NetworkEvents,
     retry: Retry = Retry(),
 ) : ViewModel() {
+    private data class AcknowledgedSetting(
+        val predictionId: Long,
+        val command: PendingCommand,
+    )
+
     private val restored = store.loadLifecycle()
     private val restoredOutbox = restored.pendingCommands.valueOrNull().orEmpty()
     private var lifecycleErrors = restored.errors
@@ -89,6 +94,7 @@ class Session internal constructor(
     private var eventGeneration = 0L
     private var predictionExpiry: Job? = null
     private var operationExpiry: Job? = null
+    @Volatile private var acknowledgedSetting: AcknowledgedSetting? = null
 
     private val prediction = Prediction(nowMillis)
     private val refresh = Refresh(
@@ -96,7 +102,10 @@ class Session internal constructor(
         dispatcher = dispatcher,
         client = client,
         state = _state,
-        reconcile = prediction::reconcile,
+        reconcile = { remote, visible ->
+            remote.receivedAtMillis = nowMillis()
+            prediction.reconcile(remote, visible)
+        },
         reconciled = ::snapshotReconciled,
         persistentError = ::lifecycleErrorMessage,
     )
@@ -151,8 +160,8 @@ class Session internal constructor(
                     error = lifecycleErrorMessage() ?: it.error,
                 )
             }
-            delivery.bind(config)
             refresh.activate(config, eventGeneration)
+            delivery.bind(config)
             requestRefresh()
         } else {
             restored.pendingCommand.valueOrNull()?.config?.let(delivery::bind)
@@ -248,12 +257,27 @@ class Session internal constructor(
         _feedback.tryEmit(Feedback.Error)
     }
 
+    fun reportLocalDeliveryIndeterminate(message: String) {
+        _state.update { it.copy(error = message) }
+        _feedback.tryEmit(Feedback.Error)
+        observeSetting()
+    }
+
     fun applyLocalAction(action: Action) {
         _state.update { prediction.apply(it, action) }
         schedulePredictionExpiry()
     }
 
-    fun focusAgent(agentId: String): Boolean = commands.focusAgent(agentId)
+    fun expectReasoning(level: au.edu.uts.vibepocket.control.Reasoning.Level) {
+        _state.update { prediction.expect(it, level) }
+        schedulePredictionExpiry()
+    }
+
+    fun observeSetting() {
+        requestRefresh()
+    }
+
+    fun selectAgent(agentId: String): Boolean = commands.selectAgent(agentId)
 
     fun selectModel(modelId: String): Boolean = commands.selectModel(modelId)
 
@@ -298,16 +322,36 @@ class Session internal constructor(
                 transitionBarrier = TransitionBarrier.AwaitingDelivery(uiId, transition)
                 _state.update { it.copy(contextTransitionPending = true) }
             }
-            val reasoningTarget = (command as? Command.SelectReasoning)?.level
-            if (reasoningTarget != null) {
-                _state.update { prediction.expect(it, reasoningTarget) }
+            val setting = when (command) {
+                is Command.SelectModel -> SettingTarget.Model(command.modelId)
+                is Command.SelectReasoning -> SettingTarget.ReasoningLevel(command.level)
+                is Command.AdjustReasoning -> snapshot.desktop?.reasoning
+                    ?.shifted(command.delta)
+                    ?.level
+                    ?.let(SettingTarget::ReasoningLevel)
+                else -> null
+            }
+            if (setting != null) {
+                if (prediction.isPending()) return false
+                _state.update { current ->
+                    when (setting) {
+                        is SettingTarget.Model -> prediction.beginModel(
+                            current,
+                            setting.id,
+                            requiresAcknowledgement = true,
+                        )
+                        is SettingTarget.ReasoningLevel -> prediction.beginReasoning(
+                            current,
+                            setting.level,
+                            requiresAcknowledgement = true,
+                        )
+                    }
+                }
             }
             val accepted = delivery.send(command, uiId, transition)
             if (!accepted) {
-                if (reasoningTarget != null) _state.update(prediction::fail)
+                if (setting != null) _state.update(prediction::fail)
                 if (transition != null) clearTransitionLocked(uiId, transition)
-            } else if (reasoningTarget != null) {
-                schedulePredictionExpiry()
             }
             accepted
         }
@@ -325,12 +369,13 @@ class Session internal constructor(
         predictionExpiry?.cancel()
         predictionExpiry = null
         prediction.clear()
+        acknowledgedSetting = null
         lastEventId = null
         eventError = null
         reloadLifecycleErrors()
         _state.value = State(
             config = config,
-            snapshot = snapshot,
+            snapshot = snapshot.also { it.receivedAtMillis = nowMillis() },
             invitation = null,
             inFlightIds = pending.snapshot(),
             busyGroups = delivery.busyGroups(),
@@ -356,6 +401,7 @@ class Session internal constructor(
         predictionExpiry?.cancel()
         predictionExpiry = null
         prediction.clear()
+        acknowledgedSetting = null
         lastEventId = null
         eventError = null
         synchronized(transitionLock) {
@@ -386,7 +432,25 @@ class Session internal constructor(
 
     private fun deliveryAccepted(command: PendingCommand) {
         if (command.transition == null) {
+            if (
+                command.command is Command.SelectModel ||
+                command.command is Command.SelectReasoning ||
+                command.command is Command.AdjustReasoning
+            ) {
+                settingAcknowledged(command)
+                return
+            }
             commandAccepted(command.config)
+            val settingsChanged = when (command.command) {
+                is Command.SelectModel,
+                is Command.SelectMode,
+                is Command.SelectReasoning,
+                -> true
+                else -> false
+            }
+            if (foreground && settingsChanged) {
+                requestRefresh()
+            }
             return
         }
         if (_state.value.config != command.config) return
@@ -396,6 +460,71 @@ class Session internal constructor(
         }
         if (!ownsBarrier) return
         requestRefresh(stale = true)
+    }
+
+    private fun settingAcknowledged(command: PendingCommand) {
+        if (_state.value.config != command.config) return
+        if (!prediction.isPending() && _state.value.snapshot == null) {
+            if (!_state.value.isRefreshing) requestRefresh()
+            return
+        }
+        if (!prediction.isPending() && !restoreSettingPrediction(command)) {
+            failAcknowledgedSetting(
+                command,
+                "The setting command no longer matches the active desktop task.",
+            )
+            return
+        }
+        val currentPredictionId = prediction.currentId()
+        if (
+            acknowledgedSetting?.let {
+                it.predictionId == currentPredictionId && it.command == command
+            } == true
+        ) {
+            return
+        }
+        val deadline = prediction.acknowledge()
+        val predictionId = deadline?.predictionId ?: run {
+            failAcknowledgedSetting(command, "The setting confirmation could not be started.")
+            return
+        }
+        acknowledgedSetting = AcknowledgedSetting(predictionId, command)
+        schedulePredictionExpiry()
+        if (requestRefresh() == null) {
+            failAcknowledgedSetting(
+                command,
+                "The setting was acknowledged, but confirmation could not be requested.",
+            )
+        }
+    }
+
+    private fun restoreSettingPrediction(command: PendingCommand): Boolean {
+        val current = _state.value
+        val target = current.snapshot?.desktop?.binding?.target?.boundRef ?: return false
+        val commandTarget = when (val body = command.command) {
+            is Command.SelectModel -> body.target
+            is Command.SelectReasoning -> body.target
+            else -> return false
+        }
+        if (target != commandTarget) return false
+        _state.update { state ->
+            when (val body = command.command) {
+                is Command.SelectModel -> prediction.beginModel(state, body.modelId)
+                is Command.SelectReasoning -> prediction.beginReasoning(state, body.level)
+            }
+        }
+        if (!prediction.isPending()) return false
+        return true
+    }
+
+    private fun failAcknowledgedSetting(command: PendingCommand, message: String) {
+        predictionExpiry?.cancel()
+        predictionExpiry = null
+        acknowledgedSetting = null
+        _state.update { prediction.fail(it).copy(error = message) }
+        delivery.clearRetainedSetting(command)
+        operationChanged(command, Operation.Phase.FAILED, message)
+        _feedback.tryEmit(Feedback.Error)
     }
 
     private fun commandRejected(config: Config, error: Throwable) {
@@ -410,17 +539,28 @@ class Session internal constructor(
         command: PendingCommand?,
         error: Throwable,
     ) {
-        if (uiId.startsWith("reasoning:")) {
+        if (
+            uiId.startsWith("model:") ||
+            uiId.startsWith("reasoning:") ||
+            uiId.startsWith("reasoning-step:")
+        ) {
+            acknowledgedSetting = null
             predictionExpiry?.cancel()
             predictionExpiry = null
             _state.update(prediction::fail)
         }
         val ambiguous = (error as? Failure)?.errorCode == CommandOutcomeIndeterminate
+        val bridgeUnavailable = error.isUnstructuredBridgeOutage()
         synchronized(transitionLock) {
             clearTransitionLocked(uiId, command?.transition)
         }
         commandRejected(config, error)
-        if (ambiguous && _state.value.config == config) requestRefresh(stale = true)
+        if (_state.value.config == config) {
+            when {
+                bridgeUnavailable -> requestRefresh(stale = true, silent = true)
+                ambiguous -> requestRefresh(stale = true)
+            }
+        }
     }
 
     private fun commandUnconfirmed(command: PendingCommand, error: Throwable?) {
@@ -466,13 +606,13 @@ class Session internal constructor(
                                 }
                             }
                         }
-                        requestRefresh(generation, stale = true)
+                        requestRefresh(generation, stale = true, silent = true)
                     }
                 },
                 snapshotChanged = {
                     if (isCurrentEvent(config, generation)) {
                         delivery.recover()
-                        requestRefresh(generation)
+                        requestRefresh(generation, stale = true, silent = true)
                     }
                 },
                 eventId = { if (isCurrentEvent(config, generation)) lastEventId = it },
@@ -480,12 +620,7 @@ class Session internal constructor(
                     if (isCurrentEvent(config, generation)) {
                         refresh.activate(config, generation)
                         eventError = message
-                        _state.update {
-                            it.copy(
-                                snapshot = it.snapshot?.copy(transportFresh = false),
-                                error = message,
-                            )
-                        }
+                        requestRefresh(generation, stale = true, silent = true)
                     }
                 },
                 unauthorized = {
@@ -545,21 +680,69 @@ class Session internal constructor(
         ?.joinToString(separator = " ") { it.message }
 
     private fun schedulePredictionExpiry() {
-        val deadline = prediction.deadlineMillis() ?: return
+        val deadline = prediction.deadline() ?: return
         predictionExpiry?.cancel()
         predictionExpiry = viewModelScope.launch(dispatcher) {
-            delay((deadline - nowMillis()).coerceAtLeast(0L))
-            if (prediction.deadlineMillis() == deadline) {
-                _state.update(prediction::fail)
-                requestRefresh()
-            }
+            delay((deadline.expiresAtMillis - nowMillis()).coerceAtLeast(0L))
+            val timeout = prediction.timeout(deadline.predictionId) ?: return@launch
+            _state.update { prediction.present(it).copy(error = timeout.message) }
+            acknowledgedSetting
+                ?.takeIf { it.predictionId == timeout.predictionId }
+                ?.let { acknowledged ->
+                    delivery.clearRetainedSetting(acknowledged.command)
+                    acknowledgedSetting = null
+                    operationChanged(acknowledged.command, Operation.Phase.FAILED, timeout.message)
+                }
+            _feedback.tryEmit(Feedback.Error)
+            requestRefresh()
         }
     }
 
     private fun snapshotReconciled(snapshot: Snapshot, version: Long) {
         delivery.recover()
-        _state.update { it.copy(reasoningTarget = prediction.target()) }
+        val settingObservation = if (snapshot.transportFresh) {
+            prediction.observe(snapshot, version)
+        } else if (prediction.isPending()) {
+            Prediction.Observation.Pending
+        } else {
+            Prediction.Observation.None
+        }
+        _state.update { current ->
+            val presented = prediction.present(current)
+            when (settingObservation) {
+                is Prediction.Observation.Conflict -> presented.copy(error = settingObservation.message)
+                else -> presented
+            }
+        }
         predictionReconciled()
+        when (settingObservation) {
+            is Prediction.Observation.Confirmed -> {
+                acknowledgedSetting
+                    ?.takeIf { it.predictionId == settingObservation.predictionId }
+                    ?.let { acknowledged ->
+                        if (!delivery.clearRetainedSetting(acknowledged.command)) return
+                        acknowledgedSetting = null
+                        operationChanged(acknowledged.command, Operation.Phase.OBSERVED, null)
+                    }
+                _feedback.tryEmit(Feedback.Success)
+            }
+            is Prediction.Observation.Conflict -> {
+                acknowledgedSetting
+                    ?.takeIf { it.predictionId == settingObservation.predictionId }
+                    ?.let { acknowledged ->
+                        if (!delivery.clearRetainedSetting(acknowledged.command)) return
+                        acknowledgedSetting = null
+                        operationChanged(
+                            acknowledged.command,
+                            Operation.Phase.FAILED,
+                            settingObservation.message,
+                        )
+                    }
+                _feedback.tryEmit(Feedback.Error)
+            }
+            Prediction.Observation.None,
+            Prediction.Observation.Pending -> Unit
+        }
         val command = synchronized(transitionLock) {
             transitionBarrier = transitionBarrier.observe(snapshot, version)
             transitionBarrier.confirmedCommand()
@@ -576,10 +759,12 @@ class Session internal constructor(
     private fun requestRefresh(
         generation: Long? = null,
         stale: Boolean = false,
-    ): Long? = refresh.request(generation, stale) { version ->
+        silent: Boolean = false,
+    ): Long? = refresh.request(generation, stale, silent) { version ->
         synchronized(transitionLock) {
             transitionBarrier = transitionBarrier.observationPrepared(version)
         }
+        prediction.observeAfter(version)
     }
 
     private fun predictionReconciled() {
@@ -638,11 +823,13 @@ class Session internal constructor(
         voice.close()
         predictionExpiry?.cancel()
         operationExpiry?.cancel()
+        acknowledgedSetting = null
         stopEvents()
         super.onCleared()
     }
 
     companion object {
+        private val BridgeOutageStatuses = setOf(502, 503, 504)
         private val ActiveOperationPhases = setOf(
             Operation.Phase.SENT,
             Operation.Phase.ACKNOWLEDGED,
@@ -656,5 +843,10 @@ class Session internal constructor(
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T = Session(store) as T
         }
+    }
+
+    private fun Throwable.isUnstructuredBridgeOutage(): Boolean {
+        val failure = this as? Failure ?: return false
+        return failure.errorCode == null && failure.statusCode in BridgeOutageStatuses
     }
 }

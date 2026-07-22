@@ -67,13 +67,12 @@ internal fun Reasoning(
     val pendingTarget = reasoningPendingTarget(inFlightIds) ?: target
     val pending = pendingTarget != null
     val showProgress = progressVisible(pending)
+    val label = settingsLabel("Reasoning", snapshot.desktop?.activity)
     val display = reasoningDisplay(state, pendingTarget)
     val options = state.options.ifEmpty {
         listOfNotNull(state.decreaseTo, state.level, state.increaseTo).distinct()
     }
-    val enabled = !blocked && !pending && snapshot.transportFresh && snapshot.capabilities.reasoning &&
-        state.available && options.isNotEmpty() && snapshot.desktop?.foreground == true &&
-        snapshot.desktop.question == null && snapshot.desktop.voice?.active != true
+    val enabled = !blocked && !pending && options.isNotEmpty() && snapshot.reasoningSelectionEnabled()
     var showOptions by rememberSaveable(snapshot.desktop?.focusedAgentId) { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) showOptions = false }
 
@@ -95,7 +94,7 @@ internal fun Reasoning(
             Modifier.weight(1f)
                 .semantics {
                     role = Role.Button
-                    contentDescription = reasoningDescription(state, pendingTarget)
+                    contentDescription = reasoningDescription(state, pendingTarget, label)
                     if (!enabled) disabled()
                 }
                 .clickable(enabled = enabled) { showOptions = true },
@@ -103,10 +102,10 @@ internal fun Reasoning(
             verticalArrangement = Arrangement.Center,
         ) {
             if (!largeText) {
-                Text("Reasoning", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
             Text(
-                if (largeText) "Reasoning: $display" else display,
+                if (largeText) "$label: $display" else display,
                 maxLines = if (largeText) 2 else 1,
                 overflow = TextOverflow.Ellipsis,
                 style = if (largeText) {
@@ -196,20 +195,21 @@ internal fun reasoningStepDescription(action: String, target: State.Level?): Str
     target?.let { "$action to ${it.displayLabel}" } ?: "$action unavailable"
 
 internal fun reasoningPendingTarget(inFlightIds: Set<String>): State.Level? = inFlightIds
-    .firstNotNullOfOrNull { id ->
-        id.removePrefix("reasoning:")
-            .takeIf { it != id }
-            ?.let(State.Level::fromWire)
-    }
+    .let { pendingSelectionId("reasoning", it) }
+    ?.let(State.Level::fromWire)
 
 internal fun reasoningDisplay(state: State, target: State.Level?): String {
     val confirmed = state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" }
     return target?.takeIf { it != state.level }?.let { "$confirmed -> ${it.displayLabel}" } ?: confirmed
 }
 
-internal fun reasoningDescription(state: State, target: State.Level?): String {
+internal fun reasoningDescription(
+    state: State,
+    target: State.Level?,
+    name: String = "Reasoning",
+): String {
     val confirmed = state.level?.displayLabel ?: state.label.ifBlank { "Unavailable" }
     return target?.takeIf { it != state.level }
-        ?.let { "Reasoning, $confirmed, changing to ${it.displayLabel}" }
-        ?: "Reasoning, $confirmed"
+        ?.let { "$name, $confirmed, changing to ${it.displayLabel}" }
+        ?: "$name, $confirmed"
 }

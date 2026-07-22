@@ -36,7 +36,6 @@ private val HidTapActions = setOf(
     "delete_backward",
     "clear_input",
     "navigate",
-    "reasoning_depth",
 )
 
 internal fun activation(

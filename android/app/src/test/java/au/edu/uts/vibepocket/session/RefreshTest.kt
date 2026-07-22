@@ -60,6 +60,36 @@ class RefreshTest {
     }
 
     @Test
+    fun continuousEventsCannotStarveEverySuccessfulSnapshot() = runTest(dispatcher) {
+        val client = ControlledClient()
+        val harness = harness(client, snapshot("base"))
+        harness.refresh.activate(ConfigA, 1)
+
+        harness.refresh.request(stale = true)
+        runCurrent()
+        harness.refresh.request(stale = true)
+        client.succeed(0, snapshot("superseded-once"))
+        runCurrent()
+
+        assertTrue(harness.reconciled.isEmpty())
+        assertEquals(2, client.calls.size)
+
+        harness.refresh.request(stale = true)
+        client.succeed(1, snapshot("bounded-progress"))
+        runCurrent()
+
+        assertEquals("bounded-progress", harness.state.value.snapshot?.revision)
+        assertEquals("bounded-progress", harness.reconciled.single().first)
+        assertEquals(3, client.calls.size)
+
+        client.succeed(2, snapshot("latest"))
+        runCurrent()
+
+        assertEquals("latest", harness.state.value.snapshot?.revision)
+        assertEquals(0, client.active)
+    }
+
+    @Test
     fun leaseChangesAndDeactivateCancelAndRejectOldWork() = runTest(dispatcher) {
         val client = ControlledClient()
         val harness = harness(client, snapshot("base"))
@@ -150,6 +180,23 @@ class RefreshTest {
             harness.state.value.error,
         )
         assertTrue(harness.reconciled.isEmpty())
+    }
+
+    @Test
+    fun silentRecoveryFailureMarksTransportStaleWithoutCreatingAUserError() = runTest(dispatcher) {
+        val client = ControlledClient()
+        val harness = harness(client, snapshot("visible"))
+        harness.refresh.activate(ConfigA, 1)
+        harness.refresh.request(stale = true, silent = true)
+        runCurrent()
+
+        client.fail(0, IOException("The controller event connection ended."))
+        runCurrent()
+
+        assertEquals("visible", harness.state.value.snapshot?.revision)
+        assertFalse(harness.state.value.snapshot?.transportFresh == true)
+        assertNull(harness.state.value.error)
+        assertFalse(harness.state.value.isRefreshing)
     }
 
     @Test

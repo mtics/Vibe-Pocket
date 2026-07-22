@@ -7,10 +7,12 @@ import au.edu.uts.vibepocket.control.Desktop
 import au.edu.uts.vibepocket.control.MaxAgents
 import au.edu.uts.vibepocket.control.Reasoning
 import au.edu.uts.vibepocket.control.Tasks
+import au.edu.uts.vibepocket.control.TargetRef
 import au.edu.uts.vibepocket.control.Voice
 import au.edu.uts.vibepocket.control.agentSlots
 import au.edu.uts.vibepocket.control.commandFor
 import au.edu.uts.vibepocket.control.encode
+import au.edu.uts.vibepocket.control.decodeCommand
 import au.edu.uts.vibepocket.profile.Action
 import au.edu.uts.vibepocket.profile.Gesture
 import org.json.JSONArray
@@ -62,6 +64,9 @@ class JsonTest {
         assertEquals("agent-0123456789abcdef01234567", snapshot.desktop?.focusedAgentId)
         assertEquals(Desktop.Binding.State.CONFIRMED, snapshot.desktop?.binding?.state)
         assertEquals("agent-0123456789abcdef01234567", snapshot.desktop?.binding?.contextId)
+        assertEquals(Target, snapshot.desktop?.binding?.target?.boundRef)
+        assertTrue(snapshot.sources.appServer.fresh)
+        assertFalse(snapshot.sources.desktopUI.fresh)
         assertEquals(0, snapshot.desktop?.focusedAgentIndex)
         assertEquals(Voice(available = true, active = false), snapshot.desktop?.voice)
         assertEquals("Codex", snapshot.desktop?.mode?.label)
@@ -151,7 +156,7 @@ class JsonTest {
     @Test
     fun confirmedBindingMustMatchTheFocusedAgentIdentity() {
         val root = JSONObject(CONTROLLER_SNAPSHOT)
-        root.getJSONObject("controller").getJSONObject("binding")
+        root.getJSONObject("controller").getJSONObject("binding").getJSONObject("visible")
             .put("contextId", "agent-89abcdef0123456789abcdef")
 
         val snapshot = decode(root)
@@ -324,7 +329,7 @@ class JsonTest {
             Action("workflow", workflowId = "debug"),
         ).encode()
         val layer = Command.SelectLayer("layer-3").encode()
-        val focus = Command.FocusAgent("agent-444444444444444444444444").encode()
+        val focus = Command.SelectAgent("agent-444444444444444444444444").encode()
         val update = Command.UpdateBinding(
             "layer-2",
             "key_voice",
@@ -340,9 +345,9 @@ class JsonTest {
         val color = Command.UpdateLayerColor("layer-2", "#55D6A4").encode()
         val workflow = Command.UpdateWorkflowPrompt("debug", "Investigate from evidence.").encode()
         val reset = Command.ResetProfile.encode()
-        val model = Command.SelectModel("gpt-test").encode()
-        val mode = Command.SelectMode("plan").encode()
-        val reasoning = Command.SelectReasoning(Reasoning.Level.HIGH).encode()
+        val model = Command.SelectModel(Target, "gpt-test").encode()
+        val mode = Command.SelectMode(Target, "plan").encode()
+        val reasoning = Command.SelectReasoning(Target, Reasoning.Level.HIGH).encode()
 
         assertEquals("binding", binding.getString("kind"))
         assertEquals("key_voice", binding.getString("inputId"))
@@ -351,7 +356,7 @@ class JsonTest {
         assertEquals("debug", binding.getJSONObject("action").getString("workflowId"))
         assertEquals("select_layer", layer.getString("kind"))
         assertEquals("layer-3", layer.getString("layerId"))
-        assertEquals("focus_agent", focus.getString("kind"))
+        assertEquals("select_agent", focus.getString("kind"))
         assertEquals("agent-444444444444444444444444", focus.getString("agentId"))
         assertFalse(focus.has("index"))
         assertEquals("update_binding", update.getString("kind"))
@@ -371,10 +376,15 @@ class JsonTest {
         assertEquals("model_picker", Command.ModelPicker.encode().getString("kind"))
         assertEquals("select_model", model.getString("kind"))
         assertEquals("gpt-test", model.getString("modelId"))
+        assertEquals(Target.threadId, model.getJSONObject("target").getString("threadId"))
         assertEquals("select_mode", mode.getString("kind"))
         assertEquals("plan", mode.getString("modeId"))
         assertEquals("select_reasoning", reasoning.getString("kind"))
         assertEquals("high", reasoning.getString("level"))
+        assertEquals(Command.SelectModel(Target, "gpt-test"), decodeCommand(model))
+        assertThrows(IllegalArgumentException::class.java) {
+            decodeCommand(JSONObject().put("kind", "select_model").put("modelId", "gpt-test"))
+        }
     }
 
     private companion object {
@@ -383,6 +393,10 @@ class JsonTest {
               "protocolVersion":$ProtocolVersion,
               "revision":"r_42",
               "observation":{"fresh":true,"observedAt":1700000000000},
+              "sources":{
+                "appServer":{"fresh":true,"observedAt":1700000000000},
+                "desktopUI":{"fresh":false,"observedAt":1700000000000}
+              },
               "status":{"state":"ready","message":"Current desktop task"},
               "controls":{
                 "voice":true,"stop":false,"new-task":true,"approve":true,"reject":true,
@@ -395,7 +409,10 @@ class JsonTest {
                 "taskState":"waiting",
                 "focusedAgentIndex":0,
                 "focusedAgentId":"agent-0123456789abcdef01234567",
-                "binding":{"state":"confirmed","contextId":"agent-0123456789abcdef01234567"},
+                "binding":{
+                  "target":{"state":"bound","threadId":"thread-1","agentId":"agent-0123456789abcdef01234567","bindingEpoch":4,"bridgeInstanceId":"bridge-1","appServerGeneration":7,"canonicalWorkspaceId":"workspace-1"},
+                  "visible":{"state":"confirmed","contextId":"agent-0123456789abcdef01234567"}
+                },
                 "tasks":{"availability":"fresh","message":null},
                 "voice":{"available":true,"active":false},
                 "agents":[
@@ -464,5 +481,14 @@ class JsonTest {
               }
             }
         """.trimIndent()
+
+        val Target = TargetRef(
+            threadId = "thread-1",
+            agentId = "agent-0123456789abcdef01234567",
+            bindingEpoch = 4,
+            bridgeInstanceId = "bridge-1",
+            appServerGeneration = 7,
+            canonicalWorkspaceId = "workspace-1",
+        )
     }
 }

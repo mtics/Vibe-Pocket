@@ -45,14 +45,15 @@ class ProfileLifecycleTest {
     }
 
     @Test
-    fun rejectedRegistrationInvalidatesItsLateCallbackAndCanRetry() {
+    fun registrationRemainsPendingUntilTheAuthoritativeCallback() {
         val lifecycle = ProfileLifecycle()
         assertTrue(lifecycle.acceptProxy(requireNotNull(lifecycle.requestProxy())))
-        val rejected = requireNotNull(lifecycle.requestRegistration())
+        val pending = requireNotNull(lifecycle.requestRegistration())
 
-        assertTrue(lifecycle.rejectRegistration(rejected))
-        assertFalse(lifecycle.registrationChanged(rejected, true))
-        assertNotNull(lifecycle.requestRegistration())
+        assertTrue(lifecycle.hasRegistration())
+        assertNull(lifecycle.requestRegistration())
+        assertTrue(lifecycle.registrationChanged(pending, true))
+        assertTrue(lifecycle.isRegistered())
     }
 
     @Test
@@ -92,5 +93,59 @@ class ProfileLifecycleTest {
         val replacement = requireNotNull(lifecycle.requestProxy())
         assertNotEquals(pending, replacement)
         assertTrue(lifecycle.acceptProxy(replacement))
+    }
+
+    @Test
+    fun releaseWaitsForRegistrationAndProfileProxy() {
+        val lifecycle = ProfileLifecycle()
+        val profile = requireNotNull(lifecycle.requestProxy())
+        assertTrue(lifecycle.acceptProxy(profile))
+        val registration = requireNotNull(lifecycle.requestRegistration())
+
+        assertTrue(lifecycle.hasRegistration())
+        assertFalse(lifecycle.isReleased())
+        assertTrue(lifecycle.registrationChanged(registration, true))
+        assertFalse(lifecycle.isReleased())
+        assertTrue(lifecycle.registrationChanged(registration, false))
+        assertFalse(lifecycle.isReleased())
+        assertTrue(lifecycle.loseProxy(profile))
+        assertTrue(lifecycle.isReleased())
+    }
+
+    @Test
+    fun rejectedPendingProxyIsLogicallyReleasedAndCannotRegisterLate() {
+        val lifecycle = ProfileLifecycle()
+        val pending = requireNotNull(lifecycle.requestProxy())
+
+        assertFalse(lifecycle.isReleased())
+        assertTrue(lifecycle.rejectPendingProxy())
+        assertTrue(lifecycle.isReleased())
+        assertFalse(lifecycle.acceptProxy(pending))
+    }
+
+    @Test
+    fun permissionResetInvalidatesEveryPendingCallbackAndAllowsRestart() {
+        val lifecycle = ProfileLifecycle()
+        val profile = requireNotNull(lifecycle.requestProxy())
+        assertTrue(lifecycle.acceptProxy(profile))
+        val registration = requireNotNull(lifecycle.requestRegistration())
+
+        lifecycle.reset()
+
+        assertTrue(lifecycle.isReleased())
+        assertFalse(lifecycle.registrationChanged(registration, true))
+        assertFalse(lifecycle.loseProxy(profile))
+        assertNotNull(lifecycle.requestProxy())
+    }
+
+    @Test
+    fun activeProxyMustBeClosedBeforeClassicIsReleased() {
+        val lifecycle = ProfileLifecycle()
+        val profile = requireNotNull(lifecycle.requestProxy())
+        assertTrue(lifecycle.acceptProxy(profile))
+
+        assertFalse(lifecycle.isReleased())
+        assertTrue(lifecycle.loseProxy(profile))
+        assertTrue(lifecycle.isReleased())
     }
 }

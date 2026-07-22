@@ -14,10 +14,5 @@ internal class HardwareLease<T : AutoCloseable>(val value: T) : AutoCloseable {
 }
 
 class HardwareViewModel(application: Application) : AndroidViewModel(application) {
-    private val lease = HardwareLease(Keyboard(application))
-    val keyboard: Keyboard = lease.value
-
-    override fun onCleared() {
-        lease.close()
-    }
+    val keyboard: Keyboard = (application as VibePocket).hardware.keyboard
 }

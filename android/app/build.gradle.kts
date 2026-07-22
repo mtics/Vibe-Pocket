@@ -1,7 +1,39 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.FileSystemOperations
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
+import javax.inject.Inject
+
 plugins {
     id("com.android.application")
     id("com.android.compose.screenshot")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val standardApplicationId = "au.edu.uts.vibepocket"
+val releaseVersionCode = 28
+val releaseVersionName = "0.14.1"
+val researchNoticeAssets = layout.buildDirectory.dir("generated/researchDebugAssets")
+
+abstract class GenerateResearchNotice @Inject constructor(
+    private val files: FileSystemOperations,
+) : DefaultTask() {
+    @get:InputFile
+    abstract val source: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val output: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        files.sync {
+            from(source)
+            into(output)
+        }
+    }
 }
 
 android {
@@ -9,12 +41,12 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "au.edu.uts.vibepocket"
+        applicationId = standardApplicationId
         minSdk = 29
         targetSdk = 37
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 28
-        versionName = "0.14.1"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
     }
 
     buildFeatures {
@@ -27,6 +59,18 @@ android {
     testOptions {
         screenshotTests {
             imageDifferenceThreshold = 0.0001f
+        }
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("standard") {
+            dimension = "distribution"
+        }
+        create("research") {
+            dimension = "distribution"
+            applicationIdSuffix = ".research"
+            versionNameSuffix = "-research"
         }
     }
 
@@ -44,6 +88,112 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
+
+androidComponents {
+    beforeVariants(selector().all()) { variant ->
+        val research = variant.productFlavors.any { (dimension, flavor) ->
+            dimension == "distribution" && flavor == "research"
+        }
+        if (research && variant.buildType == "release") variant.enable = false
+    }
+}
+
+val generateResearchNotice = tasks.register<GenerateResearchNotice>("generateResearchNotice") {
+    source.set(rootProject.layout.projectDirectory.file("../THIRD_PARTY_NOTICES.md"))
+    output.set(researchNoticeAssets)
+}
+
+androidComponents.onVariants(
+    androidComponents.selector()
+        .withFlavor("distribution" to "research")
+        .withBuildType("debug"),
+) { variant ->
+    variant.sources.assets?.addGeneratedSourceDirectory(
+        generateResearchNotice,
+        GenerateResearchNotice::output,
+    )
+}
+
+val verifyStandardReleaseArtifact = tasks.register<Exec>("verifyStandardReleaseArtifact") {
+    dependsOn("packageStandardRelease")
+    workingDir(rootDir)
+    commandLine(
+        "bash",
+        "scripts/verify-standard-apk.sh",
+        layout.buildDirectory.file("outputs/apk/standard/release/app-standard-release-unsigned.apk")
+            .get().asFile.absolutePath,
+        releaseVersionCode.toString(),
+        releaseVersionName,
+        "release",
+    )
+}
+
+val verifyStandardFeatureContract = tasks.register<Exec>("verifyStandardFeatureContract") {
+    workingDir(rootDir)
+    commandLine(
+        "bash",
+        "scripts/verify-standard-feature-rejected.sh",
+        releaseVersionCode.toString(),
+        releaseVersionName,
+    )
+}
+
+val verifyStandardDebugArtifact = tasks.register<Exec>("verifyStandardDebugArtifact") {
+    dependsOn("packageStandardDebug")
+    workingDir(rootDir)
+    commandLine(
+        "bash",
+        "scripts/verify-standard-apk.sh",
+        layout.buildDirectory.file("outputs/apk/standard/debug/app-standard-debug.apk")
+            .get().asFile.absolutePath,
+        releaseVersionCode.toString(),
+        releaseVersionName,
+        "debug",
+    )
+}
+
+val verifyResearchRejectedArtifact = tasks.register<Exec>("verifyResearchRejectedArtifact") {
+    dependsOn("packageResearchDebug")
+    workingDir(rootDir)
+    commandLine(
+        "bash",
+        "scripts/verify-research-rejected.sh",
+        layout.buildDirectory.file("outputs/apk/research/debug/app-research-debug.apk")
+            .get().asFile.absolutePath,
+        rootProject.layout.projectDirectory.file("../THIRD_PARTY_NOTICES.md").asFile.absolutePath,
+        releaseVersionCode.toString(),
+        releaseVersionName,
+    )
+}
+
+val verifyStandardArtifacts = tasks.register("verifyStandardArtifacts") {
+    dependsOn(
+        verifyStandardDebugArtifact,
+        verifyStandardFeatureContract,
+        verifyStandardReleaseArtifact,
+        verifyResearchRejectedArtifact,
+    )
+}
+
+tasks.matching { it.name == "packageStandardRelease" }.configureEach {
+    finalizedBy(verifyStandardReleaseArtifact)
+}
+
+val protectedStandardReleaseProducers = setOf(
+    "assembleStandardRelease",
+    "bundleStandardRelease",
+    "packageStandardReleaseBundle",
+    "packageStandardReleaseUniversalApk",
+    "signStandardReleaseBundle",
+)
+
+tasks.matching { it.name in protectedStandardReleaseProducers }.configureEach {
+    dependsOn(verifyStandardReleaseArtifact)
+}
+
+tasks.matching { it.name == "check" }.configureEach {
+    dependsOn(verifyStandardArtifacts, "validateScreenshotTest")
 }
 
 dependencies {

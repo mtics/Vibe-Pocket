@@ -69,6 +69,7 @@ internal fun Screen(
     inFlightIds: Set<String>,
     busyGroups: Set<ConflictGroup>,
     operation: Operation?,
+    modelTarget: String?,
     reasoningTarget: Reasoning.Level?,
     contextTransitionPending: Boolean,
     onInput: (String, Gesture.Kind) -> Unit,
@@ -105,15 +106,15 @@ internal fun Screen(
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         if (landscape) {
             Landscape(
-                snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked,
+                snapshot, catalog, inFlightIds, activeGroups, operation, modelTarget, reasoningTarget, hidNavigationAvailable, blocked,
                 voiceInput, events, Layout.landscape(maxWidth, maxHeight), onSettings, hand,
             )
         } else {
             val layout = Layout.of(maxHeight)
             if (maxHeight < layout.content) {
-                Short(snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
+                Short(snapshot, catalog, inFlightIds, activeGroups, operation, modelTarget, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
             } else {
-                Portrait(snapshot, catalog, inFlightIds, activeGroups, operation, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
+                Portrait(snapshot, catalog, inFlightIds, activeGroups, operation, modelTarget, reasoningTarget, hidNavigationAvailable, blocked, events, layout, hand)
             }
         }
     }
@@ -126,6 +127,7 @@ private fun Portrait(
     inFlightIds: Set<String>,
     busyGroups: Set<ConflictGroup>,
     operation: Operation?,
+    modelTarget: String?,
     reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
@@ -141,7 +143,11 @@ private fun Portrait(
         LayersRow(snapshot, inFlightIds, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
         WorkflowsRow(snapshot, catalog, inFlightIds, blocked || ConflictGroup.DRAFT in busyGroups, events, layout)
         ActionsRow(snapshot, catalog, inFlightIds, busyGroups, hidNavigationAvailable, blocked, events, layout, hand)
-        Selectors(snapshot, inFlightIds, reasoningTarget, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+        Selectors(
+            snapshot, inFlightIds, modelTarget, reasoningTarget,
+            ConflictGroup.CONTEXT in busyGroups,
+            events, layout,
+        )
     }
 }
 
@@ -152,6 +158,7 @@ private fun Short(
     inFlightIds: Set<String>,
     busyGroups: Set<ConflictGroup>,
     operation: Operation?,
+    modelTarget: String?,
     reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
@@ -171,7 +178,11 @@ private fun Short(
         Spacer(Modifier.height(layout.gap))
         ActionsRow(snapshot, catalog, inFlightIds, busyGroups, hidNavigationAvailable, blocked, events, layout, hand)
         Spacer(Modifier.height(layout.gap))
-        Selectors(snapshot, inFlightIds, reasoningTarget, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+        Selectors(
+            snapshot, inFlightIds, modelTarget, reasoningTarget,
+            ConflictGroup.CONTEXT in busyGroups,
+            events, layout,
+        )
     }
 }
 
@@ -182,6 +193,7 @@ private fun Landscape(
     inFlightIds: Set<String>,
     busyGroups: Set<ConflictGroup>,
     operation: Operation?,
+    modelTarget: String?,
     reasoningTarget: Reasoning.Level?,
     hidNavigationAvailable: Boolean,
     blocked: Boolean,
@@ -203,7 +215,11 @@ private fun Landscape(
             Context(snapshot, catalog, inFlightIds, operation, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout, onSettings)
             LayersRow(snapshot, inFlightIds, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
             WorkflowsRow(snapshot, catalog, inFlightIds, blocked || ConflictGroup.DRAFT in busyGroups, events, layout)
-            Selectors(snapshot, inFlightIds, reasoningTarget, blocked || ConflictGroup.CONTEXT in busyGroups, events, layout)
+            Selectors(
+                snapshot, inFlightIds, modelTarget, reasoningTarget,
+                ConflictGroup.CONTEXT in busyGroups,
+                events, layout,
+            )
         }
         Column(
             Modifier.weight(1f).fillMaxHeight(),
@@ -383,11 +399,13 @@ private fun ActionsRow(
 private fun Selectors(
     snapshot: Snapshot,
     inFlightIds: Set<String>,
+    modelTarget: String?,
     reasoningTarget: Reasoning.Level?,
     blocked: Boolean,
     events: Events,
     layout: Layout,
 ) {
+    val settingsBlocked = blocked || modelTarget != null || reasoningTarget != null
     Row(
         Modifier.fillMaxWidth().height(layout.selectors),
         horizontalArrangement = Arrangement.spacedBy(layout.gap),
@@ -396,8 +414,9 @@ private fun Selectors(
             state = snapshot.desktop?.model ?: Model.Unavailable,
             snapshot = snapshot,
             inFlightIds = inFlightIds,
+            targetId = modelTarget,
             onModel = events.model,
-            blocked = blocked,
+            blocked = settingsBlocked,
             modifier = Modifier.weight(1f),
         )
         Reasoning(
@@ -406,7 +425,7 @@ private fun Selectors(
             inFlightIds = inFlightIds,
             target = reasoningTarget,
             onReasoning = events.reasoning,
-            blocked = blocked,
+            blocked = settingsBlocked,
             modifier = Modifier.weight(1.18f),
         )
     }
