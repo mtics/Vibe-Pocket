@@ -1,6 +1,6 @@
 # Vibe Pocket UI Plan
 
-Status: implementation baseline
+Status: implemented baseline; physical performance gates remain open
 
 Target device: Xiaomi 13, portrait, approximately `393 x 873dp`
 
@@ -48,15 +48,14 @@ Actions with opposite or irreversible outcomes cannot run concurrently. A timeou
 
 ### Current implementation
 
-- [`Screen.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Screen.kt) derives visible controls directly from profile inputs and sends unclassified inputs to `additionalInputs`. This exposes transport topology and creates duplicate semantic buttons.
-- [`Stage.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/stage/Stage.kt) changes height by state. Every change moves the D-pad and the action buttons.
-- [`State.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/state/State.kt) does not include `transportFresh` in its main status projection, so stale data may still appear as Ready.
-- [`Agents.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Agents.kt) may expose up to 24 agents in one long rail without a skip mechanism for accessibility services.
-- [`Reasoning.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Reasoning.kt) uses `42dp` step controls, below Android's `48dp` accessibility baseline.
-- [`Dispatch.kt`](android/app/src/main/java/au/edu/uts/vibepocket/input/Dispatch.kt) preserves important HID and Bridge safety boundaries, but the UI receives only compressed pending information.
-- [`Prediction.kt`](android/app/src/main/java/au/edu/uts/vibepocket/session/Prediction.kt) optimistically changes Reasoning for up to three seconds. This is the source of visible values that may lead the desktop and later snap back.
-- Model and Reasoning already have native Codex thread-setting paths through [`settings.mjs`](bridge/src/task/settings.mjs). Mode should use the same authoritative settings contract instead of opening or cycling a desktop menu.
-- The current test tree has strong transport and state unit coverage, but no Compose screenshot suite, accessibility checks, or fixed-coordinate tests.
+- [`Catalog.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Catalog.kt) projects profile bindings into one canonical visible control per semantic intent. [`Screen.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Screen.kt) composes only those projected controls into fixed board regions; transport-only aliases are not rendered as additional buttons.
+- [`Layout.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Layout.kt) selects geometry from the device class and available size. Runtime Ready, Running, Question, Error, Stale, and pending states reuse the same region dimensions, so status changes do not move the D-pad or daily actions.
+- [`State.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/state/State.kt) treats `transportFresh`, task-catalog freshness, binding state, operation outcome, and task activity as separate evidence. Stale transport cannot project Ready.
+- [`Agents.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Agents.kt) preserves a bounded, status-ranked agent rail, exposes Next agent, and provides an accessibility skip action before the long collection.
+- [`Reasoning.kt`](android/app/src/main/java/au/edu/uts/vibepocket/ui/control/Reasoning.kt) uses `48dp` step targets and displays the confirmed value separately from a pending target. It never replaces the confirmed value before a fresh task-bound observation.
+- [`Delivery.kt`](android/app/src/main/java/au/edu/uts/vibepocket/session/Delivery.kt), [`Prediction.kt`](android/app/src/main/java/au/edu/uts/vibepocket/session/Prediction.kt), and [`Refresh.kt`](android/app/src/main/java/au/edu/uts/vibepocket/session/Refresh.kt) separate durable command delivery, post-ACK confirmation, and coalesced snapshot refresh. Pre-ACK or pre-mutation observations cannot confirm Model or Reasoning.
+- Model and Reasoning use exact `TargetRef`-bound Codex app-server writes through [`settings.mjs`](bridge/src/task/settings.mjs). Mode remains visibly read-only until the installed Codex app-server exposes and confirms an equivalent target-bound write; it does not fall back to opening or cycling a desktop menu.
+- The test tree includes semantic projection, geometry, status, pending-state, accessibility, and Compose screenshot coverage across state, size, font-scale, theme, Chinese, and RTL variants. Physical latency, blind-hit-rate, and jank thresholds below remain open device gates.
 
 ### Product and interaction research
 
@@ -66,7 +65,7 @@ Actions with opposite or irreversible outcomes cannot run concurrently. A timeou
 - Android recommends at least [`48dp` touch targets](https://developer.android.com/develop/ui/compose/accessibility/api-defaults). One-handed thumb research reports approximately [`9.2mm` for discrete targets and `9.6mm` for serial targets](https://www.microsoft.com/en-us/research/publication/target-size-study-for-one-handed-thumb-use-on-small-touchscreen-devices/). Daily blind controls should therefore target `56-88dp`, not merely satisfy `48dp`.
 - Android recommends restrained, predefined [action-oriented haptics](https://developer.android.com/develop/ui/views/haptics/haptics-principles).
 - WCAG requires [4.5:1 normal-text contrast](https://www.w3.org/TR/WCAG22/) and [3:1 non-text UI contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html). Color cannot be the only state signal.
-- Codex app-server exposes `thread/list` with `recency_at`, `model/list`, `collaborationMode/list`, thread settings updates, and settings notifications in its [official app-server documentation](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+- Codex app-server exposes `thread/list` with `recency_at`, `model/list`, `collaborationMode/list`, and settings notifications in its [official app-server documentation](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md). Write support must be proven field by field against the exact bound thread rather than inferred from list endpoints.
 
 ## Rejected Directions
 
@@ -198,11 +197,11 @@ Every row has a stable height. Ready, Running, Question, Decision, Error, Stale,
 
 ### Mode
 
-- Render Mode as a real selector button with the confirmed value and chevron.
-- The phone picker selects an exact collaboration mode. It must not cycle an unknown desktop menu.
-- Populate choices from `collaborationMode/list` and mutate the bound thread through the authoritative thread-settings contract.
-- Keep the confirmed value visible while a target is pending: `Default -> Plan`.
-- If the installed Codex version cannot update collaboration mode on the bound thread, disable the control with a specific capability reason. Do not fall back to mouse-driven Accessibility.
+- Render Mode as a stable button-shaped indicator with the confirmed value. Under protocol v12 it has disabled semantics and does not open a picker.
+- Treat `collaborationMode/list` as read-only evidence. Do not infer a write contract from the presence of choices.
+- Mode has no pending target under protocol v12 because the phone never submits a mode mutation.
+- A future picker may be enabled only after an exact `TargetRef`-bound write and post-write observation are verified end to end.
+- Do not cycle a desktop menu or fall back to mouse-driven Accessibility.
 
 ### Delete and Clear
 
@@ -384,21 +383,34 @@ It is physically impossible to preserve all controls, a `41mm` D-pad, and all la
 ## Code Structure
 
 Directory context should carry domain meaning. Keep local names short and avoid product prefixes or mechanical suffixes.
+The implemented structure deliberately stops at `ui/control`: adding a second
+`board/Board` level would repeat meaning already supplied by the package. Smaller
+subpackages exist only where they separate a distinct projection or rendering
+unit.
 
 ```text
-ui/control/board/
-  Board.kt       composition only
-  Layout.kt      geometry selected from window and font scale
+ui/control/
+  Screen.kt      board composition and geometry-class selection
+  Layout.kt      stable geometry selected from available size
   Catalog.kt     semantic projection and de-duplication
-  State.kt       display projection from transport, binding, work, operation
+  Input.kt       shared control surfaces and input rendering
+  Presentation.kt display labels and control-state projection
+  Progress.kt    operation progress semantics
   Agents.kt
-  Status.kt
   Layers.kt
   Workflows.kt
-  Pad.kt
-  Actions.kt
-  Selectors.kt
+  Model.kt
+  Reasoning.kt
+  Mode.kt
   Voice.kt
+  actions/
+    Actions.kt   D-pad, adjacent actions, and safety row
+  state/
+    State.kt     display projection from transport, binding, work, operation
+  stage/
+    Stage.kt     fixed-height status rendering and details
+  sheet/
+    Handle.kt    shared option-sheet handle
 ```
 
 Functional flow:
@@ -407,16 +419,16 @@ Functional flow:
 Snapshot + Profile
         |
         v
-Catalog.project()  -- semantic controls, one visible instance per intent
+Catalog.from()     -- semantic controls, one visible instance per intent
         |
         v
-State.project()    -- truth, availability, pending phase, disabled reason
+Snapshot.state()   -- truth, binding, work, operation, stale evidence
         |
         v
 Layout.of()        -- stable geometry for the current device class
         |
         v
-Board()            -- rendering only
+Screen()           -- fixed-slot composition and rendering
         |
         v
 Dispatch           -- existing HID/Bridge plan and delivery barriers
@@ -426,9 +438,15 @@ Dispatch           -- existing HID/Bridge plan and delivery barriers
 
 Keep the existing `Dispatch`, `Delivery`, context-transition barrier, HID recovery, and Voice ownership rules. Extend their outputs instead of recreating transport behavior in Compose.
 
-After the new board is authoritative, confirm that `Deck.kt` and `Context.kt` have no callers and remove the dead competing layout rather than maintaining two UI architectures.
+The former `Deck.kt` and `Context.kt` layouts have been removed. `Screen.kt` is
+the single authoritative Control composition.
 
-## Implementation Batches
+## Implementation Batches and Open Gates
+
+Batches 0 through 3 are implemented, except that Mode selection is intentionally
+read-only under protocol v12 because no stable target-bound write has been
+verified. Batch 4 has implemented adaptive geometry, accessibility semantics,
+and screenshot coverage; its physical performance measurements remain open.
 
 ### Batch 0: Truth before layout
 
@@ -437,7 +455,8 @@ After the new board is authoritative, confirm that `Deck.kt` and `Context.kt` ha
 - Expose operation phases beyond `inFlightIds`.
 - Add conflict groups for multi-touch and non-idempotent actions.
 - Make Voice gating consistent across Model, Mode, Reasoning, Agent, and Layer.
-- Add exact `SelectReasoning(level)` and `SelectMode(mode)` commands through native thread settings.
+- Add exact `SelectReasoning(level)` and model-selection commands through native thread settings.
+- Keep Mode read-only until a stable target-bound write is verified; do not fall back to focus-stealing accessibility automation.
 
 Exit gate: state and command tests prove Confirmed, Unknown, Failed, Stale, and Conflict behavior.
 
@@ -454,7 +473,7 @@ Exit gate: all runtime states keep core target centers within `1dp`.
 ### Batch 2: Main interaction surface
 
 - Implement the measured rows, D-pad, action column, safety row, selectors, and bottom Voice.
-- Add direct phone pickers for Mode, Model, and Reasoning.
+- Add direct phone controls for Model and Reasoning. Present Mode as read-only while protocol v12 has no verified write path.
 - Add correct Delete, Clear, hold, repeat, cancel-on-slide-out, and haptic behavior.
 - Apply light-first visual tokens and standard icons.
 
@@ -484,7 +503,7 @@ Exit gate: the complete verification matrix passes.
 
 - Semantic catalog de-duplicates physical mappings without losing executable bindings.
 - State priority covers Fresh, Stale, Offline, Conflict, Question, Decision, Running, and Error.
-- Exact Mode, Model, and Reasoning requests update only the intended bound thread.
+- Exact Model and Reasoning requests update only the intended bound thread; Mode exposes no write command until the protocol can provide the same guarantee.
 - Out-of-order responses cannot replace a newer context.
 - Accept plus Reject, Delete plus Clear, and Stop plus New task cannot execute concurrently.
 - Indeterminate HID delivery never triggers an unsafe Bridge replay.
@@ -521,7 +540,7 @@ The UI redesign is complete only when all of the following are proven on the cur
 - Core controls do not move between runtime states.
 - No visible control is created from a duplicate physical mapping.
 - Stale and conflicting observations cannot appear as Ready.
-- Mode, Model, and Reasoning complete on the phone without leaving a desktop menu open.
+- Model and Reasoning complete on the phone without leaving a desktop menu open; Mode remains explicitly read-only until a target-bound write is proven.
 - Confirmed values never advance solely because a command was sent.
 - Clear and Delete are distinct and behave correctly.
 - Agent ordering is recency-aware, stable during use, and can load the full running set.

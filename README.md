@@ -3,7 +3,7 @@
 [![Android 10+](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](#requirements)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#requirements)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](#requirements)
-[![Protocol v9](https://img.shields.io/badge/protocol-v9-0969DA)](CONTROL_TRANSPORT.md)
+[![Protocol v12](https://img.shields.io/badge/protocol-v12-0969DA)](CONTROL_TRANSPORT.md)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-F59E0B)](#project-status)
 
 Vibe Pocket turns an Android phone into a programmable control surface for
@@ -49,12 +49,12 @@ flowchart LR
     phone["Android app"]
     bridge["Node.js Bridge"]
     host["Signed Swift host"]
-    catalog["Codex app-server task + model catalog"]
+    catalog["Codex app-server tasks + settings"]
     desktop["ChatGPT Codex on macOS"]
 
     phone -->|"Bluetooth HID reports"| desktop
     phone -->|"HTTPS + device credential"| bridge
-    bridge -->|"Read-only task and model discovery"| catalog
+    bridge -->|"Task discovery + target-bound settings"| catalog
     bridge -->|"Native codex:// task links"| desktop
     bridge -->|"Whitelisted operations"| host
     host -->|"Semantic shortcuts / scoped AX"| desktop
@@ -65,11 +65,11 @@ operation:
 
 | Path | Used for | Important property |
 | --- | --- | --- |
-| Bluetooth HID | Accept, Reject, Stop, Voice, Delete, navigation, and mode | Standard keyboard reports; no Bridge round trip |
+| Bluetooth HID | Accept, Reject, Stop, Voice, Delete, and navigation | Standard keyboard reports; no Bridge round trip |
 | Native task links | Agent and task switching | Uses the exact Codex thread ID; no pointer synthesis |
-| Authenticated Bridge | New task, HID fallbacks, Access, workflows, profile changes | Strict command and configuration schemas |
+| Authenticated Bridge | Model, reasoning, New task, HID fallbacks, Access, workflows, profile changes | Strict command and configuration schemas |
 | Swift host | Visible controls without a stable shortcut | Whitelisted AX press/value operations; never moves the pointer |
-| Codex app-server | Read-only task and model catalog | Supplies stable task and model IDs without pretending to control the desktop process |
+| Codex app-server | Task/model discovery and target-bound model/reasoning mutation | Supplies stable IDs and confirms settings from the exact task after each write |
 
 For the detailed transport decision, see
 [CONTROL_TRANSPORT.md](CONTROL_TRANSPORT.md).
@@ -164,8 +164,8 @@ pairing invitation is created.
 
 ```sh
 cd ../android
-./gradlew testDebugUnitTest lintDebug assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew testStandardDebugUnitTest lintStandardDebug assembleStandardDebug
+adb install -r app/build/outputs/apk/standard/debug/app-standard-debug.apk
 ```
 
 If Gradle cannot locate the toolchain, export `JAVA_HOME` for JDK 17 and set
@@ -232,6 +232,7 @@ The LaunchAgent installer accepts these environment variables:
 | `VIBE_POCKET_TOKEN` | Generated on first install | Mac-only administration secret; must contain at least 24 characters |
 | `VIBE_POCKET_PORT` | `4320` | Loopback Bridge port |
 | `VIBE_POCKET_WORKSPACE` | Repository root | Workspace the controller may operate in |
+| `VIBE_POCKET_WORKSPACES` | Unset | JSON alias-to-path allowlist for controlling multiple workspace roots |
 | `VIBE_POCKET_CODEX_COMMAND` | First `codex` in `PATH` | Codex CLI executable |
 | `VIBE_POCKET_NODE` | First `node` in `PATH` | Node.js executable |
 | `VIBE_POCKET_SWIFTC` | `/usr/bin/swiftc` | Swift compiler |
@@ -283,6 +284,7 @@ Vibe-Pocket/
 |       |-- connection/       Saved connection configuration
 |       |-- control/          Protocol commands and snapshots
 |       |-- gesture/          Dial, release, and layer policies
+|       |-- hardware/         Bluetooth ownership and experimental Micro peripheral
 |       |-- hid/              Bluetooth keyboard and HID reports
 |       |-- input/            Pure planning and transport dispatch
 |       |-- profile/          Layers, mappings, and workflows
@@ -296,6 +298,7 @@ Vibe-Pocket/
 |   |-- src/profile/          Profile validation and persistence
 |   |-- src/server/           Authenticated HTTP and event server
 |   `-- src/task/             Task discovery, activity, settings, and links
+|-- CODEX_MICRO_RESEARCH.md   Reverse-engineering evidence and protocol boundary
 |-- CONTROL_TRANSPORT.md      Transport decision and compatibility boundary
 `-- UI_PLAN.md                Fixed-board UI contract and verification gates
 ```
@@ -314,15 +317,21 @@ cd bridge
 npm test
 ```
 
-Run Android unit tests, lint, and a debug build:
+Run Android unit tests, lint, both allowed debug builds, screenshot validation,
+and the standard release artifact isolation check:
 
 ```sh
 cd android
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew testStandardDebugUnitTest testResearchDebugUnitTest \
+  lintStandardDebug assembleStandardDebug assembleResearchDebug \
+  validateScreenshotTest verifyStandardArtifacts
 ```
 
 These commands are the release gate for the Bridge, Android JVM behavior,
-Android lint, APK assembly, and standalone Swift host parsing.
+Android lint, visual regression coverage, APK assembly, standard-package
+research isolation, and standalone Swift host parsing. `standard` is the normal
+controller app. `researchDebug` is the only build that contains the experimental
+Codex Micro compatibility code; no research release variant exists.
 
 ## Troubleshooting
 
