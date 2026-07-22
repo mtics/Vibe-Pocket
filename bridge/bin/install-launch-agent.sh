@@ -21,11 +21,18 @@ CODEX_PATH=${VIBE_POCKET_CODEX_COMMAND:-$(command -v codex)}
 SWIFTC_PATH=${VIBE_POCKET_SWIFTC:-/usr/bin/swiftc}
 TOKEN=${VIBE_POCKET_TOKEN:-}
 PORT=${VIBE_POCKET_PORT:-4320}
-WORKSPACE=${VIBE_POCKET_WORKSPACE:-${BRIDGE_DIR:h}}
+WORKSPACE=${VIBE_POCKET_WORKSPACE:-}
+WORKSPACES=${VIBE_POCKET_WORKSPACES:-}
 PUBLIC_URL=${VIBE_POCKET_PUBLIC_URL:-}
 
-if [[ -z "$TOKEN" && -r "$CONFIG_FILE" ]]; then
-  TOKEN=$(zsh -c 'source "$1"; print -rn -- "$VIBE_POCKET_TOKEN"' zsh "$CONFIG_FILE")
+if [[ -r "$CONFIG_FILE" ]]; then
+  if [[ -z "$TOKEN" ]]; then
+    TOKEN=$(zsh -c 'source "$1"; print -rn -- "${VIBE_POCKET_TOKEN:-}"' zsh "$CONFIG_FILE")
+  fi
+  if [[ -z "$WORKSPACE" && -z "$WORKSPACES" ]]; then
+    WORKSPACE=$(zsh -c 'source "$1"; print -rn -- "${VIBE_POCKET_WORKSPACE:-}"' zsh "$CONFIG_FILE")
+    WORKSPACES=$(zsh -c 'source "$1"; print -rn -- "${VIBE_POCKET_WORKSPACES:-}"' zsh "$CONFIG_FILE")
+  fi
 fi
 if [[ -z "$TOKEN" ]]; then
   TOKEN=$(openssl rand -hex 32)
@@ -35,11 +42,65 @@ if (( ${#TOKEN} < 24 )); then
   print -u2 "VIBE_POCKET_TOKEN must contain at least 24 characters."
   exit 1
 fi
+if [[ -z "$WORKSPACE" && -z "$WORKSPACES" ]]; then
+  WORKSPACE=${BRIDGE_DIR:h}
+fi
 umask 077
 mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents"
 
+ROLLBACK_DIR="$CONFIG_DIR/.install-rollback.$$"
+ROLLBACK_RUNTIME="$ROLLBACK_DIR/runtime"
+ROLLBACK_HOST="$ROLLBACK_DIR/Vibe Pocket Bridge Host.app"
+ROLLBACK_CONFIG="$ROLLBACK_DIR/bridge.env"
+ROLLBACK_HOST_HASH="$ROLLBACK_DIR/bridge-host.sha256"
+ROLLBACK_PAIR_APP="$ROLLBACK_DIR/Pair Vibe Pocket.app"
+ROLLBACK_PLIST="$ROLLBACK_DIR/$LABEL.plist"
+HAD_RUNTIME=0
+HAD_HOST=0
+HAD_CONFIG=0
+HAD_HOST_HASH=0
+HAD_PAIR_APP=0
+HAD_PLIST=0
+mkdir -p "$ROLLBACK_DIR"
+if [[ -e "$RUNTIME_DIR" ]]; then ditto "$RUNTIME_DIR" "$ROLLBACK_RUNTIME"; HAD_RUNTIME=1; fi
+if [[ -e "$HOST_APP" ]]; then ditto "$HOST_APP" "$ROLLBACK_HOST"; HAD_HOST=1; fi
+if [[ -e "$CONFIG_FILE" ]]; then cp -p "$CONFIG_FILE" "$ROLLBACK_CONFIG"; HAD_CONFIG=1; fi
+if [[ -e "$HOST_HASH_FILE" ]]; then cp -p "$HOST_HASH_FILE" "$ROLLBACK_HOST_HASH"; HAD_HOST_HASH=1; fi
+if [[ -e "$PAIR_APP" ]]; then ditto "$PAIR_APP" "$ROLLBACK_PAIR_APP"; HAD_PAIR_APP=1; fi
+if [[ -e "$PLIST" ]]; then cp -p "$PLIST" "$ROLLBACK_PLIST"; HAD_PLIST=1; fi
+
+CUTOVER_PENDING=0
+restore_interrupted_cutover() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  if (( CUTOVER_PENDING )); then
+    launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+    if [[ -x "$RUNTIME_DIR/bin/cleanup-stale-listener.sh" ]]; then
+      /bin/zsh "$RUNTIME_DIR/bin/cleanup-stale-listener.sh" "$PORT" "$RUNTIME_DIR" --all-exact 2>/dev/null || true
+    fi
+    rm -rf "$RUNTIME_DIR" "$HOST_APP" "$PAIR_APP"
+    rm -f "$CONFIG_FILE" "$HOST_HASH_FILE" "$PLIST"
+    if (( HAD_RUNTIME )); then mv "$ROLLBACK_RUNTIME" "$RUNTIME_DIR" 2>/dev/null || true; fi
+    if (( HAD_HOST )); then mv "$ROLLBACK_HOST" "$HOST_APP" 2>/dev/null || true; fi
+    if (( HAD_CONFIG )); then mv "$ROLLBACK_CONFIG" "$CONFIG_FILE" 2>/dev/null || true; fi
+    if (( HAD_HOST_HASH )); then mv "$ROLLBACK_HOST_HASH" "$HOST_HASH_FILE" 2>/dev/null || true; fi
+    if (( HAD_PAIR_APP )); then mv "$ROLLBACK_PAIR_APP" "$PAIR_APP" 2>/dev/null || true; fi
+    if (( HAD_PLIST )); then
+      mv "$ROLLBACK_PLIST" "$PLIST" 2>/dev/null || true
+      launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null || true
+      launchctl kickstart -k "gui/$UID/$LABEL" 2>/dev/null || true
+    fi
+  fi
+  rm -rf "$ROLLBACK_DIR"
+  exit $exit_code
+}
+trap restore_interrupted_cutover EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Stop the previous job before replacing its runtime. Older releases launched
 # the Host through `open`, so clean up only that exact detached command line.
+CUTOVER_PENDING=1
 launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
 LEGACY_COMMAND="$HOST_PATH run $RUNTIME_DIR/bin/run-launchd.sh"
 LEGACY_PIDS=$(ps -axo pid=,command= | awk -v expected="$LEGACY_COMMAND" '{
@@ -135,7 +196,11 @@ TEMP_CONFIG="$CONFIG_FILE.$$.tmp"
   printf 'VIBE_POCKET_TOKEN=%q\n' "$TOKEN"
   printf 'VIBE_POCKET_HOST=%q\n' "127.0.0.1"
   printf 'VIBE_POCKET_PORT=%q\n' "$PORT"
-  printf 'VIBE_POCKET_WORKSPACE=%q\n' "$WORKSPACE"
+  if [[ -n "$WORKSPACES" ]]; then
+    printf 'VIBE_POCKET_WORKSPACES=%q\n' "$WORKSPACES"
+  else
+    printf 'VIBE_POCKET_WORKSPACE=%q\n' "$WORKSPACE"
+  fi
   printf 'VIBE_POCKET_PROFILE_PATH=%q\n' "$PROFILE_FILE"
   printf 'VIBE_POCKET_CODEX_COMMAND=%q\n' "$CODEX_PATH"
   printf 'VIBE_POCKET_NODE=%q\n' "$NODE_PATH"
@@ -184,7 +249,6 @@ EOF
 chmod 600 "$PLIST"
 plutil -lint "$PLIST" >/dev/null
 
-launchctl bootout "gui/$UID" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$UID" "$PLIST"
 launchctl kickstart -k "gui/$UID/$LABEL"
 
@@ -255,6 +319,9 @@ if (( ! READY )); then
   print -u2 "Check $LOG_DIR/bridge-error.log for details."
   exit 1
 fi
+CUTOVER_PENDING=0
+trap - EXIT INT TERM
+rm -rf "$ROLLBACK_DIR"
 
 print "Vibe Pocket LaunchAgent installed on 127.0.0.1:$PORT."
 print "Codex control engine: HID and semantic shortcuts first; no pointer synthesis."

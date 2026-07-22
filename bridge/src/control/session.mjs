@@ -1,15 +1,13 @@
 import {
   ACTIONS,
   GESTURES,
-  ValidationError,
   createDefault,
   normalize,
-  validateAction,
-  workflowPrompt,
 } from "../profile/model.mjs";
 import { Failure } from "../server/failure.mjs";
 import { NOT_READY, READY } from "../server/readiness.mjs";
-import { resolve } from "./command.mjs";
+import { Authority, EffectBoundary } from "./effects.mjs";
+import { Execution } from "./execution.mjs";
 import { Operations } from "./operations.mjs";
 import { Queue } from "./queue.mjs";
 import { Refresh } from "./refresh.mjs";
@@ -30,6 +28,7 @@ export class Session {
   #executions = new Map();
   #revokedPrincipals = new Set();
   #refresh;
+  #execution;
   #ready = null;
   #readiness = NOT_READY;
   #stopping = null;
@@ -69,6 +68,15 @@ export class Session {
       blocked: () => this.#queue.busy,
       intervalMs: pollIntervalMs,
       actionDelaysMs,
+    });
+    this.#execution = new Execution({
+      desktop: this.#desktop,
+      state: this.#state,
+      refresh: this.#refresh,
+      profile: () => this.#profile,
+      activeLayerId: () => this.#activeLayerId,
+      selectLayer: (layerId) => this.#selectLayer(layerId),
+      replaceProfile: (nextProfile, message, options) => this.#replaceProfile(nextProfile, message, options),
     });
   }
 
@@ -137,12 +145,53 @@ export class Session {
         (operation) => this.#dispatch(operation),
         new EffectBoundary(),
       );
-      await this.#perform(
-        () => this.#desktop.bindThread(threadId),
+      const result = await this.#execution.perform(
+        (effects) => this.#desktop.bindThread(threadId, effects),
         "Attached the current Codex desktop task.",
         authority,
       );
-      return { attached: true, revision: this.#state.revision };
+      this.#refresh.invalidate();
+      await this.#refresh.now({ publishIfChanged: true });
+      const confirmedTarget = this.#state.target;
+      if (!sameTarget(confirmedTarget, result?.target)
+        && !sameTaskTarget(confirmedTarget, result?.target)) {
+        throw new Failure(
+          409,
+          "desktop_binding_not_confirmed",
+          "The Codex task changed before Vibe Pocket could confirm its target.",
+        );
+      }
+      const binding = this.#state.snapshot({
+        profile: this.#profile,
+        gestures: GESTURES,
+        actions: ACTIONS,
+        activeLayerId: this.#activeLayerId,
+        taskId: TASK_ID,
+      }).controller.binding;
+      const attached = binding.state === "confirmed"
+        && binding.contextId === this.#state.target.agentId;
+      return { attached, target: confirmedTarget, revision: this.#state.revision };
+    });
+  }
+
+  async configureMicro() {
+    this.#requireReady();
+    return this.#queue.run(async () => {
+      try {
+        const result = await this.#desktop.configureMicro();
+        this.#refresh.invalidate();
+        await this.#refresh.now({ publishIfChanged: true });
+        return {
+          configured: true,
+          message: result?.message ?? "Configured the Codex Micro knob for reasoning.",
+        };
+      } catch (error) {
+        throw new Failure(
+          409,
+          "micro_configuration_failed",
+          error.message || "Codex did not accept the Micro configuration.",
+        );
+      }
     });
   }
 
@@ -168,7 +217,7 @@ export class Session {
     principal = normalizePrincipal(principal);
     const existing = this.#operations.match(idempotencyKey, command, principal.id);
     if (existing) return this.#replay(existing, principal.id);
-    this.#resolveCommand(command);
+    this.#execution.resolve(command);
 
     const admission = this.#queue.reserve({ principal });
     let claim;
@@ -234,10 +283,10 @@ export class Session {
   async #runCommand(command, operationId, principal, admission) {
     const execution = this.#queue.run(async () => {
       this.#operations.markRunning(operationId, principal.id);
-      const effects = new EffectBoundary();
+      const effects = new EffectBoundary(() => principal.valid());
       const authority = new Authority((operation) => this.#dispatch(operation), effects);
       try {
-        await this.#execute(command, authority);
+        await this.#execution.execute(command, authority);
       } catch (error) {
         if (effects.crossed) {
           this.#operations.markUnknown(operationId, principal.id);
@@ -274,165 +323,6 @@ export class Session {
     }
   }
 
-  async #execute(command, authority) {
-    try {
-      const intent = this.#resolveCommand(command);
-      if (intent.kind === "voice") {
-        await this.#setVoice(intent.active, authority);
-        return;
-      }
-      if (intent.kind === "agent") {
-        await this.#focusAgent(intent.id, authority);
-        return;
-      }
-      if (intent.kind === "model") {
-        await this.#selectModel(intent.id, authority);
-        return;
-      }
-      if (intent.kind === "mode") {
-        await this.#selectMode(intent.id, authority);
-        return;
-      }
-      if (intent.kind === "reasoning") {
-        await this.#selectReasoning(intent.level, authority);
-        return;
-      }
-      if (intent.kind === "action") {
-        await this.#executeAction(intent.value, authority);
-        return;
-      }
-      if (intent.kind === "layer") {
-        const layer = this.#profile.layers.find(({ id }) => id === intent.id);
-        this.#refresh.invalidate();
-        this.#activeLayerId = layer.id;
-        this.#state.record(`Selected ${layer.name}.`);
-        return;
-      }
-      if (intent.kind === "profile") {
-        await this.#replaceProfile(intent.value, intent.message, {
-          resetLayer: intent.resetLayer,
-          authority,
-        });
-      }
-    } catch (error) {
-      if (error instanceof Failure) throw error;
-      if (error instanceof ValidationError) {
-        throw new Failure(400, "invalid_controller_configuration", error.message);
-      }
-      const message = error.message || "Codex did not accept this controller action.";
-      this.#state.reject(message);
-      this.#refresh.afterAction();
-      throw new Failure(409, "desktop_action_failed", message);
-    }
-  }
-
-  #resolveCommand(command) {
-    try {
-      const intent = resolve(command, { profile: this.#profile, layerId: this.#activeLayerId });
-      return intent.kind === "action"
-        ? { ...intent, value: validateAction(intent.value) }
-        : intent;
-    } catch (error) {
-      if (error instanceof Failure) throw error;
-      if (error instanceof ValidationError) {
-        throw new Failure(400, "invalid_controller_configuration", error.message);
-      }
-      throw error;
-    }
-  }
-
-  async #executeAction(action, authority) {
-    action = validateAction(action);
-    switch (action.type) {
-      case "attach":
-        await this.#perform(() => this.#desktop.attach(), "Resumed the focused Vibe Pocket Codex task.", authority);
-        return;
-      case "voice":
-        await this.#setVoice(!this.#state.voice.active, authority);
-        return;
-      case "stop":
-        await this.#press("stop", "Stopped the focused Codex turn.", authority);
-        return;
-      case "approve":
-        await this.#press("approve", "Approved the focused Codex request.", authority);
-        return;
-      case "reject":
-        await this.#press("reject", "Rejected the focused Codex request.", authority);
-        return;
-      case "new_task":
-        await this.#press("new-task", "Created a new Vibe Pocket Codex task.", authority);
-        return;
-      case "navigate":
-        if (!["up", "down", "left", "right"].includes(action.direction)) {
-          throw new Failure(400, "invalid_direction", "Navigation direction must be up, down, left, or right.");
-        }
-        await this.#perform(() => this.#desktop.navigate(action.direction), `Moved ${action.direction} in Codex.`, authority);
-        return;
-      case "mode_cycle":
-        await this.#perform(() => this.#desktop.cycleMode(), "Selected the next Codex mode.", authority);
-        return;
-      case "model_picker":
-        await this.#perform(() => this.#desktop.openModel(), "Opened the Codex model picker.", authority);
-        return;
-      case "access_cycle":
-        await this.#perform(() => this.#desktop.cycleAccess(), "Selected the next Codex access level.", authority);
-        return;
-      case "delete_backward":
-        await this.#perform(() => this.#desktop.deleteBackward(), "Deleted one character from the visible Codex input.", authority);
-        return;
-      case "clear_input":
-        await this.#perform(() => this.#desktop.clearInput(), "Cleared the visible Codex input.", authority);
-        return;
-      case "focus_next": {
-        const agents = this.#state.agents;
-        if (agents.length === 0) {
-          await this.#perform(() => this.#desktop.attach(), "Resumed the focused Vibe Pocket Codex task.", authority);
-          return;
-        }
-        const nextIndex = (this.#state.focusedAgentIndex + 1) % agents.length;
-        await this.#perform(() => this.#desktop.focusAgent(agents[nextIndex].id), `Focused ${agents[nextIndex].label}.`, authority);
-        this.#state.focus(agents[nextIndex].id);
-        return;
-      }
-      case "focus_agent": {
-        const agent = this.#state.agents[action.index];
-        if (!agent) {
-          throw new Failure(409, "agent_slot_unavailable", "That Codex agent slot is not currently available.");
-        }
-        await this.#perform(() => this.#desktop.focusAgent(agent.id), `Focused ${agent.label}.`, authority);
-        this.#state.focus(agent.id);
-        return;
-      }
-      case "select_layer": {
-        const layer = this.#profile.layers.find(({ id }) => id === action.layerId);
-        if (!layer) throw new Failure(409, "layer_unavailable", "That controller layer is unavailable.");
-        this.#refresh.invalidate();
-        this.#activeLayerId = layer.id;
-        this.#state.record(`Selected ${layer.name}.`);
-        return;
-      }
-      case "reasoning_depth":
-        if (action.delta !== 1 && action.delta !== -1) {
-          throw new Failure(400, "invalid_reasoning_delta", "Reasoning adjustment must be one step clockwise or counter-clockwise.");
-        }
-        await this.#performDeferred(
-          (effects) => this.#desktop.adjustReasoning(action.delta, effects),
-          "Adjusted Codex reasoning depth.",
-          authority,
-        );
-        return;
-      case "workflow":
-        await this.#perform(
-          () => this.#desktop.workflow(workflowPrompt(this.#profile, action.workflowId)),
-          "Started the selected workflow in a new Codex task.",
-          authority,
-        );
-        return;
-      default:
-        throw new Failure(400, "unsupported_command", "This Vibe Pocket controller action is not supported.");
-    }
-  }
-
   async #replaceProfile(nextProfile, message, { resetLayer = false, authority } = {}) {
     let persisted = normalize(nextProfile);
     if (this.#profileStore) {
@@ -451,119 +341,17 @@ export class Session {
     this.#state.record(message);
   }
 
-  async #perform(operation, fallbackMessage, authority) {
-    const result = await authority.immediate(operation);
-    this.#completeAction(result, fallbackMessage);
-  }
-
-  async #performDeferred(operation, fallbackMessage, authority) {
-    const result = await authority.deferred(operation);
-    this.#completeAction(result, fallbackMessage, { confirmedSettings: true });
-  }
-
-  #completeAction(result, fallbackMessage, { confirmedSettings = false } = {}) {
-    const before = this.#state.fingerprint();
-    if (confirmedSettings) this.#state.setSettings(result?.settings);
-    // Ordinary desktop actions still rely on the scheduled capability scan.
-    // Native settings mutations return a post-update observation, so publish
-    // those confirmed values immediately and let the scan verify them later.
-    this.#state.record(result?.message ?? fallbackMessage, { publish: false });
-    if (before !== this.#state.fingerprint()) this.#state.publish("snapshot_changed");
-    this.#refresh.afterAction();
-  }
-
-  async #press(control, fallbackMessage, authority) {
-    await this.#perform(() => this.#desktop.press(control), fallbackMessage, authority);
-  }
-
-  async #setVoice(active, authority) {
-    if (active && !this.#state.voice.available) {
-      throw new Failure(409, "voice_unavailable", "The visible ChatGPT Codex dictation control is unavailable.");
-    }
-    const result = await authority.immediate(() => this.#desktop.setVoice(active));
-    this.#state.setVoice(active);
-    // A press-to-talk release can enqueue the matching stop immediately after
-    // start. Let the common delayed scan publish the stable final state once.
-    this.#state.record(
-      result?.message ?? (active ? "Started ChatGPT Codex dictation." : "Stopped ChatGPT Codex dictation."),
-      { publish: false },
-    );
-    this.#refresh.afterAction();
-  }
-
-  async #focusAgent(agentId, authority) {
-    const index = this.#state.agents.findIndex((agent) => agent.id === agentId);
-    if (index < 0) {
-      throw new Failure(409, "agent_unavailable", "That Codex agent is no longer available.");
-    }
-    const agent = this.#state.agents[index];
-    await this.#perform(() => this.#desktop.focusAgent(agent.id), `Focused ${agent.label}.`, authority);
-    this.#state.focus(agent.id);
-  }
-
-  async #selectModel(modelId, authority) {
-    await this.#performDeferred(
-      (effects) => this.#desktop.selectModel(modelId, effects),
-      "Selected the Codex model.",
-      authority,
-    );
-  }
-
-  async #selectMode(modeId, authority) {
-    await this.#performDeferred(
-      (effects) => this.#desktop.selectMode(modeId, effects),
-      "Selected the Codex mode.",
-      authority,
-    );
-  }
-
-  async #selectReasoning(level, authority) {
-    await this.#performDeferred(
-      (effects) => this.#desktop.selectReasoning(level, effects),
-      "Selected the Codex reasoning level.",
-      authority,
-    );
+  #selectLayer(layerId) {
+    const layer = this.#profile.layers.find(({ id }) => id === layerId);
+    if (!layer) throw new Failure(409, "layer_unavailable", "That controller layer is unavailable.");
+    this.#refresh.invalidate();
+    this.#activeLayerId = layer.id;
+    this.#state.record(`Selected ${layer.name}.`);
   }
 
   #dispatch(operation) {
     this.#refresh.invalidate();
     return operation();
-  }
-}
-
-class EffectBoundary {
-  #crossed = false;
-
-  get crossed() {
-    return this.#crossed;
-  }
-
-  async commit(operation) {
-    if (this.#crossed) throw new Error("A controller command may cross its effect boundary only once.");
-    this.#crossed = true;
-    return operation();
-  }
-}
-
-class Authority {
-  #dispatch;
-  #effects;
-
-  constructor(dispatch, effects) {
-    this.#dispatch = dispatch;
-    this.#effects = effects;
-  }
-
-  immediate(operation) {
-    return this.#dispatch(() => this.#effects.commit(operation));
-  }
-
-  async deferred(operation) {
-    const result = await this.#dispatch(() => operation(this.#effects));
-    if (!this.#effects.crossed) {
-      throw new Error("The controller mutation completed without crossing its effect boundary.");
-    }
-    return result;
   }
 }
 
@@ -575,6 +363,28 @@ function normalizePrincipal(principal) {
     ...principal,
     role: principal.role ?? (principal.revocable ? "device" : "root"),
   };
+}
+
+function sameTarget(left, right) {
+  if (!left || !right) return false;
+  return [
+    "threadId",
+    "agentId",
+    "bindingEpoch",
+    "bridgeInstanceId",
+    "appServerGeneration",
+    "canonicalWorkspaceId",
+  ].every((key) => left[key] === right[key]);
+}
+
+function sameTaskTarget(left, right) {
+  if (!left || !right) return false;
+  return [
+    "threadId",
+    "agentId",
+    "bridgeInstanceId",
+    "canonicalWorkspaceId",
+  ].every((key) => left[key] === right[key]);
 }
 
 function indeterminateFailure() {

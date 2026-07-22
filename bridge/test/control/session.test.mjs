@@ -9,6 +9,15 @@ import { Operations, persistOperations } from "../../src/control/operations.mjs"
 import { Session } from "../../src/control/session.mjs";
 import { PROTOCOL_VERSION } from "../../src/protocol.mjs";
 
+const TARGET = Object.freeze({
+  threadId: "thread-test",
+  agentId: "agent-111111111111111111111111",
+  bindingEpoch: 1,
+  bridgeInstanceId: "bridge-aaaaaaaaaaaaaaaa",
+  appServerGeneration: 0,
+  canonicalWorkspaceId: "workspace-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+});
+
 class FakeEvents {
   published = [];
   publish(type, data) { this.published.push({ type, data }); }
@@ -52,7 +61,7 @@ class FakeDesktop {
         reject: true,
         "clear-input": true,
         "focus-agent": true,
-        "mode-cycle": true,
+        "mode-cycle": false,
         "model-picker": true,
         model: true,
         "access-cycle": true,
@@ -61,10 +70,15 @@ class FakeDesktop {
         workflow: true,
       },
       binding: this.binding,
+      target: TARGET,
+      sources: {
+        appServer: { fresh: true, observedAt: Date.now() },
+        desktopUI: { fresh: true, observedAt: Date.now() },
+      },
       agents: this.agents,
       tasks: { availability: "fresh", message: null },
       voice: this.voice,
-      mode: { available: true, label: "Codex" },
+      mode: { available: false, label: "Codex" },
       access: { available: true, label: "Workspace" },
       model: this.model,
       reasoning: this.reasoning,
@@ -79,22 +93,25 @@ class FakeDesktop {
   }
   async setDictationDraft(text) { this.calls.push(["setDictationDraft", text]); }
   async navigate(direction) { this.calls.push(["navigate", direction]); }
-  async cycleMode() { this.calls.push(["cycleMode"]); }
   async cycleAccess() { this.calls.push(["cycleAccess"]); }
   async openModel() { this.calls.push(["openModel"]); }
-  async selectModel(modelId, effects) {
+  async configureMicro() {
+    this.calls.push(["configureMicro"]);
+    return { ok: true, message: "Configured Micro." };
+  }
+  async selectModel(modelId, target, effects) {
+    assert.deepEqual(target, TARGET);
     return effects.commit(() => { this.calls.push(["selectModel", modelId]); });
   }
-  async selectMode(modeId, effects) {
-    return effects.commit(() => { this.calls.push(["selectMode", modeId]); });
-  }
-  async selectReasoning(level, effects) {
+  async selectReasoning(level, target, effects) {
+    assert.deepEqual(target, TARGET);
     return effects.commit(() => { this.calls.push(["selectReasoning", level]); });
   }
   async deleteBackward() { this.calls.push(["deleteBackward"]); }
   async clearInput() { this.calls.push(["clearInput"]); }
   async focusAgent(index) { this.calls.push(["focusAgent", index]); }
-  async adjustReasoning(delta, effects) {
+  async adjustReasoning(delta, target, effects) {
+    assert.deepEqual(target, TARGET);
     return effects.commit(() => { this.calls.push(["adjustReasoning", delta]); });
   }
   async workflow(prompt) { this.calls.push(["workflow", prompt]); }
@@ -129,6 +146,152 @@ function makeService(desktop = new FakeDesktop(), events = new FakeEvents(), opt
   });
 }
 
+test("runs one-time Micro setup through the desktop controller", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  assert.deepEqual(await service.configureMicro(), {
+    configured: true,
+    message: "Configured Micro.",
+  });
+  assert.ok(desktop.calls.some(([name]) => name === "configureMicro"));
+  await service.dispose();
+});
+
+test("does not report a desktop attachment until the bound target is in the snapshot", async () => {
+  class BindingDesktop extends FakeDesktop {
+    target = null;
+
+    async status() {
+      return { ...await super.status(), target: this.target };
+    }
+
+    async bindThread(threadId) {
+      this.calls.push(["bindThread", threadId]);
+      this.target = TARGET;
+      return { target: TARGET, message: "Bound exact task." };
+    }
+  }
+
+  const desktop = new BindingDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  assert.equal((await service.snapshot()).controller.binding.target.state, "unbound");
+
+  const result = await service.bindDesktopThread(TARGET.threadId);
+
+  assert.equal(result.attached, true);
+  assert.deepEqual(result.target, TARGET);
+  assert.deepEqual((await service.snapshot()).controller.binding.target, {
+    state: "bound",
+    ref: TARGET,
+  });
+  assert.deepEqual(desktop.calls, [["bindThread", TARGET.threadId]]);
+  await service.dispose();
+});
+
+test("rejects an attachment when the target changes before snapshot confirmation", async () => {
+  class ChangedBindingDesktop extends FakeDesktop {
+    async bindThread() {
+      return { target: TARGET };
+    }
+
+    async status() {
+      return { ...await super.status(), target: null };
+    }
+  }
+
+  const service = makeService(new ChangedBindingDesktop());
+  await service.start();
+
+  await assert.rejects(
+    () => service.bindDesktopThread(TARGET.threadId),
+    (error) => error.code === "desktop_binding_not_confirmed",
+  );
+  await service.dispose();
+});
+
+test("accepts a refreshed generation for the same semantic task binding", async () => {
+  const refreshed = {
+    ...TARGET,
+    bindingEpoch: TARGET.bindingEpoch + 1,
+    appServerGeneration: TARGET.appServerGeneration + 1,
+  };
+  class RefreshedBindingDesktop extends FakeDesktop {
+    async bindThread() {
+      return { target: TARGET };
+    }
+
+    async status() {
+      return { ...await super.status(), target: refreshed };
+    }
+  }
+
+  const service = makeService(new RefreshedBindingDesktop());
+  await service.start();
+
+  const result = await service.bindDesktopThread(TARGET.threadId);
+
+  assert.deepEqual(result.target, refreshed);
+  assert.deepEqual((await service.snapshot()).controller.binding.target, {
+    state: "bound",
+    ref: refreshed,
+  });
+  await service.dispose();
+});
+
+test("keeps task B bound for settings without reporting task A as its desktop attachment", async () => {
+  const taskA = "agent-222222222222222222222222";
+  class SemanticBindingDesktop extends FakeDesktop {
+    target = null;
+
+    async bindThread(threadId) {
+      this.calls.push(["bindThread", threadId]);
+      this.target = TARGET;
+      return { target: TARGET, message: "Bound task B for settings." };
+    }
+
+    async status() {
+      return {
+        ...await super.status(),
+        target: this.target,
+        binding: { state: "reconciling", contextId: taskA },
+        agents: this.agents.map((agent) => ({ ...agent, focused: agent.id === taskA })),
+      };
+    }
+  }
+
+  const desktop = new SemanticBindingDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  const result = await service.bindDesktopThread(TARGET.threadId);
+  const snapshot = await service.snapshot();
+
+  assert.equal(result.attached, false);
+  assert.deepEqual(result.target, TARGET);
+  assert.equal(snapshot.controller.binding.state, "reconciling");
+  assert.equal(snapshot.controller.focusedAgentId, taskA);
+  assert.deepEqual(snapshot.controller.binding.target, { state: "bound", ref: TARGET });
+  await service.dispose();
+});
+
+test("preserves the desktop reason when one-time Micro setup fails", async () => {
+  const desktop = new FakeDesktop();
+  desktop.configureMicro = async () => { throw new Error("Codex Micro settings are unavailable."); };
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    service.configureMicro(),
+    (error) => error.status === 409
+      && error.code === "micro_configuration_failed"
+      && error.message === "Codex Micro settings are unavailable.",
+  );
+  await service.dispose();
+});
+
 function bindingCommand(inputId, {
   gesture = "tap",
   layerId = "layer-1",
@@ -162,7 +325,9 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.deepEqual(snapshot.controller.binding, {
     state: "confirmed",
     contextId: "agent-111111111111111111111111",
+    target: { state: "bound", ref: TARGET },
   });
+  assert.deepEqual(snapshot.controller.target, TARGET);
   assert.deepEqual(snapshot.controller.agents, [
     { id: "agent-111111111111111111111111", label: "Turing", state: "thinking", focused: true, freshness: "fresh", actionable: true },
     { id: "agent-222222222222222222222222", label: "Dalton", state: "unread", focused: false, freshness: "fresh", actionable: true },
@@ -171,6 +336,7 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controller.focusedAgentId, "agent-111111111111111111111111");
   assert.equal(snapshot.controller.foreground, true);
   assert.deepEqual(snapshot.controller.voice, { available: true, active: false });
+  assert.equal(snapshot.controller.mode.available, false);
   assert.equal(snapshot.controller.mode.label, "Codex");
   assert.equal(snapshot.controller.access.label, "Workspace");
   assert.equal(snapshot.controller.reasoning.label, "High");
@@ -180,6 +346,7 @@ test("publishes a capability-driven Codex Micro controller snapshot", async () =
   assert.equal(snapshot.controller.reasoning.canIncrease, true);
   assert.equal(snapshot.controller.reasoning.canDecrease, true);
   assert.equal(snapshot.controls.reasoning, true);
+  assert.equal(snapshot.controls["mode-cycle"], false);
   assert.equal(snapshot.controls["model-picker"], true);
   assert.equal(snapshot.controls.model, true);
 });
@@ -188,14 +355,18 @@ test("preserves a same-generation Agent and desktop binding conflict", async () 
   const desktop = new FakeDesktop();
   desktop.binding = {
     state: "conflict",
-    contextId: "agent-111111111111111111111111",
+    contextId: "agent-222222222222222222222222",
   };
   const service = makeService(desktop);
   await service.start();
 
   const snapshot = await service.snapshot();
 
-  assert.deepEqual(snapshot.controller.binding, desktop.binding);
+  assert.deepEqual(snapshot.controller.binding, {
+    ...desktop.binding,
+    target: { state: "bound", ref: TARGET },
+  });
+  assert.deepEqual(snapshot.controller.target, TARGET);
   assert.equal(snapshot.observation.fresh, true);
 });
 
@@ -233,18 +404,59 @@ test("keeps reasoning adjustable upward at the minimum level", async () => {
   });
 });
 
-test("routes exact mode and reasoning selections without desktop menu cycling", async () => {
+test("rejects mode selection and routes exact reasoning without desktop menu cycling", async () => {
   const desktop = new FakeDesktop();
   const service = makeService(desktop);
   await service.start();
 
-  await service.command({ kind: "select_mode", modeId: "plan" }, "select-mode-plan");
-  await service.command({ kind: "select_reasoning", level: "xhigh" }, "select-reasoning-xhigh");
+  await assert.rejects(
+    () => service.command({ kind: "select_mode", modeId: "plan" }, "select-mode-plan"),
+    (error) => error.code === "mode_selection_disabled",
+  );
+  await service.command({ kind: "select_reasoning", level: "xhigh", target: TARGET }, "select-reasoning-xhigh");
 
-  assert.deepEqual(desktop.calls, [
-    ["selectMode", "plan"],
-    ["selectReasoning", "xhigh"],
-  ]);
+  assert.deepEqual(desktop.calls, [["selectReasoning", "xhigh"]]);
+});
+
+test("requires a complete TargetRef for model and reasoning selection", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  const { canonicalWorkspaceId: _omitted, ...incompleteTarget } = TARGET;
+  const commands = [
+    { kind: "select_model", modelId: "gpt-test" },
+    { kind: "select_model", modelId: "gpt-test", target: incompleteTarget },
+    { kind: "select_reasoning", level: "high" },
+    { kind: "select_reasoning", level: "high", target: incompleteTarget },
+  ];
+
+  for (const [index, command] of commands.entries()) {
+    await assert.rejects(
+      () => service.command(command, `incomplete-target-${index}`),
+      (error) => error.status === 400
+        && error.code === "invalid_controller_configuration"
+        && /missing or unsupported fields/i.test(error.message),
+    );
+  }
+
+  assert.deepEqual(desktop.calls, []);
+});
+
+test("rejects a targetless legacy reasoning binding before desktop dispatch", async () => {
+  const desktop = new FakeDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await assert.rejects(
+    () => service.command(bindingCommand("dial_cw"), "legacy-targetless-reasoning"),
+    (error) => error.code === "reasoning_target_required",
+  );
+
+  assert.deepEqual(desktop.calls, []);
+  assert.equal(
+    (await service.commandResult("legacy-targetless-reasoning")).status,
+    "failed",
+  );
 });
 
 test("keeps both reasoning directions available when the host sees an unknown label", async () => {
@@ -353,7 +565,6 @@ test("routes default-layer keys, gestures, joystick, touch, and dial inputs", as
     "key_voice",
     "key_new_task",
     "key_stop",
-    "key_mode",
     "key_clear",
     "key_up",
     "touch",
@@ -361,29 +572,33 @@ test("routes default-layer keys, gestures, joystick, touch, and dial inputs", as
     "dial_cw",
   ];
   for (const [index, inputId] of inputs.entries()) {
-    await service.command(bindingCommand(inputId), `binding-${index}`);
+    await service.command(
+      inputId === "dial_cw"
+        ? { kind: "adjust_reasoning", delta: 1, target: TARGET }
+        : bindingCommand(inputId),
+      `binding-${index}`,
+    );
   }
   await service.command(bindingCommand("key_clear", { gesture: "hold" }), "clear-hold");
   await service.command({ kind: "model_picker" }, "model-picker");
-  await service.command({ kind: "select_model", modelId: "gpt-test" }, "select-model");
+  await service.command({ kind: "select_model", modelId: "gpt-test", target: TARGET }, "select-model");
 
-  assert.deepEqual(desktop.calls.slice(0, 9), [
+  assert.deepEqual(desktop.calls.slice(0, 8), [
     ["press", "approve"],
     ["press", "reject"],
     ["setVoice", true],
     ["press", "new-task"],
     ["press", "stop"],
-    ["cycleMode"],
     ["deleteBackward"],
     ["navigate", "up"],
     ["focusAgent", "agent-222222222222222222222222"],
   ]);
-  assert.equal(desktop.calls[9][0], "workflow");
-  assert.match(desktop.calls[9][1], /Review the current change/);
-  assert.deepEqual(desktop.calls[10], ["adjustReasoning", 1]);
-  assert.deepEqual(desktop.calls[11], ["clearInput"]);
-  assert.deepEqual(desktop.calls[12], ["openModel"]);
-  assert.deepEqual(desktop.calls[13], ["selectModel", "gpt-test"]);
+  assert.equal(desktop.calls[8][0], "workflow");
+  assert.match(desktop.calls[8][1], /Review the current change/);
+  assert.deepEqual(desktop.calls[9], ["adjustReasoning", 1]);
+  assert.deepEqual(desktop.calls[10], ["clearInput"]);
+  assert.deepEqual(desktop.calls[11], ["openModel"]);
+  assert.deepEqual(desktop.calls[12], ["selectModel", "gpt-test"]);
 });
 
 test("describes approve and reject only as explicit Codex decisions", async () => {
@@ -562,7 +777,8 @@ test("publishes confirmed native settings without waiting for a desktop rescan",
       return super.status();
     }
 
-    async selectModel(modelId, effects) {
+    async selectModel(modelId, target, effects) {
+      assert.deepEqual(target, TARGET);
       await effects.commit(() => {
         this.calls.push(["selectModel", modelId]);
         this.model = {
@@ -575,7 +791,8 @@ test("publishes confirmed native settings without waiting for a desktop rescan",
       return { message: "Selected New.", settings: { model: this.model, reasoning: this.reasoning } };
     }
 
-    async adjustReasoning(delta, effects) {
+    async adjustReasoning(delta, target, effects) {
+      assert.deepEqual(target, TARGET);
       await effects.commit(() => {
         this.calls.push(["adjustReasoning", delta]);
         this.reasoning = {
@@ -596,13 +813,16 @@ test("publishes confirmed native settings without waiting for a desktop rescan",
   await service.start();
   const initialEvents = events.published.length;
 
-  await service.command({ kind: "select_model", modelId: "gpt-new" }, "native-model");
+  await service.command({ kind: "select_model", modelId: "gpt-new", target: TARGET }, "native-model");
   assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
   assert.equal(desktop.statusCalls, 1);
   assert.equal(events.published.length, initialEvents + 1);
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal((await service.snapshot()).controller.model.id, "gpt-new");
-  await service.command(bindingCommand("dial_cw"), "native-reasoning");
+  await service.command(
+    { kind: "adjust_reasoning", delta: 1, target: TARGET },
+    "native-reasoning",
+  );
   assert.equal((await service.snapshot()).controller.reasoning.level, "low");
   assert.equal(desktop.statusCalls, 2);
   assert.equal(events.published.length, initialEvents + 2);
@@ -640,7 +860,8 @@ test("retries action confirmation when the first fresh scan is too early", async
       return super.status();
     }
 
-    async selectModel(modelId, effects) {
+    async selectModel(modelId, target, effects) {
+      assert.deepEqual(target, TARGET);
       return effects.commit(() => {
         this.calls.push(["selectModel", modelId]);
         this.pendingModel = modelId;
@@ -663,7 +884,7 @@ test("retries action confirmation when the first fresh scan is too early", async
   await service.start();
   const initialEvents = events.published.length;
 
-  await service.command({ kind: "select_model", modelId: "gpt-new" }, "lagging-model");
+  await service.command({ kind: "select_model", modelId: "gpt-new", target: TARGET }, "lagging-model");
   await new Promise((resolve) => setTimeout(resolve, 30));
 
   assert.equal(desktop.statusCalls, 3);
@@ -672,7 +893,7 @@ test("retries action confirmation when the first fresh scan is too early", async
   await service.dispose();
 });
 
-test("ignores returned mode settings until a fresh desktop scan", async () => {
+test("rejects mode bindings without a desktop effect or confirmation scan", async () => {
   class NativeModeDesktop extends FakeDesktop {
     statusCalls = 0;
     modeLabel = "Codex";
@@ -680,43 +901,21 @@ test("ignores returned mode settings until a fresh desktop scan", async () => {
     async status() {
       this.statusCalls += 1;
       const status = await super.status();
-      return { ...status, mode: { available: true, label: this.modeLabel } };
+      return { ...status, mode: { available: false, label: this.modeLabel } };
     }
 
-    async cycleMode() {
-      this.calls.push(["cycleMode"]);
-      this.modeLabel = "Plan";
-      return {
-        message: "Selected the next Codex collaboration mode.",
-        settings: { mode: { available: true, label: "Plan" } },
-      };
-    }
   }
 
   const desktop = new NativeModeDesktop();
-  const events = new FakeEvents();
-  const service = makeService(desktop, events);
+  const service = makeService(desktop);
   await service.start();
-  const initialEvents = events.published.length;
-
-  await service.command(bindingCommand("key_mode"), "native-mode");
-
-  assert.deepEqual((await service.snapshot()).controller.mode, {
-    available: true,
-    label: "Codex",
-    id: null,
-    options: [],
-  });
-  await new Promise((resolve) => setTimeout(resolve, 220));
-  assert.deepEqual((await service.snapshot()).controller.mode, {
-    available: true,
-    label: "Plan",
-    id: null,
-    options: [],
-  });
-  assert.equal(desktop.statusCalls, 2);
-  assert.deepEqual(desktop.calls, [["cycleMode"]]);
-  assert.equal(events.published.length, initialEvents + 1);
+  await assert.rejects(
+    () => service.command(bindingCommand("key_mode"), "native-mode"),
+    (error) => error.code === "mode_selection_disabled",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(desktop.statusCalls, 1);
+  assert.deepEqual(desktop.calls, []);
 });
 
 test("defers ordinary action snapshots until the controller surface changes", async () => {
@@ -826,7 +1025,8 @@ test("reports a desktop action failure before a slow state scan completes", asyn
 
 test("records a stale-model preflight rejection as failed and accepts the next command", async () => {
   class StaleModelDesktop extends FakeDesktop {
-    async selectModel(modelId) {
+    async selectModel(modelId, target) {
+      assert.deepEqual(target, TARGET);
       this.calls.push(["selectModelPreflight", modelId]);
       throw new Error("The requested Codex model is unavailable or stale.");
     }
@@ -837,7 +1037,7 @@ test("records a stale-model preflight rejection as failed and accepts the next c
   await service.start();
 
   await assert.rejects(
-    () => service.command({ kind: "select_model", modelId: "gpt-stale" }, "stale-model-preflight"),
+    () => service.command({ kind: "select_model", modelId: "gpt-stale", target: TARGET }, "stale-model-preflight"),
     (error) => error.code === "desktop_action_failed" && /stale/i.test(error.message),
   );
   const failed = await service.commandResult("stale-model-preflight");
@@ -855,7 +1055,8 @@ test("records a stale-model preflight rejection as failed and accepts the next c
 
 test("records a running-task settings preflight as a definite failure", async () => {
   class RunningSettingsDesktop extends FakeDesktop {
-    async adjustReasoning(delta) {
+    async adjustReasoning(delta, target) {
+      assert.deepEqual(target, TARGET);
       this.calls.push(["reasoningPreflight", delta]);
       throw new Error("Codex reasoning cannot be changed while the visible task is running.");
     }
@@ -866,7 +1067,10 @@ test("records a running-task settings preflight as a definite failure", async ()
   await service.start();
 
   await assert.rejects(
-    () => service.command(bindingCommand("dial_cw"), "running-settings-preflight"),
+    () => service.command(
+      { kind: "adjust_reasoning", delta: 1, target: TARGET },
+      "running-settings-preflight",
+    ),
     (error) => error.code === "desktop_action_failed" && /running/i.test(error.message),
   );
   assert.equal((await service.commandResult("running-settings-preflight")).status, "failed");
@@ -876,7 +1080,8 @@ test("records a running-task settings preflight as a definite failure", async ()
 
 test("records an app-server settings timeout after dispatch as unknown", async () => {
   class TimeoutSettingsDesktop extends FakeDesktop {
-    async selectModel(modelId, effects) {
+    async selectModel(modelId, target, effects) {
+      assert.deepEqual(target, TARGET);
       this.calls.push(["selectModel", modelId]);
       return effects.commit(() => {
         throw new Error("Codex app-server timed out during thread/settings/update.");
@@ -889,7 +1094,7 @@ test("records an app-server settings timeout after dispatch as unknown", async (
   await service.start();
 
   await assert.rejects(
-    () => service.command({ kind: "select_model", modelId: "gpt-test" }, "settings-update-timeout"),
+    () => service.command({ kind: "select_model", modelId: "gpt-test", target: TARGET }, "settings-update-timeout"),
     (error) => error.code === "command_outcome_indeterminate",
   );
   const operation = await service.commandResult("settings-update-timeout");
@@ -901,7 +1106,8 @@ test("records an app-server settings timeout after dispatch as unknown", async (
 
 test("records a post-update settings observation mismatch as unknown", async () => {
   class MismatchSettingsDesktop extends FakeDesktop {
-    async adjustReasoning(delta, effects) {
+    async adjustReasoning(delta, target, effects) {
+      assert.deepEqual(target, TARGET);
       this.calls.push(["adjustReasoning", delta]);
       await effects.commit(async () => {});
       throw new Error("Codex did not confirm the requested settings for the bound task.");
@@ -913,7 +1119,10 @@ test("records a post-update settings observation mismatch as unknown", async () 
   await service.start();
 
   await assert.rejects(
-    () => service.command(bindingCommand("dial_cw"), "settings-observation-mismatch"),
+    () => service.command(
+      { kind: "adjust_reasoning", delta: 1, target: TARGET },
+      "settings-observation-mismatch",
+    ),
     (error) => error.code === "command_outcome_indeterminate",
   );
   assert.equal((await service.commandResult("settings-observation-mismatch")).status, "unknown");
@@ -933,6 +1142,38 @@ test("focuses one of the six explicit Codex agent slots", async () => {
     () => service.command({ kind: "focus_agent", agentId: "agent-666666666666666666666666" }, "focus-agent-6"),
     (error) => error.code === "agent_unavailable",
   );
+});
+
+test("selects an Agent settings target without requesting desktop focus", async () => {
+  class TargetDesktop extends FakeDesktop {
+    target = null;
+
+    get effectAware() { return true; }
+
+    async selectAgent(agentId, effects) {
+      this.calls.push(["selectAgent", agentId]);
+      await effects.commit(async () => { this.target = TARGET; });
+      return { target: TARGET };
+    }
+
+    async status() {
+      return { ...await super.status(), target: this.target };
+    }
+  }
+
+  const desktop = new TargetDesktop();
+  const service = makeService(desktop);
+  await service.start();
+
+  await service.command(
+    { kind: "select_agent", agentId: TARGET.agentId },
+    "select-agent-target",
+  );
+
+  const snapshot = await service.snapshot();
+  assert.deepEqual(snapshot.controller.binding.target, { state: "bound", ref: TARGET });
+  assert.deepEqual(desktop.calls, [["selectAgent", TARGET.agentId]]);
+  await service.dispose();
 });
 
 test("serializes push-to-talk target states without losing release", async () => {
@@ -1370,7 +1611,8 @@ test("discards an old poll that completes after a newer native action", async ()
       return snapshot;
     }
 
-    async selectModel(modelId, effects) {
+    async selectModel(modelId, target, effects) {
+      assert.deepEqual(target, TARGET);
       await effects.commit(() => {
         this.calls.push(["selectModel", modelId]);
         this.model = {
@@ -1389,7 +1631,7 @@ test("discards an old poll that completes after a newer native action", async ()
   await service.start();
   await desktop.pollStarted.promise;
 
-  await service.command({ kind: "select_model", modelId: "gpt-new" }, "newer-action");
+  await service.command({ kind: "select_model", modelId: "gpt-new", target: TARGET }, "newer-action");
   desktop.releasePoll.resolve();
   await new Promise((resolve) => setTimeout(resolve, 220));
 
@@ -1428,6 +1670,79 @@ test("revalidates a queued command principal after revocation", async () => {
   assert.equal(rejectedOperation.status, "failed");
   assert.equal(rejectedOperation.error.code, "credential_revoked");
   assert.deepEqual(desktop.calls, [["press", "approve"]]);
+  await service.dispose();
+});
+
+test("records revocation behind an effect-aware desktop queue as failed, not unknown", async () => {
+  class EffectAwareBlockingDesktop extends FakeDesktop {
+    started = Promise.withResolvers();
+    release = Promise.withResolvers();
+
+    get effectAware() { return true; }
+
+    async press(control, effects) {
+      this.started.resolve();
+      await this.release.promise;
+      return effects.commit(() => { this.calls.push(["press", control]); });
+    }
+  }
+
+  const desktop = new EffectAwareBlockingDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  let active = true;
+  const principal = { id: "device:desktop-queue", revocable: true, valid: () => active };
+  const command = service.command(
+    { kind: "approve" },
+    "desktop-queue-revocation",
+    principal,
+  );
+  await desktop.started.promise;
+
+  active = false;
+  desktop.release.resolve();
+
+  await assert.rejects(command, (error) => error.code === "credential_revoked");
+  const operation = await service.commandResult("desktop-queue-revocation", principal);
+  assert.equal(operation.status, "failed");
+  assert.equal(operation.error.code, "credential_revoked");
+  assert.deepEqual(desktop.calls, []);
+  await service.dispose();
+});
+
+test("revalidates a principal immediately before a deferred settings effect", async () => {
+  class PreflightDesktop extends FakeDesktop {
+    preflight = Promise.withResolvers();
+    release = Promise.withResolvers();
+
+    async selectModel(modelId, target, effects) {
+      assert.deepEqual(target, TARGET);
+      this.preflight.resolve();
+      await this.release.promise;
+      return effects.commit(() => { this.calls.push(["selectModel", modelId]); });
+    }
+  }
+
+  const desktop = new PreflightDesktop();
+  const service = makeService(desktop);
+  await service.start();
+  let active = true;
+  const principal = { id: "device:preflight", revocable: true, valid: () => active };
+  const command = service.command(
+    { kind: "select_model", modelId: "gpt-test", target: TARGET },
+    "principal-preflight",
+    principal,
+  );
+  await desktop.preflight.promise;
+
+  active = false;
+  desktop.release.resolve();
+
+  await assert.rejects(command, (error) => error.code === "credential_revoked");
+  const operation = await service.commandResult("principal-preflight", principal);
+  assert.equal(operation.status, "failed");
+  assert.equal(operation.error.code, "credential_revoked");
+  assert.deepEqual(desktop.calls, []);
   await service.dispose();
 });
 

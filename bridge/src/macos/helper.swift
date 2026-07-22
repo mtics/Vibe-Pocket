@@ -97,7 +97,11 @@ private func descendants(
   return result
 }
 
-private func codexWebAreas(of root: AXUIElement, maxDepth: Int = 16) -> [AXUIElement] {
+private func codexWebAreas(
+  of root: AXUIElement,
+  maxDepth: Int = 16,
+  using childElements: (AXUIElement) -> [AXUIElement] = visibleChildren
+) -> [AXUIElement] {
   var result = [AXUIElement]()
   func visit(_ candidate: AXUIElement, depth: Int) {
     let role = attributeString(candidate, kAXRoleAttribute as CFString)
@@ -108,7 +112,7 @@ private func codexWebAreas(of root: AXUIElement, maxDepth: Int = 16) -> [AXUIEle
       return
     }
     guard depth < maxDepth else { return }
-    children(of: candidate).forEach { visit($0, depth: depth + 1) }
+    childElements(candidate).forEach { visit($0, depth: depth + 1) }
   }
   visit(root, depth: 0)
   return result
@@ -134,8 +138,8 @@ private let chatGPTBundleIdentifier = "com.openai.codex"
 private let chatGPTApplicationPath = "/Applications/ChatGPT.app"
 
 private func findChatGPT() throws -> NSRunningApplication {
-  let app = NSWorkspace.shared.runningApplications.first { application in
-    guard application.bundleIdentifier == chatGPTBundleIdentifier else { return false }
+  let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: chatGPTBundleIdentifier)
+  let app = candidates.first { application in
     guard let bundleURL = application.bundleURL else { return true }
     return bundleURL.standardizedFileURL.path == chatGPTApplicationPath
   }
@@ -147,27 +151,148 @@ private func codexArea(for application: NSRunningApplication) throws -> AXUIElem
   guard AXIsProcessTrusted() else {
     throw HelperFailure.message("Grant Accessibility permission to the Vibe Pocket Bridge host, then retry.")
   }
-  return try codexArea(in: codexScope(for: application))
+  return try codexArea(in: focusedWindow(for: application))
 }
 
-private func codexScope(for application: NSRunningApplication) -> AXUIElement {
-  let root = AXUIElementCreateApplication(application.processIdentifier)
+private func applicationWindows(_ root: AXUIElement) -> [AXUIElement] {
   var value: CFTypeRef?
-  if AXUIElementCopyAttributeValue(root, kAXFocusedWindowAttribute as CFString, &value) == .success,
-     let focusedWindow = value as! AXUIElement? {
-    return focusedWindow
+  guard AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &value) == .success else {
+    return []
   }
-  return root
+  return value as? [AXUIElement] ?? []
+}
+
+private func windowAttribute(_ root: AXUIElement, _ attribute: CFString) -> AXUIElement? {
+  var value: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(root, attribute, &value) == .success else { return nil }
+  return value as! AXUIElement?
+}
+
+private func isCodexContentWindow(_ window: AXUIElement) -> Bool {
+  let subrole = attributeString(window, kAXSubroleAttribute as CFString)
+  let title = attributeString(window, kAXTitleAttribute as CFString)
+  guard attributeString(window, kAXRoleAttribute as CFString) == kAXWindowRole,
+        [kAXStandardWindowSubrole, kAXDialogSubrole].contains(subrole),
+        !title.hasPrefix("Codex Pet"),
+        codexWebAreas(of: window).first != nil else { return false }
+  return true
+}
+
+private func matchingWindow(_ requested: AXUIElement?, in candidates: [AXUIElement]) -> AXUIElement? {
+  guard let requested else { return nil }
+  return candidates.first { CFEqual($0, requested) }
 }
 
 private func focusedWindow(for application: NSRunningApplication) throws -> AXUIElement {
   let root = AXUIElementCreateApplication(application.processIdentifier)
-  var value: CFTypeRef?
-  guard AXUIElementCopyAttributeValue(root, kAXFocusedWindowAttribute as CFString, &value) == .success,
-        let window = value as! AXUIElement? else {
-    throw HelperFailure.message("ChatGPT did not expose a focused Accessibility window.")
+  let candidates = applicationWindows(root).filter(isCodexContentWindow)
+  if let focused = matchingWindow(
+    windowAttribute(root, kAXFocusedWindowAttribute as CFString),
+    in: candidates
+  ) {
+    return focused
   }
-  return window
+  if let main = matchingWindow(
+    windowAttribute(root, kAXMainWindowAttribute as CFString),
+    in: candidates
+  ) {
+    return main
+  }
+  let restored = candidates.filter {
+    !attributeBool($0, kAXMinimizedAttribute as CFString)
+  }
+  if restored.count == 1 { return restored[0] }
+  if candidates.count == 1 { return candidates[0] }
+  if candidates.isEmpty {
+    throw HelperFailure.message("ChatGPT did not expose a visible Codex window.")
+  }
+  throw HelperFailure.message(
+    "ChatGPT has multiple visible Codex windows but none is focused. Focus the intended window, then retry."
+  )
+}
+
+private func windowDiagnostics(for application: NSRunningApplication) -> [String: Any] {
+  let root = AXUIElementCreateApplication(application.processIdentifier)
+  let focused = windowAttribute(root, kAXFocusedWindowAttribute as CFString)
+  let main = windowAttribute(root, kAXMainWindowAttribute as CFString)
+  let windows = applicationWindows(root).map { window -> [String: Any] in
+    [
+      "title": attributeString(window, kAXTitleAttribute as CFString),
+      "role": attributeString(window, kAXRoleAttribute as CFString),
+      "subrole": attributeString(window, kAXSubroleAttribute as CFString),
+      "minimized": attributeBool(window, kAXMinimizedAttribute as CFString),
+      "focused": focused.map { CFEqual($0, window) } ?? false,
+      "main": main.map { CFEqual($0, window) } ?? false,
+      "children": children(of: window).count,
+      "visibleChildren": visibleChildren(of: window).count,
+      "structuralCodexAreas": codexWebAreas(of: window, using: children).count,
+      "visibleCodexAreas": codexWebAreas(of: window).count,
+    ]
+  }
+  return ["ok": true, "windows": windows]
+}
+
+private func diagnosticControls(in area: AXUIElement) -> [[String: Any]] {
+  let roles: Set<String> = [
+    "AXButton", "AXCheckBox", "AXLink", "AXMenuItem", "AXPopUpButton",
+    "AXRadioButton", "AXTextArea", "AXWebArea",
+  ]
+  return descendants(of: area, maxDepth: 28) { element in
+    roles.contains(attributeString(element, kAXRoleAttribute as CFString))
+  }.prefix(240).map { element -> [String: Any] in
+    let role = attributeString(element, kAXRoleAttribute as CFString)
+    return [
+      "role": role,
+      "title": attributeString(element, kAXTitleAttribute as CFString),
+      "description": attributeString(element, kAXDescriptionAttribute as CFString),
+      "help": attributeString(element, kAXHelpAttribute as CFString),
+      "identifier": attributeString(element, kAXIdentifierAttribute as CFString),
+      "domIdentifier": scalarAttributeString(element, "AXDOMIdentifier" as CFString),
+      "url": role == "AXWebArea"
+        ? attributeString(element, kAXURLAttribute as CFString)
+        : "",
+      "enabled": attributeBool(element, kAXEnabledAttribute as CFString),
+      "classes": attributeStrings(element, "AXDOMClassList" as CFString),
+    ]
+  }
+}
+
+private func controlDiagnostics(for application: NSRunningApplication) -> [String: Any] {
+  let root = AXUIElementCreateApplication(application.processIdentifier)
+  let windows = applicationWindows(root).compactMap { window -> [String: Any]? in
+    guard let area = codexWebAreas(of: window, using: children).first else { return nil }
+    return [
+      "title": attributeString(window, kAXTitleAttribute as CFString),
+      "subrole": attributeString(window, kAXSubroleAttribute as CFString),
+      "minimized": attributeBool(window, kAXMinimizedAttribute as CFString),
+      "controls": diagnosticControls(in: area),
+    ]
+  }
+  return ["ok": true, "windows": windows]
+}
+
+private func selectorDiagnostics(for application: NSRunningApplication) throws -> [String: Any] {
+  let area = try codexArea(for: application)
+  guard let control = reasoningControl(in: area) else {
+    throw HelperFailure.message("ChatGPT did not expose its model and reasoning selector.")
+  }
+  var valueSettable = DarwinBoolean(false)
+  let settableResult = AXUIElementIsAttributeSettable(
+    control.element,
+    kAXValueAttribute as CFString,
+    &valueSettable
+  )
+  var actionNames: CFArray?
+  AXUIElementCopyActionNames(control.element, &actionNames)
+  return [
+    "ok": true,
+    "role": attributeString(control.element, kAXRoleAttribute as CFString),
+    "title": attributeString(control.element, kAXTitleAttribute as CFString),
+    "value": attributeString(control.element, kAXValueAttribute as CFString),
+    "description": attributeString(control.element, kAXDescriptionAttribute as CFString),
+    "actions": (actionNames as? [String]) ?? [],
+    "valueSettable": settableResult == .success && valueSettable.boolValue,
+  ]
 }
 
 private func codexArea(in root: AXUIElement) throws -> AXUIElement {
@@ -197,15 +322,68 @@ private func verifyForeground(_ application: NSRunningApplication) throws {
   }
 }
 
-private func activate(_ application: NSRunningApplication) throws {
-  if NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier {
-    return
+private func isForeground(_ application: NSRunningApplication) -> Bool {
+  NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier
+}
+
+@discardableResult
+private func requestForeground(
+  _ application: NSRunningApplication,
+  window: AXUIElement? = nil
+) -> Bool {
+  _ = application.unhide()
+  let activated = application.activate(options: [])
+  let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+  let promoted = AXUIElementSetAttributeValue(
+    applicationElement,
+    kAXFrontmostAttribute as CFString,
+    kCFBooleanTrue
+  ) == .success
+  if let window {
+    _ = AXUIElementSetAttributeValue(
+      window,
+      kAXMainAttribute as CFString,
+      kCFBooleanTrue
+    )
+    _ = AXUIElementSetAttributeValue(
+      window,
+      kAXFocusedAttribute as CFString,
+      kCFBooleanTrue
+    )
+    _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
   }
-  guard application.activate(options: []) else {
+  return activated || promoted
+}
+
+private func waitForStableForeground(
+  _ application: NSRunningApplication,
+  window: AXUIElement? = nil
+) -> Bool {
+  var consecutiveObservations = 0
+  for attempt in 0..<18 {
+    if isForeground(application) {
+      consecutiveObservations += 1
+      if consecutiveObservations >= 3 { return true }
+    } else {
+      consecutiveObservations = 0
+      if attempt == 6 || attempt == 12 {
+        _ = requestForeground(application, window: window)
+      }
+    }
+    if attempt + 1 < 18 { usleep(100_000) }
+  }
+  return false
+}
+
+private func activate(
+  _ application: NSRunningApplication,
+  window: AXUIElement? = nil
+) throws {
+  if isForeground(application) { return }
+  guard requestForeground(application, window: window) else {
     throw HelperFailure.message("ChatGPT could not be activated on the M5.")
   }
-  usleep(350_000)
-  try verifyForeground(application)
+  if !waitForStableForeground(application, window: window) { try verifyForeground(application) }
 }
 
 private func desktop(activateDesktop: Bool) throws -> (NSRunningApplication, AXUIElement) {
@@ -254,10 +432,13 @@ private struct AreaIndex {
   let buttonPaths: [String]
   let textAreas: [AXUIElement]
 
-  init(_ area: AXUIElement) {
+  init(
+    _ area: AXUIElement,
+    using childElements: (AXUIElement) -> [AXUIElement] = children
+  ) {
     let leafRoles: Set<String> = [
       "AXButton", "AXCheckBox", "AXHeading", "AXImage", "AXLink", "AXMenuItem",
-      "AXPopUpButton", "AXRadioButton", "AXStaticText", "AXTextArea",
+      "AXList", "AXPopUpButton", "AXRadioButton", "AXStaticText", "AXTextArea",
     ]
     var collectedElements = [AXUIElement]()
     var collectedRoles = [String]()
@@ -275,7 +456,7 @@ private struct AreaIndex {
       }
       if role == "AXTextArea" { collectedTextAreas.append(candidate) }
       guard depth < 28, !leafRoles.contains(role) else { return }
-      for (childIndex, child) in visibleChildren(of: candidate).enumerated() {
+      for (childIndex, child) in childElements(candidate).enumerated() {
         visit(child, depth: depth + 1, path: "\(path).\(childIndex)")
       }
     }
@@ -410,8 +591,6 @@ private enum ReasoningLevel: String, CaseIterable {
     }
     return ""
   }
-
-  var needsNativeConfirmation: Bool { self == .xhigh || self == .ultra }
 }
 
 private struct ReasoningControl {
@@ -483,6 +662,14 @@ private struct AgentTarget {
 }
 
 private let taskListLabels: Set<String> = ["任务", "tasks"]
+private let taskRowActionLabels: Set<String> = [
+  "置顶任务",
+  "归档任务",
+  "置顶任务 归档任务",
+  "pin task",
+  "archive task",
+  "pin task archive task",
+]
 
 private func normalizedAttribute(_ element: AXUIElement, _ attribute: CFString) -> String {
   attributeString(element, attribute)
@@ -503,7 +690,14 @@ private func taskLabel(in button: AXUIElement) -> String? {
           label.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
     return label
   }
-  return labels.first
+  return labels.first(where: isTaskTitleLabel)
+}
+
+private func isTaskTitleLabel(_ value: String) -> Bool {
+  let normalized = value
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
+  return !normalized.isEmpty && !taskRowActionLabels.contains(normalized)
 }
 
 private struct TaskRow {
@@ -752,6 +946,7 @@ private func stableAgentID(for element: AXUIElement, fallbackPath: String) -> St
 
 private struct MutationDesktopSnapshot {
   let application: NSRunningApplication
+  let window: AXUIElement
   let area: AXUIElement
   let token: String
 }
@@ -832,7 +1027,12 @@ private func mutationDesktopSnapshot(
   guard let token = target.mutationToken else {
     throw HelperFailure.message("ChatGPT did not expose one focused Codex task for this settings mutation.")
   }
-  return MutationDesktopSnapshot(application: application, area: target.area, token: token)
+  return MutationDesktopSnapshot(
+    application: application,
+    window: target.window,
+    area: target.area,
+    token: token
+  )
 }
 
 private func expectedMutationToken(_ arguments: [String], at index: Int) throws -> String {
@@ -850,11 +1050,50 @@ private func expectedMutationToken(_ arguments: [String], at index: Int) throws 
 
 private func boundMutationDesktop(expectedToken: String) throws -> MutationDesktopSnapshot {
   try verifyDesktopSessionUnlocked()
-  let snapshot = try mutationDesktopSnapshot(for: findChatGPT())
+  let snapshot = try mutationDesktopSnapshot(for: findChatGPT(), requireForeground: false)
   guard snapshot.token == expectedToken else {
     throw HelperFailure.message("The focused Codex task or window changed before the settings mutation.")
   }
   return snapshot
+}
+
+private func withInteractiveMutationDesktop<Value>(
+  expectedToken: String,
+  perform operation: (MutationDesktopSnapshot) throws -> Value
+) throws -> Value {
+  let initial = try boundMutationDesktop(expectedToken: expectedToken)
+  let previousApplication = NSWorkspace.shared.frontmostApplication
+  let wasMinimized = attributeBool(initial.window, kAXMinimizedAttribute as CFString)
+  if wasMinimized {
+    let result = AXUIElementSetAttributeValue(
+      initial.window,
+      kAXMinimizedAttribute as CFString,
+      kCFBooleanFalse
+    )
+    guard result == .success else {
+      throw HelperFailure.message("ChatGPT did not make its Codex control surface available in the background.")
+    }
+    usleep(180_000)
+  }
+  let ready = try boundMutationDesktop(expectedToken: expectedToken)
+  defer {
+    if wasMinimized {
+      _ = AXUIElementSetAttributeValue(
+        initial.window,
+        kAXMinimizedAttribute as CFString,
+        kCFBooleanTrue
+      )
+    }
+    if let previousApplication,
+       previousApplication.processIdentifier != initial.application.processIdentifier,
+       !previousApplication.isTerminated {
+      _ = requestForeground(previousApplication)
+    }
+  }
+  if previousApplication?.processIdentifier != initial.application.processIdentifier {
+    try activate(initial.application, window: ready.window)
+  }
+  return try operation(ready)
 }
 
 private let activeVoiceLabels: Set<String> = [
@@ -935,7 +1174,7 @@ private func taskState(in index: AreaIndex) -> String {
 private func statusReply(application: NSRunningApplication, area: AXUIElement) throws -> [String: Any] {
   let index = AreaIndex(area)
   let currentState = taskState(in: index)
-  let scope = codexScope(for: application)
+  let scope = try focusedWindow(for: application)
   let focusedAgent = focusedAgentTarget(in: scope, currentTaskState: currentState)
   let agents = focusedAgent.map { [$0] } ?? []
   let identity: [String: String]
@@ -1025,6 +1264,262 @@ private func postChord(
   up.postToPid(processIdentifier)
 }
 
+private func postHardwareKey(_ code: CGKeyCode) throws {
+  guard let source = CGEventSource(stateID: .privateState),
+        let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+        let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
+    throw HelperFailure.message("macOS could not create the requested hardware keyboard event.")
+  }
+  down.flags = []
+  up.flags = []
+  down.post(tap: .cghidEventTap)
+  up.post(tap: .cghidEventTap)
+}
+
+private func postHardwareChord(_ code: CGKeyCode, flags: CGEventFlags) throws {
+  guard let source = CGEventSource(stateID: .privateState),
+        let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+        let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
+    throw HelperFailure.message("macOS could not create the requested hardware keyboard shortcut.")
+  }
+  down.flags = flags
+  up.flags = flags
+  down.post(tap: .cghidEventTap)
+  usleep(60_000)
+  up.post(tap: .cghidEventTap)
+}
+
+private let selectableRoles: Set<String> = [
+  "AXButton", "AXLink", "AXMenuItem", "AXPopUpButton", "AXRadioButton",
+]
+
+private func exactControl(
+  in root: AXUIElement,
+  labels: Set<String>,
+  maxDepth: Int = 28
+) -> AXUIElement? {
+  let normalizedLabels = Set(labels.map { $0.lowercased() })
+  return descendants(of: root, maxDepth: maxDepth) { element in
+    guard selectableRoles.contains(attributeString(element, kAXRoleAttribute as CFString)),
+          attributeBool(element, kAXEnabledAttribute as CFString) else { return false }
+    let ownLabels = [
+      attributeString(element, kAXTitleAttribute as CFString),
+      attributeString(element, kAXValueAttribute as CFString),
+      attributeString(element, kAXDescriptionAttribute as CFString),
+    ]
+    let childLabels = descendants(of: element, maxDepth: 3) { child in
+      attributeString(child, kAXRoleAttribute as CFString) == "AXStaticText"
+    }.flatMap { child in
+      [
+        attributeString(child, kAXTitleAttribute as CFString),
+        attributeString(child, kAXValueAttribute as CFString),
+      ]
+    }
+    return (ownLabels + childLabels).contains { label in
+      let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      return normalizedLabels.contains { expected in normalized.contains(expected) }
+    }
+  }.first
+}
+
+private struct LocatedControl {
+  let window: AXUIElement
+  let element: AXUIElement
+}
+
+private func locatedControl(
+  for application: NSRunningApplication,
+  labels: Set<String>
+) -> LocatedControl? {
+  let root = AXUIElementCreateApplication(application.processIdentifier)
+  for window in applicationWindows(root) {
+    if let element = exactControl(in: window, labels: labels) {
+      return LocatedControl(window: window, element: element)
+    }
+  }
+  return nil
+}
+
+private func exactControl(
+  for application: NSRunningApplication,
+  labels: Set<String>
+) -> AXUIElement? {
+  locatedControl(for: application, labels: labels)?.element
+}
+
+private func microSettingDiagnostics(for application: NSRunningApplication) -> [String: Any] {
+  let root = AXUIElementCreateApplication(application.processIdentifier)
+  let keywords = ["codex micro", "knob", "reasoning only", "composer navigation", "旋钮", "仅推理", "编辑器导航"]
+  var settingsAreas = 0
+  var matches = [[String: Any]]()
+  for window in applicationWindows(root) {
+    let windowTitle = attributeString(window, kAXTitleAttribute as CFString).lowercased()
+    let settingsWindow = windowTitle.contains("settings") || windowTitle.contains("设置")
+    for area in codexWebAreas(of: window, using: children) {
+      let url = attributeString(area, kAXURLAttribute as CFString).lowercased()
+      if url.contains("/settings") { settingsAreas += 1 }
+      for element in descendants(of: area, maxDepth: 28, where: { candidate in
+        selectableRoles.contains(attributeString(candidate, kAXRoleAttribute as CFString))
+      }) {
+        let values = [
+          attributeString(element, kAXTitleAttribute as CFString),
+          attributeString(element, kAXValueAttribute as CFString),
+          attributeString(element, kAXDescriptionAttribute as CFString),
+          attributeString(element, kAXHelpAttribute as CFString),
+        ]
+        let normalized = values.joined(separator: " ").lowercased()
+        guard keywords.contains(where: normalized.contains) else { continue }
+        var actionNames: CFArray?
+        AXUIElementCopyActionNames(element, &actionNames)
+        let frame = try? elementFrame(element)
+        matches.append([
+          "role": attributeString(element, kAXRoleAttribute as CFString),
+          "title": values[0],
+          "value": values[1],
+          "description": values[2],
+          "help": values[3],
+          "enabled": attributeBool(element, kAXEnabledAttribute as CFString),
+          "actions": (actionNames as? [String]) ?? [],
+          "settingsWindow": settingsWindow,
+          "frameWidth": frame?.width ?? 0,
+          "frameHeight": frame?.height ?? 0,
+        ])
+      }
+    }
+  }
+  return ["ok": true, "settingsAreas": settingsAreas, "matches": matches]
+}
+
+private func requestMicroConnection(
+  for application: NSRunningApplication,
+  in window: AXUIElement
+) throws {
+  let connect = waitForValue(attempts: 10, intervalMicroseconds: 100_000) {
+    exactControl(in: window, labels: ["Connect", "连接"])
+  }
+  guard let connect else { return }
+  try activate(application, window: window)
+  try performPress(connect)
+}
+
+private func settingsMenuItem(for application: NSRunningApplication) -> AXUIElement? {
+  let root = AXUIElementCreateApplication(application.processIdentifier)
+  let labels = Set(["settings", "settings...", "settings…", "preferences", "preferences...", "preferences…", "设置", "设置...", "设置…"])
+  return descendants(of: root, maxDepth: 8) { element in
+    guard attributeString(element, kAXRoleAttribute as CFString) == "AXMenuItem",
+          attributeBool(element, kAXEnabledAttribute as CFString) else { return false }
+    let values = [
+      attributeString(element, kAXTitleAttribute as CFString),
+      attributeString(element, kAXValueAttribute as CFString),
+      attributeString(element, kAXDescriptionAttribute as CFString),
+    ]
+    return values.contains { value in
+      labels.contains(value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+  }.first
+}
+
+private func configureMicroReasoningKnob() throws {
+  try verifyDesktopSessionUnlocked()
+  let application = try findChatGPT()
+  let previousApplication = NSWorkspace.shared.frontmostApplication
+  defer {
+    if let previousApplication,
+       previousApplication.processIdentifier != application.processIdentifier {
+      _ = previousApplication.activate(options: [])
+    }
+  }
+  if let menuItem = settingsMenuItem(for: application) {
+    try performPress(menuItem)
+  } else {
+    try postChord(43, flags: [.maskCommand], to: application.processIdentifier)
+  }
+
+  let settings = waitForValue(attempts: 20, intervalMicroseconds: 100_000) {
+    locatedControl(for: application, labels: ["Codex Micro"])
+  }
+  guard let settings else {
+    throw HelperFailure.message("ChatGPT did not expose the Codex Micro settings control.")
+  }
+  try activate(application, window: settings.window)
+  try performPress(settings.element)
+
+  let findCurrentMode = {
+    exactControl(
+      for: application,
+      labels: ["Composer navigation", "Reasoning only", "编辑器导航", "仅推理"]
+    )
+  }
+  var currentMode = waitForValue(attempts: 10, intervalMicroseconds: 100_000, find: findCurrentMode)
+  if currentMode == nil {
+    try focus(settings.element)
+    try postKey(36, to: application.processIdentifier)
+    currentMode = waitForValue(attempts: 20, intervalMicroseconds: 100_000, find: findCurrentMode)
+  }
+  guard let currentMode else {
+    throw HelperFailure.message("ChatGPT did not expose the Codex Micro knob setting.")
+  }
+  try requestMicroConnection(for: application, in: settings.window)
+  let currentLabel = [
+    attributeString(currentMode, kAXTitleAttribute as CFString),
+    attributeString(currentMode, kAXValueAttribute as CFString),
+    attributeString(currentMode, kAXDescriptionAttribute as CFString),
+  ].joined(separator: " ").lowercased()
+  if currentLabel.contains("reasoning only") || currentLabel.contains("仅推理") { return }
+
+  try activate(application, window: settings.window)
+  let interaction = try MenuInteraction(application: application)
+  defer { interaction.cleanup() }
+  try interaction.openOptions(currentMode)
+  let findReasoning = { window in
+    exactControl(in: window, labels: ["Reasoning only", "仅推理"])
+  }
+  var reasoning = try interaction.waitForValue(
+    attempts: 10,
+    intervalMicroseconds: 100_000,
+    find: findReasoning
+  )
+  if reasoning == nil {
+    try interaction.openOptionsFromKeyboard(currentMode)
+    reasoning = try interaction.waitForValue(
+      attempts: 20,
+      intervalMicroseconds: 100_000,
+      find: findReasoning
+    )
+  }
+  guard let reasoning else {
+    throw HelperFailure.message("ChatGPT did not expose the reasoning-only knob option.")
+  }
+  try interaction.chooseMenuItem(reasoning)
+
+  let observeReasoningMode: () -> AXUIElement? = {
+    guard let control = findCurrentMode(),
+          attributeString(control, kAXRoleAttribute as CFString) != "AXMenuItem" else { return nil }
+    let label = [
+      attributeString(control, kAXTitleAttribute as CFString),
+      attributeString(control, kAXValueAttribute as CFString),
+      attributeString(control, kAXDescriptionAttribute as CFString),
+    ].joined(separator: " ").lowercased()
+    return label.contains("reasoning only") || label.contains("仅推理") ? control : nil
+  }
+  var confirmed = waitForValue(attempts: 10, intervalMicroseconds: 100_000, find: observeReasoningMode)
+  if confirmed == nil {
+    try interaction.openOptionsFromKeyboard(currentMode)
+    guard let keyboardReasoning = try interaction.waitForValue(
+      attempts: 10,
+      intervalMicroseconds: 100_000,
+      find: findReasoning
+    ) else {
+      throw HelperFailure.message("ChatGPT did not reopen the reasoning-only knob option.")
+    }
+    try interaction.chooseMenuItemFromKeyboard(keyboardReasoning)
+    confirmed = waitForValue(attempts: 20, intervalMicroseconds: 100_000, find: observeReasoningMode)
+  }
+  guard confirmed != nil else {
+    throw HelperFailure.message("ChatGPT did not confirm the reasoning-only knob mode.")
+  }
+}
+
 private func focus(_ element: AXUIElement) throws {
   let result = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
   guard result == .success else {
@@ -1036,18 +1531,24 @@ private final class MenuInteraction {
   private let application: NSRunningApplication
   private let window: AXUIElement
   private let expectedMutationToken: String?
+  private let requireForeground: Bool
   private var opened = false
 
-  init(application: NSRunningApplication, expectedMutationToken: String? = nil) throws {
-    try verifyForeground(application)
+  init(
+    application: NSRunningApplication,
+    expectedMutationToken: String? = nil,
+    requireForeground: Bool = true
+  ) throws {
+    if requireForeground { try verifyForeground(application) }
     self.application = application
     self.window = try focusedWindow(for: application)
     self.expectedMutationToken = expectedMutationToken
+    self.requireForeground = requireForeground
     try revalidate()
   }
 
   func openComposerMenu(_ control: ReasoningControl) throws {
-    try perform(control.element, fallbackKey: 49)
+    try showMenu(control.element, fallbackKey: 49)
     opened = true
   }
 
@@ -1056,12 +1557,81 @@ private final class MenuInteraction {
     opened = true
   }
 
+  func openOptions(_ element: AXUIElement) throws {
+    try showMenu(element, fallbackKey: 49)
+    opened = true
+  }
+
+  func openOptionsFromKeyboard(_ element: AXUIElement) throws {
+    try revalidate()
+    try focus(element)
+    try revalidate()
+    try postKey(49, to: application.processIdentifier)
+    opened = true
+  }
+
+  func openComposerSubmenuFromKeyboard(row: Int) throws {
+    guard row > 0 && row <= 3 else {
+      throw HelperFailure.message("The requested Codex composer menu row is invalid.")
+    }
+    try revalidate()
+    if requireForeground {
+      try postHardwareChord(46, flags: [.maskControl, .maskShift])
+    } else {
+      try postChord(
+        46,
+        flags: [.maskControl, .maskShift],
+        to: application.processIdentifier
+      )
+    }
+    opened = true
+    usleep(120_000)
+    for _ in 0..<row {
+      try revalidate()
+      if requireForeground {
+        try postHardwareKey(125)
+      } else {
+        try postKey(125, to: application.processIdentifier)
+      }
+      usleep(45_000)
+    }
+    try revalidate()
+    if requireForeground {
+      try postHardwareKey(36)
+    } else {
+      try postKey(36, to: application.processIdentifier)
+    }
+  }
+
   func openSubmenu(_ item: AXUIElement) throws {
-    try perform(item, fallbackKey: 124)
+    try revalidate()
+    if AXUIElementPerformAction(item, kAXShowMenuAction as CFString) == .success { return }
+    try revalidate()
+    if AXUIElementPerformAction(item, kAXPressAction as CFString) == .success { return }
+    try revalidate()
+    try focus(item)
+    try revalidate()
+    try postKey(124, to: application.processIdentifier)
   }
 
   func chooseMenuItem(_ item: AXUIElement) throws {
-    try perform(item, fallbackKey: 36)
+    try revalidate()
+    if AXUIElementPerformAction(item, kAXPressAction as CFString) == .success {
+      opened = false
+      return
+    }
+    try revalidate()
+    try focus(item)
+    try revalidate()
+    try postKey(36, to: application.processIdentifier)
+  }
+
+  func chooseMenuItemFromKeyboard(_ item: AXUIElement) throws {
+    try revalidate()
+    try focus(item)
+    try revalidate()
+    try postKey(36, to: application.processIdentifier)
+    opened = false
   }
 
   func waitForValue<Value>(
@@ -1096,14 +1666,28 @@ private final class MenuInteraction {
     try postKey(fallbackKey, to: application.processIdentifier)
   }
 
+  private func showMenu(_ element: AXUIElement, fallbackKey: CGKeyCode) throws {
+    try revalidate()
+    if AXUIElementPerformAction(element, kAXShowMenuAction as CFString) == .success { return }
+    try revalidate()
+    if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success { return }
+    try revalidate()
+    try focus(element)
+    try revalidate()
+    try postKey(fallbackKey, to: application.processIdentifier)
+  }
+
   private func revalidate() throws {
-    try verifyForeground(application)
+    if requireForeground { try verifyForeground(application) }
     let currentWindow = try focusedWindow(for: application)
     guard CFEqual(currentWindow, window) else {
       throw HelperFailure.message("ChatGPT changed its focused window during menu interaction.")
     }
     if let expectedMutationToken {
-      let current = try mutationDesktopSnapshot(for: application)
+      let current = try mutationDesktopSnapshot(
+        for: application,
+        requireForeground: requireForeground
+      )
       guard current.token == expectedMutationToken else {
         throw HelperFailure.message("The focused Codex task changed during menu interaction.")
       }
@@ -1165,7 +1749,8 @@ private func selectNextAccessMode(
   let buttonFrame = try elementFrame(button)
   let interaction = try MenuInteraction(
     application: application,
-    expectedMutationToken: expectedMutationToken
+    expectedMutationToken: expectedMutationToken,
+    requireForeground: true
   )
   defer { interaction.cleanup() }
   try interaction.openMenu(button)
@@ -1252,6 +1837,45 @@ private func modelOptions(in root: AXUIElement, matching requested: String) -> [
   }
 }
 
+private func modelOptionReports(in root: AXUIElement) -> [[String: Any]] {
+  let selectableRoles: Set<String> = ["AXButton", "AXMenuItem", "AXRadioButton"]
+  let menus = descendants(of: root, maxDepth: 28) {
+    attributeString($0, kAXRoleAttribute as CFString) == "AXMenu"
+  }
+  let scoped = menus.flatMap { menu in
+    descendants(of: menu, maxDepth: 12) { element in
+      selectableRoles.contains(attributeString(element, kAXRoleAttribute as CFString))
+    }
+  }
+  let candidates = scoped.isEmpty
+    ? Array(descendants(of: root, maxDepth: 28) { element in
+      selectableRoles.contains(attributeString(element, kAXRoleAttribute as CFString))
+    }.suffix(80))
+    : scoped
+  return candidates.filter { element in
+    selectableRoles.contains(attributeString(element, kAXRoleAttribute as CFString))
+      && attributeBool(element, kAXEnabledAttribute as CFString)
+  }.prefix(80).map { element in
+    var actionNames: CFArray?
+    AXUIElementCopyActionNames(element, &actionNames)
+    return [
+      "role": attributeString(element, kAXRoleAttribute as CFString),
+      "title": attributeString(element, kAXTitleAttribute as CFString),
+      "value": attributeString(element, kAXValueAttribute as CFString),
+      "description": attributeString(element, kAXDescriptionAttribute as CFString),
+      "label": modelLabel(of: element),
+      "actions": (actionNames as? [String]) ?? [],
+      "focused": attributeBool(element, kAXFocusedAttribute as CFString),
+      "selected": attributeBool(element, kAXSelectedAttribute as CFString),
+    ]
+  }.filter { report in
+    report.values.contains { value in
+      guard let text = value as? String else { return false }
+      return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+  }
+}
+
 private func modelMenuItem(in root: AXUIElement) -> AXUIElement? {
   let selectableRoles: Set<String> = ["AXButton", "AXMenuItem"]
   return descendants(of: root, maxDepth: 28) { element in
@@ -1263,6 +1887,10 @@ private func modelMenuItem(in root: AXUIElement) -> AXUIElement? {
     let words = label.split { !$0.isLetter && !$0.isNumber }
     return label.contains("模型") || words.contains(where: { $0 == "model" })
   }.first
+}
+
+private func openModelSubmenu(_ interaction: MenuInteraction) throws {
+  try interaction.openComposerSubmenuFromKeyboard(row: 1)
 }
 
 private func reasoningMenuItem(in root: AXUIElement) -> AXUIElement? {
@@ -1306,18 +1934,13 @@ private func selectModel(
 
   let interaction = try MenuInteraction(
     application: application,
-    expectedMutationToken: expectedMutationToken
+    expectedMutationToken: expectedMutationToken,
+    requireForeground: true
   )
   defer { interaction.cleanup() }
-  try interaction.openComposerMenu(control)
-  guard let menuItem = try interaction.waitForValue(attempts: 8, intervalMicroseconds: 60_000, find: { window in
-    modelMenuItem(in: window)
-  }) else {
-    throw HelperFailure.message("ChatGPT did not expose its model menu.")
-  }
-  try interaction.openSubmenu(menuItem)
+  try openModelSubmenu(interaction)
   guard let matchingElements = try interaction.waitForValue(
-    attempts: 10,
+    attempts: 12,
     intervalMicroseconds: 80_000,
     find: { window in
       let matches = modelOptions(in: window, matching: requested)
@@ -1342,34 +1965,40 @@ private func selectModel(
 
 private func selectReasoning(
   _ requested: ReasoningLevel,
-  from control: ReasoningControl,
+  current: ReasoningLevel,
+  options: [ReasoningLevel],
   in application: NSRunningApplication,
   expectedMutationToken: String
 ) throws -> Bool {
+  guard options.contains(current),
+        options.contains(requested),
+        Set(options).count == options.count else {
+    throw HelperFailure.message("The advertised Codex reasoning path is invalid or stale.")
+  }
+  if current == requested { return true }
+
   let interaction = try MenuInteraction(
     application: application,
-    expectedMutationToken: expectedMutationToken
+    expectedMutationToken: expectedMutationToken,
+    requireForeground: true
   )
   defer { interaction.cleanup() }
-  try interaction.openComposerMenu(control)
-  guard let menuItem = try interaction.waitForValue(attempts: 8, intervalMicroseconds: 60_000, find: { window in
-    reasoningMenuItem(in: window)
-  }) else {
-    throw HelperFailure.message("ChatGPT did not expose its reasoning menu.")
+  guard let snapshot = try? boundMutationDesktop(expectedToken: expectedMutationToken),
+        controlButton(.stop, in: snapshot.area) == nil,
+        reasoningControl(in: snapshot.area) != nil else {
+    throw HelperFailure.message("Reasoning cannot change while the visible Codex task is running.")
   }
-  try interaction.openSubmenu(menuItem)
-  guard let target = try interaction.waitForValue(attempts: 10, intervalMicroseconds: 80_000, find: { window in
+  try interaction.openComposerSubmenuFromKeyboard(row: 2)
+  guard let target = try interaction.waitForValue(attempts: 12, intervalMicroseconds: 80_000, find: { window in
     reasoningOption(in: window, matching: requested)
   }) else {
     throw HelperFailure.message("ChatGPT did not expose the requested reasoning level.")
   }
   try interaction.chooseMenuItem(target)
-  if requested.needsNativeConfirmation { return false }
-  let confirmed = try interaction.waitForValue(attempts: 16, intervalMicroseconds: 100_000) { window -> Bool? in
+  let confirmed: Bool? = try interaction.waitForValue(attempts: 20, intervalMicroseconds: 80_000) { window in
     guard let area = try? codexArea(in: window),
-          let observed = reasoningControl(in: area),
-          let observedLevel = observed.level else { return nil }
-    return observedLevel == requested ? true : nil
+          let observed = reasoningControl(in: area) else { return nil }
+    return observed.level == requested ? true : nil
   }
   guard confirmed != nil else {
     throw HelperFailure.message("ChatGPT did not confirm the selected reasoning level.")
@@ -1410,7 +2039,7 @@ private func launchWorkflow(_ text: String) throws {
   guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 4_000 else {
     throw HelperFailure.message("The configured Vibe Pocket workflow is invalid.")
   }
-  let (application, _) = try desktop(activateDesktop: false)
+  let (application, _) = try desktop(activateDesktop: true)
   let initialTarget = try focusedDesktopTarget(for: application, requireForeground: true)
   try press(.newTask, in: initialTarget, requireForeground: true)
   usleep(500_000)
@@ -1457,6 +2086,36 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
         ? "Vibe Pocket Accessibility permission is enabled."
         : "Approve Vibe Pocket in the macOS Accessibility prompt, then retry.",
     ]
+  case "window-diagnostics":
+    return windowDiagnostics(for: try findChatGPT())
+  case "control-diagnostics":
+    return controlDiagnostics(for: try findChatGPT())
+  case "selector-diagnostics":
+    return try selectorDiagnostics(for: findChatGPT())
+  case "micro-settings-diagnostics":
+    return microSettingDiagnostics(for: try findChatGPT())
+  case "configure-micro-reasoning":
+    try configureMicroReasoningKnob()
+    return ["ok": true, "message": "Configured the Codex Micro knob for reasoning."]
+  case "model-options":
+    let (application, area) = try desktop(activateDesktop: false)
+    guard reasoningControl(in: area) != nil else {
+      throw HelperFailure.message("The ChatGPT Codex model is not currently adjustable.")
+    }
+    let interaction = try MenuInteraction(application: application, requireForeground: false)
+    defer { interaction.cleanup() }
+    try openModelSubmenu(interaction)
+    guard let options = try interaction.waitForValue(
+      attempts: 10,
+      intervalMicroseconds: 80_000,
+      find: { window in
+        let reports = modelOptionReports(in: window)
+        return reports.isEmpty ? nil : reports
+      }
+    ) else {
+      throw HelperFailure.message("ChatGPT did not expose model option semantics.")
+    }
+    return ["ok": true, "options": options]
   case "status":
     let (application, area) = try desktop(activateDesktop: false)
     return try statusReply(application: application, area: area)
@@ -1505,7 +2164,7 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
     guard let direction = arguments.dropFirst().first else {
       throw HelperFailure.message("A navigation direction is required.")
     }
-    let (application, _) = try desktop(activateDesktop: false)
+    let (application, _) = try desktop(activateDesktop: true)
     let target = try focusedDesktopTarget(for: application, requireForeground: true)
     try revalidateFocusedDesktopTarget(target, requireForeground: true)
     try postKey(try keyCode(for: direction), to: application.processIdentifier)
@@ -1526,109 +2185,41 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
     )
     return ["ok": true, "message": "Requested the next ChatGPT Codex access mode."]
   case "plan-mode":
-    let (application, _) = try desktop(activateDesktop: false)
-    let target = try focusedDesktopTarget(for: application)
-    guard controlButton(.stop, in: target.area) == nil else {
-      throw HelperFailure.message("Plan mode cannot be changed while the visible Codex task is running.")
+    let expectedToken = try expectedMutationToken(arguments, at: 1)
+    return try withInteractiveMutationDesktop(expectedToken: expectedToken) { snapshot in
+      guard controlButton(.stop, in: snapshot.area) == nil else {
+        throw HelperFailure.message("Plan mode cannot be changed while the visible Codex task is running.")
+      }
+      let wasActive = planModeIsActive(in: AreaIndex(snapshot.area))
+      try togglePlanMode(in: snapshot.application)
+      let confirmed: String? = waitForValue(attempts: 10, intervalMicroseconds: 100_000) {
+        guard let current = try? boundMutationDesktop(expectedToken: expectedToken) else { return nil }
+        let isActive = planModeIsActive(in: AreaIndex(current.area))
+        return isActive != wasActive ? (isActive ? "Plan" : "Default") : nil
+      }
+      guard let confirmed else {
+        throw HelperFailure.message("ChatGPT did not confirm the requested Codex collaboration mode.")
+      }
+      return [
+        "ok": true,
+        "message": "Selected the next Codex collaboration mode.",
+        "settings": ["mode": ["available": true, "label": confirmed]],
+      ]
     }
-    let wasActive = planModeIsActive(in: AreaIndex(target.area))
-    try revalidateFocusedDesktopTarget(target)
-    try togglePlanMode(in: application)
-    let confirmed: String? = waitForValue(attempts: 10, intervalMicroseconds: 100_000) {
-      guard let currentArea = try? codexArea(for: application) else { return nil }
-      let isActive = planModeIsActive(in: AreaIndex(currentArea))
-      return isActive != wasActive ? (isActive ? "Plan" : "Default") : nil
-    }
-    guard let confirmed else {
-      throw HelperFailure.message("ChatGPT did not confirm the requested Codex collaboration mode.")
-    }
-    return [
-      "ok": true,
-      "message": "Selected the next Codex collaboration mode.",
-      "settings": ["mode": ["available": true, "label": confirmed]],
-    ]
   case "model-picker":
     let (application, _) = try desktop(activateDesktop: false)
     let target = try focusedDesktopTarget(for: application, requireForeground: true)
     guard controlButton(.stop, in: target.area) == nil,
-          let control = reasoningControl(in: target.area) else {
+          reasoningControl(in: target.area) != nil else {
       throw HelperFailure.message("The ChatGPT Codex model is not currently adjustable.")
     }
     let interaction = try MenuInteraction(
       application: application,
       expectedMutationToken: target.mutationToken
     )
-    try interaction.openComposerMenu(control)
+    try openModelSubmenu(interaction)
     interaction.leaveOpen()
     return ["ok": true, "message": "Opened the ChatGPT Codex model picker."]
-  case "select-model":
-    guard let modelID = arguments.dropFirst().first else {
-      throw HelperFailure.message("A Codex model ID is required.")
-    }
-    let expectedToken = try expectedMutationToken(arguments, at: 2)
-    let snapshot = try boundMutationDesktop(expectedToken: expectedToken)
-    guard controlButton(.stop, in: snapshot.area) == nil,
-          let control = reasoningControl(in: snapshot.area) else {
-      throw HelperFailure.message("The ChatGPT Codex model is not currently adjustable.")
-    }
-    try selectModel(
-      modelID,
-      from: control,
-      in: snapshot.application,
-      expectedMutationToken: expectedToken
-    )
-    return ["ok": true, "message": "Selected the requested ChatGPT Codex model."]
-  case "select-reasoning":
-    guard let rawLevel = arguments.dropFirst().first,
-          let level = ReasoningLevel(rawValue: rawLevel) else {
-      throw HelperFailure.message("A valid Codex reasoning level is required.")
-    }
-    let expectedToken = try expectedMutationToken(arguments, at: 2)
-    let snapshot = try boundMutationDesktop(expectedToken: expectedToken)
-    guard controlButton(.stop, in: snapshot.area) == nil,
-          let control = reasoningControl(in: snapshot.area) else {
-      throw HelperFailure.message("The ChatGPT Codex reasoning level is not currently adjustable.")
-    }
-    let confirmed = try selectReasoning(
-      level,
-      from: control,
-      in: snapshot.application,
-      expectedMutationToken: expectedToken
-    )
-    return [
-      "ok": true,
-      "message": confirmed
-        ? "Selected the requested ChatGPT Codex reasoning level."
-        : "Requested the exact ChatGPT Codex reasoning level; native task confirmation is required.",
-      "nativeConfirmationRequired": !confirmed,
-    ]
-  case "reasoning":
-    guard let rawDelta = arguments.dropFirst().first,
-          let delta = Int(rawDelta), delta == -1 || delta == 1 else {
-      throw HelperFailure.message("Reasoning depth must move by one step.")
-    }
-    guard let rawLevel = arguments.dropFirst(2).first,
-          let level = ReasoningLevel(rawValue: rawLevel) else {
-      throw HelperFailure.message("Reasoning adjustment requires its exact advertised target level.")
-    }
-    let expectedToken = try expectedMutationToken(arguments, at: 3)
-    let snapshot = try boundMutationDesktop(expectedToken: expectedToken)
-    guard controlButton(.stop, in: snapshot.area) == nil,
-          let control = reasoningControl(in: snapshot.area) else {
-      throw HelperFailure.message("The ChatGPT Codex reasoning level is not currently adjustable.")
-    }
-    _ = delta
-    let confirmed = try selectReasoning(
-      level,
-      from: control,
-      in: snapshot.application,
-      expectedMutationToken: expectedToken
-    )
-    return [
-      "ok": true,
-      "message": "Requested the exact next ChatGPT Codex reasoning level.",
-      "nativeConfirmationRequired": !confirmed,
-    ]
   case "delete-backward":
     let (application, _) = try desktop(activateDesktop: false)
     let target = try focusedDesktopTarget(for: application, requireForeground: true)
@@ -1664,7 +2255,7 @@ func runCodexControl(arguments: [String], input: String? = nil) throws -> [Strin
         for _ in 0..<attempts {
           usleep(150_000)
           let updatedArea = try codexArea(for: application)
-          let updatedScope = codexScope(for: application)
+          let updatedScope = try focusedWindow(for: application)
           let updatedSelectedTaskTitle = focusedTaskTitle(in: updatedScope)
           let updatedAgents = agentTargets(
             in: updatedScope,

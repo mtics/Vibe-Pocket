@@ -5,6 +5,18 @@ import { agentIdForThread } from "../task/catalog.mjs";
 
 const MUTATION_BINDING = Symbol("desktopMutationBinding");
 const MAXIMUM_CONTROL_REQUEST_LIFETIME_MS = 10_000;
+const VISIBLE_UI_CONTROLS = [
+  "voice",
+  "stop",
+  "new-task",
+  "approve",
+  "reject",
+  "clear-input",
+  "model-picker",
+  "access-cycle",
+  "navigate",
+  "workflow",
+];
 
 export class Desktop {
   #socketPath;
@@ -17,6 +29,9 @@ export class Desktop {
   #voiceActive = false;
   #lastAgents = [];
   #operationQueue = Promise.resolve();
+  #visibleFocusLease = Promise.resolve();
+  #expectedVisibleAgentId = null;
+  #confirmedVisibleAgentId = null;
 
   constructor({
     socketPath = process.env.VIBE_POCKET_HOST_SOCKET,
@@ -41,7 +56,23 @@ export class Desktop {
   }
 
   async #statusNow() {
-    const { result, agents, tasks } = await this.#observeAgentsNow();
+    let result;
+    let agents;
+    let tasks;
+    let desktopFresh = true;
+    try {
+      ({ result, agents, tasks } = await this.#observeAgentsNow());
+    } catch (error) {
+      desktopFresh = false;
+      result = unavailableDesktop(error);
+      if (this.#threadCatalog) {
+        agents = await this.#threadCatalog.resolveVisibleAgents([]);
+        tasks = taskObservation(this.#threadCatalog.freshness);
+      } else {
+        agents = [];
+        tasks = { availability: "unavailable", message: error.message ?? null };
+      }
+    }
     if (!this.#threadCatalog) return { ...result, agents, tasks };
     let settings = null;
     try {
@@ -52,21 +83,41 @@ export class Desktop {
     } catch {
       settings = null;
     }
-    const binding = bindingObservation(result, settings, agents);
-    const mutation = binding.state === "confirmed" ? binding.mutation : null;
-    const modelAvailable = Boolean(
-      mutation && settings?.model.available === true && result.controls?.["model-picker"] === true,
+    const target = this.#threadCatalog.target;
+    this.#acceptObservedFocus(agents);
+    const observedBinding = bindingObservation(result, agents);
+    this.#confirmedVisibleAgentId = observedBinding.state === "confirmed"
+      ? observedBinding.contextId
+      : null;
+    const visibleTargetConfirmed = !target || (
+      observedBinding.state === "confirmed"
+      && observedBinding.contextId === target.agentId
     );
-    const reasoningAvailable = Boolean(
-      mutation && settings?.reasoning.available === true && result.controls?.reasoning === true,
+    const binding = target && !visibleTargetConfirmed
+      ? { state: "reconciling", contextId: observedBinding.contextId }
+      : observedBinding;
+    const appServerFresh = settings !== null && settings.fresh !== false;
+    const settingsMutable = Boolean(target?.threadId && appServerFresh);
+    const modelAvailable = Boolean(settingsMutable && settings?.model.available === true);
+    const reasoningAvailable = Boolean(settingsMutable && settings?.reasoning.available === true);
+    const modeAvailable = Boolean(
+      settingsMutable
+        && settings?.mode?.available === true,
     );
-    const modeAvailable = Boolean(mutation && settings?.mode?.available === true);
+    const mode = projectVisibleMode(settings?.mode, result.mode);
+    const visibleControls = visibleTargetConfirmed
+      ? result.controls
+      : disabledControls(result.controls);
+    const selectedAgents = target && agents.some((agent) => agent.id === target.agentId)
+      ? agents.map((agent) => ({ ...agent, focused: agent.id === target.agentId }))
+      : agents;
     const view = {
       ...result,
-      agents,
+      agents: selectedAgents,
       tasks,
       binding: { state: binding.state, contextId: binding.contextId },
-      mode: settings?.mode ? { ...settings.mode, available: modeAvailable } : result.mode,
+      target,
+      mode: mode ? { ...mode, available: modeAvailable } : result.mode,
       model: settings?.model ? { ...settings.model, available: modelAvailable } : undefined,
       reasoning: settings?.reasoning ? {
         ...settings.reasoning,
@@ -75,14 +126,17 @@ export class Desktop {
         canDecrease: reasoningAvailable && settings.reasoning.canDecrease,
       } : result.reasoning,
       controls: {
-        ...result.controls,
-        "focus-agent": agents.some((agent) => agent.actionable !== false && !agent.focused),
+        ...visibleControls,
+        "focus-agent": selectedAgents.some((agent) => agent.actionable !== false && !agent.focused),
         "mode-cycle": modeAvailable,
         model: modelAvailable,
         reasoning: reasoningAvailable,
       },
+      sources: {
+        appServer: { fresh: appServerFresh, observedAt: appServerFresh ? Date.now() : null },
+        desktopUI: { fresh: desktopFresh, observedAt: desktopFresh ? Date.now() : null },
+      },
     };
-    Object.defineProperty(view, MUTATION_BINDING, { value: mutation });
     return view;
   }
 
@@ -90,27 +144,51 @@ export class Desktop {
     return this.#voiceActive;
   }
 
+  get effectAware() {
+    return true;
+  }
+
   async activate() {
     return this.attach();
   }
 
-  async attach() {
-    return this.#invoke("attach");
+  async attach(effects = null) {
+    if (!this.#threadCatalog) return this.#invoke("attach", [], "", effects);
+    return this.#enqueue(async () => {
+      const { agents } = await this.#observeAgentsNow({ allowCached: false });
+      const focused = agents.filter((agent) => (
+        agent.focused === true
+        && agent.actionable !== false
+        && agent.freshness !== "stale"
+      ));
+      if (focused.length !== 1) {
+        throw new Error("Open exactly one Codex task before attaching Vibe Pocket.");
+      }
+      const target = await this.#threadCatalog.attachVisible(focused[0].id, effects);
+      return {
+        ok: true,
+        target,
+        message: "Bound the visible Codex task without changing its settings.",
+      };
+    });
   }
 
-  async bindThread(threadId) {
+  async bindThread(threadId, effects = null) {
     if (!this.#threadCatalog) {
       throw new Error("The native Codex task catalog is required to confirm a desktop task.");
     }
     return this.#enqueue(async () => {
-      const requested = typeof this.#threadCatalog.focusThread === "function"
-        ? await this.#threadCatalog.focusThread(threadId)
-        : await this.#openThread(threadId).then(() => ({ agentId: null }));
+      const requested = typeof this.#threadCatalog.bindThread === "function"
+        ? await commitEffect(effects, () => this.#threadCatalog.bindThread(threadId))
+        : await this.#threadCatalog.focusThread(threadId, effects);
       if (!requested?.agentId) {
-        throw new Error("The native Codex task catalog could not identify the requested desktop task.");
+        throw new Error("The native Codex task catalog could not identify the requested task.");
       }
-      await this.#confirmFocus(requested.agentId);
-      return this.#invokeNow("attach", [], "");
+      return {
+        ok: true,
+        target: requested.target,
+        message: "Bound the selected Codex task without requiring desktop focus.",
+      };
     });
   }
 
@@ -121,126 +199,130 @@ export class Desktop {
     };
   }
 
-  async press(control) {
-    return this.#invoke("control", [control]);
+  async press(control, effects = null) {
+    return this.#invoke("control", [control], "", effects);
   }
 
-  async setVoice(active) {
+  async setVoice(active, effects = null) {
     if (typeof active !== "boolean") throw new TypeError("Voice state must be boolean.");
-    const result = await this.#invoke(active ? "voice-start" : "voice-stop");
+    const result = await this.#invoke(active ? "voice-start" : "voice-stop", [], "", effects);
     this.#voiceActive = active;
     return result;
   }
 
-  async navigate(direction) {
-    return this.#invoke("navigate", [direction]);
+  async navigate(direction, effects = null) {
+    return this.#invoke("navigate", [direction], "", effects);
   }
 
   async cycleMode() {
     return this.#invoke("plan-mode");
   }
 
-  async cycleAccess() {
-    return this.#invoke("access-cycle");
+  async cycleAccess(effects = null) {
+    return this.#invoke("access-cycle", [], "", effects);
   }
 
-  async openModel() {
-    return this.#invoke("model-picker");
+  async openModel(effects = null) {
+    return this.#invoke("model-picker", [], "", effects);
   }
 
-  async selectModel(modelId, effects) {
+  async configureMicro() {
+    return this.#invoke("configure-micro-reasoning");
+  }
+
+  async selectModel(modelId, target, effects) {
     if (!this.#threadCatalog) throw new Error("Native Codex model selection is unavailable.");
     requireEffects(effects);
     return this.#enqueue(async () => {
-      const current = await this.#statusNow();
-      const binding = this.#requireSettingsAvailable(current, "model");
       const selected = await this.#threadCatalog.validateModel({
         id: modelId,
-        threadId: binding.threadId,
+        target,
       });
       if (!selected?.id) throw new Error("The requested Codex model is unavailable or stale.");
-      await this.#confirmSettingsBinding(binding, "model");
       const settings = await this.#threadCatalog.selectModel({
         id: selected.id,
-        threadId: binding.threadId,
+        target,
         effects,
       });
-      return { ok: true, message: `Selected ${settings.model.label}.`, settings };
+      return {
+        ok: true,
+        message: `Selected ${settings.model.label}.`,
+        settings,
+      };
     });
   }
 
   async selectMode(modeId, effects) {
-    if (!this.#threadCatalog) throw new Error("Native Codex mode selection is unavailable.");
-    requireEffects(effects);
-    return this.#enqueue(async () => {
-      const current = await this.#statusNow();
-      const binding = this.#requireSettingsAvailable(current, "mode");
-      await this.#confirmSettingsBinding(binding, "mode");
-      const settings = await this.#threadCatalog.selectMode({
-        id: modeId,
-        threadId: binding.threadId,
-        effects,
-      });
-      return { ok: true, message: `Selected ${settings.mode.label} mode.`, settings };
-    });
+    throw new Error("Codex mode selection is disabled by protocol v12.");
   }
 
-  async adjustReasoning(delta, effects) {
+  async adjustReasoning(delta, target, effects) {
     if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
     if (delta !== -1 && delta !== 1) throw new Error("Reasoning adjustment must be one step.");
     requireEffects(effects);
     return this.#enqueue(async () => {
-      const current = await this.#statusNow();
-      const binding = this.#requireSettingsAvailable(current, "reasoning");
+      this.#threadCatalog.requireTarget(target);
       if (!this.#threadCatalog.reasoningTarget(delta)) {
         throw new Error("Codex reasoning cannot move farther in that direction.");
       }
-      await this.#confirmSettingsBinding(binding, "reasoning");
-      const target = this.#threadCatalog.reasoningTarget(delta);
-      if (!target) throw new Error("Codex reasoning changed before its settings mutation.");
-      return this.#selectReasoningNow(target, binding, effects);
+      const level = this.#threadCatalog.reasoningTarget(delta);
+      if (!level) throw new Error("Codex reasoning changed before its settings mutation.");
+      return this.#selectReasoningNow(level, target, effects);
     });
   }
 
-  async selectReasoning(level, effects) {
+  async selectReasoning(level, target, effects) {
     if (!this.#threadCatalog) throw new Error("Native Codex reasoning selection is unavailable.");
     requireEffects(effects);
     return this.#enqueue(async () => {
-      const current = await this.#statusNow();
-      const binding = this.#requireSettingsAvailable(current, "reasoning");
+      this.#threadCatalog.requireTarget(target);
       if (!this.#threadCatalog.hasReasoningLevel(level)) {
         throw new Error("The requested Codex reasoning level is unavailable or stale.");
       }
-      await this.#confirmSettingsBinding(binding, "reasoning");
       if (!this.#threadCatalog.hasReasoningLevel(level)) {
         throw new Error("The requested Codex reasoning level changed before its settings mutation.");
       }
-      return this.#selectReasoningNow(level, binding, effects);
+      return this.#selectReasoningNow(level, target, effects);
     });
   }
 
-  async clearInput() {
-    return this.#invoke("clear-input");
+  async clearInput(effects = null) {
+    return this.#invoke("clear-input", [], "", effects);
   }
 
-  async deleteBackward() {
-    return this.#invoke("delete-backward");
+  async deleteBackward(effects = null) {
+    return this.#invoke("delete-backward", [], "", effects);
   }
 
-  async focusAgent(agentId) {
-    if (!this.#threadCatalog) return this.#invoke("focus-agent", [agentId]);
+  async focusAgent(agentId, effects = null) {
+    if (!this.#threadCatalog) return this.#invoke("focus-agent", [agentId], "", effects);
     return this.#enqueue(async () => {
-      const requested = await this.#threadCatalog.focusAgent(agentId);
-      await this.#confirmFocus(requested?.agentId ?? agentId);
+      const requested = await this.#threadCatalog.focusAgent(agentId, effects);
+      await this.#leaseVisibleFocus(requested.agentId);
       return {
         ok: true,
+        target: requested.target,
         message: "Focused the selected Codex task after native desktop confirmation.",
       };
     });
   }
 
-  async workflow(prompt) {
-    return this.#invoke("workflow", [], prompt);
+  async selectAgent(agentId, effects = null) {
+    if (!this.#threadCatalog) {
+      throw new Error("The native Codex task catalog is required to select a control target.");
+    }
+    return this.#enqueue(async () => {
+      const requested = await this.#threadCatalog.selectAgent(agentId, effects);
+      return {
+        ok: true,
+        target: requested.target,
+        message: "Selected the Codex task without changing desktop focus.",
+      };
+    });
+  }
+
+  async workflow(prompt, effects = null) {
+    return this.#invoke("workflow", [], prompt, effects);
   }
 
   async dispose() {
@@ -248,8 +330,15 @@ export class Desktop {
     await this.#threadCatalog?.dispose?.();
   }
 
-  async #invoke(action, args = [], input = "") {
-    return this.#enqueue(() => this.#invokeNow(action, args, input));
+  async #invoke(action, args = [], input = "", effects = null) {
+    return this.#enqueue(async () => {
+      await this.#visibleFocusLease;
+      const target = this.#threadCatalog?.target;
+      if (target && this.#confirmedVisibleAgentId !== target.agentId) {
+        throw new Error("The bound Codex task is not confirmed as the visible desktop focus.");
+      }
+      return commitEffect(effects, () => this.#invokeNow(action, args, input));
+    });
   }
 
   async #enqueue(callback) {
@@ -310,30 +399,55 @@ export class Desktop {
     );
   }
 
-  async #selectReasoningNow(level, binding, effects) {
+  async #leaseVisibleFocus(agentId) {
+    this.#expectedVisibleAgentId = agentId;
+    const lease = this.#confirmFocus(agentId);
+    this.#visibleFocusLease = lease;
+    lease.catch(() => {});
+    await lease;
+    this.#confirmedVisibleAgentId = agentId;
+    if (this.#expectedVisibleAgentId === agentId) this.#expectedVisibleAgentId = null;
+  }
+
+  #acceptObservedFocus(agents) {
+    if (!this.#expectedVisibleAgentId) return;
+    if (!agents.some((agent) => (
+      agent.id === this.#expectedVisibleAgentId
+      && agent.focused === true
+      && agent.actionable !== false
+      && agent.freshness !== "stale"
+    ))) return;
+    this.#confirmedVisibleAgentId = this.#expectedVisibleAgentId;
+    this.#expectedVisibleAgentId = null;
+    this.#visibleFocusLease = Promise.resolve();
+  }
+
+  async #selectReasoningNow(level, target, effects) {
     const settings = await this.#threadCatalog.selectReasoning({
       level,
-      threadId: binding.threadId,
+      target,
       effects,
     });
-    return { ok: true, message: `Selected ${settings.reasoning.label} reasoning.`, settings };
+    return {
+      ok: true,
+      message: `Selected ${settings.reasoning.label} reasoning.`,
+      settings,
+    };
   }
 
   async #confirmSettingsBinding(expected, kind) {
     const current = await this.#statusNow();
     const actual = this.#requireSettingsAvailable(current, kind);
-    if (actual.threadId !== expected.threadId || actual.desktopToken !== expected.desktopToken) {
+    if (
+      actual.threadId !== expected.threadId ||
+      actual.contextId !== expected.contextId
+    ) {
       throw new Error(`The visible Codex ${kind} task changed before its settings mutation.`);
     }
+    return { binding: actual, status: current };
   }
 
   #requireSettingsAvailable(status, kind) {
-    if (status.taskState === "executing" || status.controls?.stop === true) {
-      throw new Error(`Codex ${kind} cannot be changed while the visible task is running.`);
-    }
-    if (status.controls?.[kind] !== true) {
-      throw new Error(`The visible Codex ${kind} control is unavailable.`);
-    }
     const binding = status[MUTATION_BINDING];
     if (!binding) {
       throw new Error(`The visible Codex ${kind} identity is unresolved.`);
@@ -341,6 +455,29 @@ export class Desktop {
     return binding;
   }
 
+}
+
+function unavailableDesktop(error) {
+  return {
+    foreground: false,
+    taskState: "idle",
+    binding: { state: "unbound", contextId: null },
+    agents: [],
+    tasks: { availability: "unavailable", message: error?.message ?? null },
+    voice: { available: false, active: false },
+    mode: { available: false, id: null, label: "", options: [] },
+    access: { available: false, label: "" },
+    reasoning: {
+      available: false,
+      label: "",
+      level: null,
+      canIncrease: false,
+      canDecrease: false,
+      options: [],
+    },
+    controls: {},
+    message: error?.message ?? "The desktop UI controller is unavailable.",
+  };
 }
 
 function taskObservation(value) {
@@ -353,27 +490,41 @@ function taskObservation(value) {
   };
 }
 
-function bindingObservation(result, settings, agents) {
+function projectVisibleMode(catalogMode, visibleMode) {
+  if (!catalogMode) return visibleMode;
+  const visibleLabel = visibleMode?.label?.trim().toLowerCase();
+  if (!visibleLabel) return catalogMode;
+  const selected = catalogMode.options?.find((option) =>
+    option.label?.trim().toLowerCase() === visibleLabel);
+  if (!selected) return catalogMode;
+  return {
+    ...catalogMode,
+    id: selected.id,
+    label: selected.label,
+    options: catalogMode.options.map((option) => ({
+      ...option,
+      selected: option.id === selected.id,
+    })),
+  };
+}
+
+function bindingObservation(result, agents) {
   const desktopToken = result?.identity?.mutationToken;
-  const threadId = settings?.binding?.threadId;
-  const focusedAgents = Array.isArray(agents) ? agents.filter(({ focused }) => focused === true) : [];
+  const focusedAgents = Array.isArray(agents) ? agents.filter((agent) =>
+    agent.focused === true && agent.actionable !== false && agent.freshness !== "stale") : [];
   if (focusedAgents.length === 0) return { state: "unbound", contextId: null, mutation: null };
   if (focusedAgents.length !== 1) return { state: "conflict", contextId: null, mutation: null };
 
   const contextId = focusedAgents[0].id;
   const validDesktopToken = typeof desktopToken === "string"
     && /^desktop-[a-f0-9]{24,64}$/.test(desktopToken);
-  const validThreadId = typeof threadId === "string" && threadId.length > 0;
-  if (!validDesktopToken || !validThreadId) {
-    return { state: "reconciling", contextId, mutation: null };
-  }
-  if (contextId !== agentIdForThread(threadId)) {
-    return { state: "conflict", contextId, mutation: null };
-  }
   return {
     state: "confirmed",
     contextId,
-    mutation: Object.freeze({ desktopToken, threadId }),
+    mutation: Object.freeze({
+      contextId,
+      desktopToken: validDesktopToken ? desktopToken : null,
+    }),
   };
 }
 
@@ -381,6 +532,17 @@ function requireEffects(value) {
   if (!value || typeof value.commit !== "function") {
     throw new TypeError("A settings effect boundary is required.");
   }
+}
+
+function commitEffect(effects, operation) {
+  return effects ? effects.commit(operation) : operation();
+}
+
+function disabledControls(controls) {
+  return Object.fromEntries(
+    [...new Set([...Object.keys(controls ?? {}), ...VISIBLE_UI_CONTROLS])]
+      .map((key) => [key, false]),
+  );
 }
 
 export function prepareControlRequest(

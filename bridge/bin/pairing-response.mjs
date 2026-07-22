@@ -47,7 +47,17 @@ if (
 
 const deepLink = quoteForShell(pairingUrl.toString());
 process.stdout.write(
-  `exec am start -W -n au.edu.uts.vibepocket/.MainActivity -a android.intent.action.VIEW -d ${deepLink}\n`,
+  [
+    "if pm path au.edu.uts.vibepocket >/dev/null 2>&1; then",
+    `  exec am start -W -n au.edu.uts.vibepocket/.MainActivity -a android.intent.action.VIEW -d ${deepLink}`,
+    "fi",
+    "if pm path au.edu.uts.vibepocket.research >/dev/null 2>&1; then",
+    `  exec am start -W -n au.edu.uts.vibepocket.research/au.edu.uts.vibepocket.MainActivity -a android.intent.action.VIEW -d ${deepLink}`,
+    "fi",
+    "echo 'Vibe Pocket is not installed.' >&2",
+    "exit 1",
+    "",
+  ].join("\n"),
 );
 
 function quoteForShell(value) {

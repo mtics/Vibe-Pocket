@@ -54,12 +54,22 @@ test("never synthesizes pointer movement for Codex controls", async () => {
   assert.doesNotMatch(source, /CGWarpMouseCursorPosition|mouseMoved|leftMouseDown|leftMouseUp/);
 });
 
-test("only the explicit attach action may activate ChatGPT", async () => {
+test("only explicit foreground-dependent actions may activate ChatGPT", async () => {
   const source = await readFile(helperUrl, "utf8");
   const activations = source.match(/desktop\(activateDesktop: true\)/g) ?? [];
 
-  assert.equal(activations.length, 1);
+  assert.equal(activations.length, 3);
   assert.match(source, /case "attach":[\s\S]*?desktop\(activateDesktop: true\)/);
+  assert.match(source, /private func launchWorkflow[\s\S]*?desktop\(activateDesktop: true\)/);
+  assert.match(source, /case "navigate":[\s\S]*?desktop\(activateDesktop: true\)/);
+  assert.doesNotMatch(source, /activateIgnoringOtherApps/);
+  assert.match(source, /waitForStableForeground\(application, window: window\)/);
+  assert.match(source, /consecutiveObservations >= 3/);
+  assert.match(source, /attempt == 6 \|\| attempt == 12/);
+  assert.match(source, /kAXFrontmostAttribute/);
+  assert.match(source, /kAXMainAttribute/);
+  assert.match(source, /kAXFocusedAttribute/);
+  assert.match(source, /AXUIElementPerformAction\(window, kAXRaiseAction/);
 });
 
 test("finds only the official ChatGPT bundle at its expected installed path", async () => {
@@ -71,12 +81,12 @@ test("finds only the official ChatGPT bundle at its expected installed path", as
 
   assert.match(source, /chatGPTBundleIdentifier = "com\.openai\.codex"/);
   assert.match(source, /chatGPTApplicationPath = "\/Applications\/ChatGPT\.app"/);
-  assert.match(lookup, /application\.bundleIdentifier == chatGPTBundleIdentifier/);
+  assert.match(lookup, /NSRunningApplication\.runningApplications\(withBundleIdentifier: chatGPTBundleIdentifier\)/);
   assert.match(lookup, /bundleURL\.standardizedFileURL\.path == chatGPTApplicationPath/);
   assert.doesNotMatch(lookup, /localizedName|localizedCaseInsensitiveContains/);
 });
 
-test("all synthetic key delivery is PID-scoped and target revalidated", async () => {
+test("background keys are PID-scoped and hardware keys are foreground-revalidated", async () => {
   const source = await readFile(helperUrl, "utf8");
   const calls = [...callsNamed(source, "postKey"), ...callsNamed(source, "postChord")];
   const approval = source.slice(source.indexOf("private func press"), source.indexOf("private func postKey"));
@@ -95,7 +105,13 @@ test("all synthetic key delivery is PID-scoped and target revalidated", async ()
   assert.ok(calls.length > 0);
   for (const call of calls) assert.match(call, /,\s*to:/, `Unscoped synthetic key call: ${call}`);
   assert.doesNotMatch(source, /to processIdentifier: pid_t\?/);
-  assert.doesNotMatch(source, /\.post\(tap:/);
+  const hardware = source.slice(
+    source.indexOf("private func postHardwareKey"),
+    source.indexOf("private let selectableRoles"),
+  );
+  assert.match(hardware, /postHardwareKey[\s\S]*?\.post\(tap: \.cghidEventTap\)/);
+  assert.match(hardware, /postHardwareChord[\s\S]*?\.post\(tap: \.cghidEventTap\)/);
+  assert.match(source, /openComposerSubmenuFromKeyboard[\s\S]*?if requireForeground[\s\S]*?postHardwareChord[\s\S]*?try revalidate\(\)[\s\S]*?postHardwareKey/);
   assert.match(targetValidation, /CFEqual\(current\.window, expected\.window\)/);
   assert.match(targetValidation, /expected\.mutationToken[\s\S]*?current\.mutationToken != expectedToken/);
   assert.match(approval, /controlButton\(control, in: target\.area\)[\s\S]*?revalidateFocusedDesktopTarget[\s\S]*?performPress\(button\)/);
@@ -113,7 +129,7 @@ test("synthetic keys isolate and explicitly set exact modifier flags", async () 
   const eventSources = source.match(/CGEventSource\(stateID:/g) ?? [];
   const privateSources = source.match(/CGEventSource\(stateID: \.privateState\)/g) ?? [];
 
-  assert.equal(eventSources.length, 2);
+  assert.equal(eventSources.length, 4);
   assert.equal(privateSources.length, eventSources.length);
   assert.doesNotMatch(source, /hidSystemState/);
   assert.match(plainKey, /down\.flags = \[\][\s\S]*?up\.flags = \[\]/);
@@ -128,10 +144,14 @@ test("mode switching targets ChatGPT without taking the foreground", async () =>
   );
 
   assert.match(source, /postToPid\(processIdentifier\)/);
-  assert.match(modeCase, /togglePlanMode\(in: application\)/);
+  assert.match(modeCase, /expectedMutationToken\(arguments, at: 1\)/);
+  assert.match(modeCase, /withInteractiveMutationDesktop\(expectedToken: expectedToken\)/);
+  assert.match(modeCase, /togglePlanMode\(in: snapshot\.application\)/);
   assert.match(modeCase, /planModeIsActive[\s\S]*?confirmed/);
   assert.match(modeCase, /"settings": \["mode": \["available": true, "label": confirmed\]\]/);
   assert.doesNotMatch(modeCase, /verifyForeground|activate\(/);
+  assert.match(source, /withInteractiveMutationDesktop[\s\S]*?previousApplication[\s\S]*?kCFBooleanFalse[\s\S]*?defer[\s\S]*?kCFBooleanTrue[\s\S]*?requestForeground\(previousApplication\)/);
+  assert.match(source, /try activate\(initial\.application, window: ready\.window\)/);
 });
 
 test("composer controls and Agent focus identity use the focused Codex window", async () => {
@@ -142,14 +162,57 @@ test("composer controls and Agent focus identity use the focused Codex window", 
   );
 
   assert.match(source, /kAXFocusedWindowAttribute/);
-  assert.match(source, /codexArea\(in: codexScope\(for: application\)\)/);
-  assert.match(statusReply, /let scope = codexScope\(for: application\)/);
+  assert.match(source, /codexArea\(in: focusedWindow\(for: application\)\)/);
+  assert.match(statusReply, /let scope = try focusedWindow\(for: application\)/);
   assert.match(statusReply, /focusedAgentTarget\(in: scope/);
   assert.doesNotMatch(statusReply, /agentTargets\(/);
   assert.doesNotMatch(statusReply, /AXUIElementCreateApplication/);
 });
 
-test("production Swift selector semantics parse and require native ambiguity confirmation", async (context) => {
+test("Codex window selection accepts the primary dialog, excludes Pet overlays, and fails closed on ambiguity", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const webAreas = source.slice(
+    source.indexOf("private func codexWebAreas"),
+    source.indexOf("private func requestAccessibilityPermission"),
+  );
+  const selection = source.slice(
+    source.indexOf("private func isCodexContentWindow"),
+    source.indexOf("private func codexArea(in:"),
+  );
+  const identity = selection.slice(0, selection.indexOf("private func matchingWindow"));
+
+  assert.match(selection, /\[kAXStandardWindowSubrole, kAXDialogSubrole\][\s\S]*?contains\(subrole\)/);
+  assert.match(selection, /title\.hasPrefix\("Codex Pet"\)/);
+  assert.doesNotMatch(identity, /AreaIndex\(area, using: children\)/);
+  assert.doesNotMatch(identity, /prompt\(in: index\)|reasoningControl\(in: index\)|controlButton\(/);
+  assert.match(selection, /kAXMinimizedAttribute/);
+  assert.match(selection, /codexWebAreas\(of: window\)\.first/);
+  assert.match(webAreas, /childElements\(candidate\)/);
+  assert.match(webAreas, /= visibleChildren/);
+  assert.match(selection, /kAXFocusedWindowAttribute[\s\S]*?kAXMainWindowAttribute/);
+  assert.match(selection, /if candidates\.count == 1/);
+  assert.match(selection, /multiple visible Codex windows but none is focused/);
+  assert.doesNotMatch(selection, /title == "ChatGPT"/);
+  assert.match(source, /using childElements: \(AXUIElement\) -> \[AXUIElement\] = children/);
+  assert.match(source, /let leafRoles:[\s\S]*?"AXList"/);
+});
+
+test("task identity ignores row action text that precedes the actual title", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const labels = source.slice(
+    source.indexOf("private let taskRowActionLabels"),
+    source.indexOf("private func taskIsFocused"),
+  );
+
+  assert.match(labels, /"置顶任务"/);
+  assert.match(labels, /"归档任务"/);
+  assert.match(labels, /"pin task"/);
+  assert.match(labels, /"archive task"/);
+  assert.match(labels, /labels\.first\(where: isTaskTitleLabel\)/);
+  assert.match(labels, /!taskRowActionLabels\.contains\(normalized\)/);
+});
+
+test("production Swift selector semantics parse and confirm exact transitions deterministically", async (context) => {
   if (process.platform !== "darwin") {
     context.skip("The macOS Accessibility helper is compiled only on macOS.");
     return;
@@ -157,9 +220,9 @@ test("production Swift selector semantics parse and require native ambiguity con
   const source = await readFile(helperUrl, "utf8");
   await execFileAsync("/usr/bin/swiftc", ["-frontend", "-parse", fileURLToPath(helperUrl)]);
   assert.match(source, /case xhigh[\s\S]*?case max[\s\S]*?case ultra/);
-  assert.match(source, /needsNativeConfirmation: Bool \{ self == \.xhigh \|\| self == \.ultra \}/);
   assert.match(source, /ambiguous: level == \.xhigh/);
-  assert.match(source, /if requested\.needsNativeConfirmation \{ return false \}/);
+  assert.match(source, /Set\(options\)\.count == options\.count/);
+  assert.match(source, /observed\.level == requested/);
   assert.doesNotMatch(source, /desktopLevels|shifted\(by/);
   assert.match(source, /modelMatches\(requested: String, candidate: String\)[\s\S]*?modelKey\(candidate\) == target/);
   assert.doesNotMatch(source, /candidate\.contains\(target\)/);
@@ -178,55 +241,41 @@ test("reasoning availability comes from structure before directional semantics",
   assert.match(source, /"canDecrease": reasoningAvailable/);
 });
 
-test("menu selection revalidates foreground and window with deferred PID-scoped cleanup", async () => {
+test("desktop helper exposes no model or reasoning mutation handlers", async () => {
   const source = await readFile(helperUrl, "utf8");
-  const interaction = source.slice(
-    source.indexOf("private final class MenuInteraction"),
-    source.indexOf("private func elementFrame"),
-  );
-  const modelSelection = source.slice(
-    source.indexOf("private func selectModel"),
-    source.indexOf("private func selectReasoning"),
-  );
-  const reasoningSelection = source.slice(
-    source.indexOf("private func selectReasoning"),
-    source.indexOf("private func focusPrompt"),
-  );
-  const accessSelection = source.slice(
-    source.indexOf("private func selectNextAccessMode"),
-    source.indexOf("private func waitForValue"),
-  );
 
-  assert.match(source, /case "model-picker":[\s\S]*?openComposerMenu\(control\)/);
-  assert.match(source, /case "select-model":[\s\S]*?selectModel\([\s\S]*?modelID/);
-  assert.match(modelSelection, /defer \{ interaction\.cleanup\(\) \}/);
-  assert.match(reasoningSelection, /defer \{ interaction\.cleanup\(\) \}/);
-  assert.match(accessSelection, /defer \{ interaction\.cleanup\(\) \}/);
-  assert.match(interaction, /waitForValue[\s\S]*?find: \(AXUIElement\)[\s\S]*?try revalidate\(\)[\s\S]*?find\(window\)/);
-  assert.match(interaction, /try verifyForeground\(application\)[\s\S]*?focusedWindow[\s\S]*?CFEqual/);
-  assert.match(interaction, /AXUIElementPerformAction[\s\S]*?postKey\(fallbackKey, to: application\.processIdentifier\)/);
-  assert.match(interaction, /postKey\(53, to: application\.processIdentifier\)/);
-  assert.doesNotMatch(source, /postKey\(53\)(?!,)/);
-  assert.match(source, /case "select-reasoning":[\s\S]*?selectReasoning\([\s\S]*?level/);
-  assert.match(source, /observedLevel == requested/);
-  assert.match(source, /modelMatches\(requested: requested, candidate:/);
-  assert.doesNotMatch(modelSelection, /AXUIElementCreateApplication/);
-  assert.doesNotMatch(reasoningSelection, /AXUIElementCreateApplication/);
-  assert.doesNotMatch(accessSelection, /AXUIElementCreateApplication/);
-  assert.match(modelSelection, /modelMenuItem\(in: window\)[\s\S]*?modelOptions\(in: window/);
-  assert.match(reasoningSelection, /reasoningMenuItem\(in: window\)[\s\S]*?reasoningOption\(in: window/);
-  assert.match(accessSelection, /descendants\(of: window\)/);
+  assert.doesNotMatch(source, /case "select-model":/);
+  assert.doesNotMatch(source, /case "select-reasoning":/);
+  assert.doesNotMatch(source, /case "reasoning":/);
+  assert.match(source, /case "model-picker":[\s\S]*?openModelSubmenu\(interaction\)/);
   assert.match(source, /case "delete-backward":[\s\S]*?focusPrompt[\s\S]*?postKey\(51, to: application\.processIdentifier\)/);
 });
 
-test("both exact and delta reasoning entry points reject a running turn", async () => {
+test("one-time Micro setup stabilizes the settings window before each semantic press", async () => {
   const source = await readFile(helperUrl, "utf8");
-  const exact = source.slice(source.indexOf('case "select-reasoning"'), source.indexOf('case "reasoning"'));
-  const delta = source.slice(source.indexOf('case "reasoning"'), source.indexOf('case "delete-backward"'));
+  const setup = source.slice(
+    source.indexOf("private func configureMicroReasoningKnob"),
+    source.indexOf("private func focus", source.indexOf("private func configureMicroReasoningKnob")),
+  );
 
-  assert.match(exact, /controlButton\(\.stop, in: snapshot\.area\) == nil/);
-  assert.match(delta, /controlButton\(\.stop, in: snapshot\.area\) == nil/);
-  assert.match(delta, /exact advertised target level/);
+  assert.equal((setup.match(/try activate\(application, window: settings\.window\)/g) ?? []).length, 2);
+  assert.doesNotMatch(setup, /requestForeground\(application, window: settings\.window\)/);
+  assert.match(setup, /requestMicroConnection\(for: application, in: settings\.window\)[\s\S]*?currentLabel/);
+  assert.match(setup, /if currentMode == nil[\s\S]*?focus\(settings\.element\)[\s\S]*?postKey\(36, to: application\.processIdentifier\)[\s\S]*?findCurrentMode/);
+  assert.match(setup, /MenuInteraction\(application: application\)[\s\S]*?openOptions\(currentMode\)[\s\S]*?Reasoning only[\s\S]*?chooseMenuItem\(reasoning\)/);
+  assert.match(setup, /if reasoning == nil[\s\S]*?openOptionsFromKeyboard\(currentMode\)[\s\S]*?findReasoning/);
+  assert.match(setup, /observeReasoningMode[\s\S]*?AXMenuItem[\s\S]*?reasoning only[\s\S]*?if confirmed == nil[\s\S]*?chooseMenuItemFromKeyboard\(keyboardReasoning\)[\s\S]*?observeReasoningMode/);
+});
+
+test("one-time Micro setup requests a visible device connection before returning", async () => {
+  const source = await readFile(helperUrl, "utf8");
+  const connection = source.slice(
+    source.indexOf("private func requestMicroConnection"),
+    source.indexOf("private func settingsMenuItem", source.indexOf("private func requestMicroConnection")),
+  );
+
+  assert.match(connection, /exactControl\(in: window, labels: \["Connect", "连接"\]\)/);
+  assert.match(connection, /activate\(application, window: window\)[\s\S]*?performPress\(connect\)/);
 });
 
 test("bridge child inherits normal termination signals", async () => {

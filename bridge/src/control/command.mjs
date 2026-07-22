@@ -13,6 +13,7 @@ import {
   validateLayerId,
 } from "../profile/model.mjs";
 import { Failure } from "../server/failure.mjs";
+import { validateTargetRef } from "../task/target.mjs";
 
 export function resolve(command, { profile, layerId }) {
   if (!command || typeof command !== "object" || Array.isArray(command)) {
@@ -32,28 +33,40 @@ export function resolve(command, { profile, layerId }) {
     return { kind: "agent", id: command.agentId };
   }
 
+  if (command.kind === "select_agent") {
+    requireKeys(command, ["kind", "agentId"]);
+    if (typeof command.agentId !== "string" || !/^agent-[a-f0-9]{24}$/.test(command.agentId)) {
+      throw new ValidationError("A stable Codex agent ID is required.");
+    }
+    return { kind: "target", id: command.agentId };
+  }
+
   if (command.kind === "select_model") {
-    requireKeys(command, ["kind", "modelId"]);
+    requireKeys(command, ["kind", "modelId", "target"]);
     if (typeof command.modelId !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(command.modelId)) {
       throw new ValidationError("A stable Codex model ID is required.");
     }
-    return { kind: "model", id: command.modelId };
+    return { kind: "model", id: command.modelId, target: targetRef(command.target) };
   }
 
   if (command.kind === "select_mode") {
-    requireKeys(command, ["kind", "modeId"]);
-    if (command.modeId !== "default" && command.modeId !== "plan") {
-      throw new ValidationError("A supported Codex mode ID is required.");
-    }
-    return { kind: "mode", id: command.modeId };
+    throw new Failure(409, "mode_selection_disabled", "Codex mode selection is disabled by protocol v12.");
   }
 
   if (command.kind === "select_reasoning") {
-    requireKeys(command, ["kind", "level"]);
+    requireKeys(command, ["kind", "level", "target"]);
     if (!["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(command.level)) {
       throw new ValidationError("A supported Codex reasoning level is required.");
     }
-    return { kind: "reasoning", level: command.level };
+    return { kind: "reasoning", level: command.level, target: targetRef(command.target) };
+  }
+
+  if (command.kind === "adjust_reasoning") {
+    requireKeys(command, ["kind", "delta", "target"]);
+    if (command.delta !== -1 && command.delta !== 1) {
+      throw new ValidationError("Reasoning adjustment must be one step clockwise or counter-clockwise.");
+    }
+    return { kind: "reasoning_delta", delta: command.delta, target: targetRef(command.target) };
   }
 
   if (command.kind === "binding") {
@@ -149,6 +162,14 @@ function staleBinding() {
     "stale_controller_context",
     "The controller layer or binding changed; refresh before retrying this action.",
   );
+}
+
+function targetRef(value) {
+  try {
+    return validateTargetRef(value);
+  } catch (error) {
+    throw new ValidationError(error.message);
+  }
 }
 
 function legacy(command) {

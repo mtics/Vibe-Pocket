@@ -39,7 +39,7 @@ test("replaces the deployed runtime with an exact identified source snapshot", a
     ok: true,
     service: "vibe-pocket-bridge",
     runtimeIdentity: manifest.runtimeIdentity,
-    protocolVersion: 11,
+    protocolVersion: 12,
   });
 });
 

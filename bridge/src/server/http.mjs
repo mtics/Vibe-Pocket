@@ -107,6 +107,12 @@ export function create({
         sendJson(request, response, 200, responseBody);
         return;
       }
+      if (request.method === "POST" && url.pathname === "/v1/pocket/micro/configure") {
+        requireRoot(principal);
+        requireBodyless(request);
+        sendJson(request, response, 200, await service.configureMicro());
+        return;
+      }
       const hookMatch = url.pathname.match(/^\/v1\/pocket\/codex-hooks\/([A-Za-z]+)$/);
       if (request.method === "POST" && hookMatch) {
         requireRoot(principal);

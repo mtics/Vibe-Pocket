@@ -19,6 +19,7 @@ export class State {
   #desktop = emptyDesktop();
   #observedAt = null;
   #observationFresh = false;
+  #sources = emptySources();
   #task;
 
   constructor({ events, workspaces, taskId }) {
@@ -55,6 +56,10 @@ export class State {
     return this.#desktop.voice;
   }
 
+  get target() {
+    return this.#desktop.target;
+  }
+
   snapshot({ profile, gestures, actions, activeLayerId, taskId }) {
     return {
       protocolVersion: PROTOCOL_VERSION,
@@ -63,6 +68,7 @@ export class State {
         fresh: this.#observationFresh,
         observedAt: this.#observedAt,
       },
+      sources: this.#sources,
       status: this.#status,
       focusSessionId: this.#task.state === "error" ? null : taskId,
       workspaces: Object.keys(this.#workspaces),
@@ -92,6 +98,7 @@ export class State {
       controls,
     };
     this.#desktop = desktop;
+    this.#sources = normalizeSources(result.sources, this.#observedAt);
     this.#task.state = this.#desktop.taskState === "error" ? "error" : "active";
     this.#task.canInterrupt = this.#status.controls.stop;
     this.#task.terminalTail = result.message ?? "Ready to control Vibe Pocket Codex tasks.";
@@ -206,6 +213,7 @@ function emptyDesktop() {
     foreground: false,
     taskState: "idle",
     binding: { state: "unbound", contextId: null },
+    target: null,
     agents: [],
     tasks: { availability: "unavailable", message: null },
     focusedAgentIndex: -1,
@@ -245,10 +253,17 @@ function normalizeDesktop(result) {
     : [];
   const focusedAgentId = agents.find((agent) => agent.focused)?.id ?? null;
   const focusedAgents = agents.map((agent) => ({ ...agent, focused: agent.id === focusedAgentId }));
+  const target = normalizeTarget(result.target);
   return {
     foreground: result.foreground === true,
     taskState: TASK_STATES.has(result.taskState) ? result.taskState : "idle",
-    binding: normalizeBinding(result.binding, focusedAgentId),
+    binding: {
+      ...normalizeBinding(result.binding, focusedAgentId),
+      target: target
+        ? { state: "bound", ref: target }
+        : { state: "unbound", ref: null },
+    },
+    target,
     agents: focusedAgents,
     tasks: normalizeTasks(result.tasks, focusedAgents),
     focusedAgentIndex: focusedAgentId ? focusedAgents.findIndex((agent) => agent.id === focusedAgentId) : -1,
@@ -260,6 +275,44 @@ function normalizeDesktop(result) {
     reasoning: normalizeReasoning(result.reasoning),
     userInput: normalizeUserInput(result.userInput),
   };
+}
+
+function emptySources() {
+  return {
+    appServer: { fresh: false, observedAt: null },
+    desktopUI: { fresh: false, observedAt: null },
+  };
+}
+
+function normalizeSources(value, fallbackObservedAt) {
+  const source = (entry) => ({
+    fresh: entry?.fresh === true,
+    observedAt: Number.isSafeInteger(entry?.observedAt) && entry.observedAt > 0
+      ? entry.observedAt
+      : entry?.fresh === true ? fallbackObservedAt : null,
+  });
+  return {
+    appServer: source(value?.appServer),
+    desktopUI: source(value?.desktopUI),
+  };
+}
+
+function normalizeTarget(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (typeof value.threadId !== "string" || !value.threadId) return null;
+  if (typeof value.agentId !== "string" || !/^agent-[a-f0-9]{24}$/.test(value.agentId)) return null;
+  if (!Number.isSafeInteger(value.bindingEpoch) || value.bindingEpoch < 1) return null;
+  if (typeof value.bridgeInstanceId !== "string" || !/^bridge-[a-zA-Z0-9_-]{16,128}$/.test(value.bridgeInstanceId)) return null;
+  if (!Number.isSafeInteger(value.appServerGeneration) || value.appServerGeneration < 0) return null;
+  if (typeof value.canonicalWorkspaceId !== "string" || !value.canonicalWorkspaceId) return null;
+  return Object.freeze({
+    threadId: value.threadId,
+    agentId: value.agentId,
+    bindingEpoch: value.bindingEpoch,
+    bridgeInstanceId: value.bridgeInstanceId,
+    appServerGeneration: value.appServerGeneration,
+    canonicalWorkspaceId: value.canonicalWorkspaceId,
+  });
 }
 
 function normalizeBinding(value, focusedAgentId) {

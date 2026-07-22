@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,14 +7,20 @@ import test from "node:test";
 
 import { Catalog } from "../../src/task/catalog.mjs";
 
-class FakeAppServer {
+class FakeAppServer extends EventEmitter {
   constructor(threads, searchResults = {}) {
+    super();
     this.threads = threads.map(withDefaultCwd);
     this.searchResults = Object.fromEntries(Object.entries(searchResults).map(([term, results]) => (
       [term, results.map(withDefaultCwd)]
     )));
     this.calls = [];
     this.failure = null;
+    this.resumed = {
+      model: "gpt-sol",
+      reasoningEffort: "medium",
+      collaborationMode: { mode: "default" },
+    };
   }
 
   async start() {
@@ -27,7 +34,30 @@ class FakeAppServer {
       const searchable = [...this.threads, ...Object.values(this.searchResults).flat()];
       return { thread: searchable.find(({ id }) => id === params.threadId) ?? null };
     }
-    if (method === "model/list") return { data: [] };
+    if (method === "model/list") {
+      return {
+        data: [{
+          id: "gpt-sol",
+          displayName: "Sol",
+          hidden: false,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+        }],
+      };
+    }
+    if (method === "collaborationMode/list") {
+      return {
+        data: [
+          { name: "Default", mode: "default", model: null, reasoning_effort: null },
+          { name: "Plan", mode: "plan", model: null, reasoning_effort: null },
+        ],
+      };
+    }
+    if (method === "thread/resume") return this.resumed;
+    if (method === "thread/settings/update") {
+      if (params.collaborationMode) this.resumed = { ...this.resumed, collaborationMode: params.collaborationMode };
+      return {};
+    }
     assert.equal(method, "thread/list");
     return { data: params.searchTerm ? (this.searchResults[params.searchTerm] ?? []) : this.threads };
   }
@@ -35,6 +65,16 @@ class FakeAppServer {
   async stop() {
     this.calls.push(["stop"]);
   }
+}
+
+function effectBoundary() {
+  return {
+    crossed: false,
+    async commit(operation) {
+      this.crossed = true;
+      return operation();
+    },
+  };
 }
 
 function withDefaultCwd(thread) {
@@ -112,6 +152,79 @@ test("resolves visible task rows to stable native Codex task links", async () =>
 
   await catalog.dispose();
   assert.deepEqual(appServer.calls.at(-1), ["stop"]);
+});
+
+test("binds a TargetRef and delegates exact model selection through settings", async () => {
+  const appServer = new FakeAppServer([
+    { id: "thread-model", name: "Model task", parentThreadId: null },
+  ]);
+  const catalog = new Catalog({ appServer, openThread: async () => {} });
+  const agents = await catalog.resolveVisibleAgents([
+    { label: "Model task", state: "idle", focused: true },
+  ]);
+  const target = await catalog.attachVisible(agents[0].id);
+  appServer.emit("notification", {
+    method: "thread/settings/updated",
+    params: {
+      threadId: "thread-model",
+      threadSettings: appServer.resumed,
+    },
+  });
+  await catalog.settings({ modeLabel: "Default" });
+  const effects = effectBoundary();
+
+  const selected = await catalog.selectModel({ id: "gpt-sol", target, effects });
+
+  assert.deepEqual(selected.target, target);
+  assert.equal(selected.model.id, "gpt-sol");
+  assert.equal(effects.crossed, true);
+  assert.deepEqual(appServer.calls.find(([method]) => method === "thread/settings/update")?.[1], {
+    threadId: "thread-model",
+    model: "gpt-sol",
+  });
+  assert.equal(catalog.selectMode, undefined);
+});
+
+test("binds an exact task for app-server settings without opening the desktop", async () => {
+  const appServer = new FakeAppServer([
+    { id: "thread-semantic", name: "Semantic task", parentThreadId: null },
+  ]);
+  const opened = [];
+  const catalog = new Catalog({
+    appServer,
+    openThread: async (threadId) => { opened.push(threadId); },
+  });
+
+  const result = await catalog.bindThread("thread-semantic");
+
+  assert.equal(result.threadId, "thread-semantic");
+  assert.equal(result.target.threadId, "thread-semantic");
+  assert.equal(result.target.agentId, result.agentId);
+  assert.deepEqual(opened, []);
+  assert.deepEqual(appServer.calls, [
+    ["start"],
+    ["thread/read", { threadId: "thread-semantic", includeTurns: false }],
+  ]);
+});
+
+test("selects an Agent control target without opening its desktop task", async () => {
+  const appServer = new FakeAppServer([
+    { id: "thread-semantic", name: "Semantic task", parentThreadId: null },
+  ]);
+  const opened = [];
+  const catalog = new Catalog({
+    appServer,
+    openThread: async (threadId) => { opened.push(threadId); },
+  });
+  const agents = await catalog.resolveVisibleAgents([]);
+  const effects = effectBoundary();
+
+  const selected = await catalog.selectAgent(agents[0].id, effects);
+
+  assert.equal(selected.threadId, "thread-semantic");
+  assert.equal(selected.target.agentId, agents[0].id);
+  assert.equal(effects.crossed, true);
+  assert.deepEqual(opened, []);
 });
 
 test("accepts a unique ellipsized title and rejects ambiguous or stale targets", async () => {
@@ -342,6 +455,41 @@ test("filters canonical workspace escapes and rechecks focus targets before open
   assert.deepEqual(opened, []);
 });
 
+test("never admits a visible task outside configured workspaces", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-pocket-visible-scope-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "workspace");
+  const outside = join(root, "outside");
+  await mkdir(workspace);
+  await mkdir(outside);
+  const title = "Visible task in another project";
+  const outsideThread = {
+    id: "thread-visible-outside",
+    name: title,
+    cwd: outside,
+    parentThreadId: null,
+  };
+  const appServer = new FakeAppServer([outsideThread]);
+  const opened = [];
+  const catalog = new Catalog({
+    appServer,
+    workspaces: { configured: workspace },
+    openThread: async (threadId) => { opened.push(threadId); },
+  });
+
+  const visible = await catalog.resolveVisibleAgents([
+    { label: title, state: "idle", focused: true },
+  ]);
+
+  assert.deepEqual(visible, []);
+  assert.equal(appServer.calls.some(([, params]) => params?.searchTerm), true);
+  await assert.rejects(
+    () => catalog.focusThread(outsideThread.id),
+    /outside the configured Vibe Pocket workspaces/i,
+  );
+  assert.deepEqual(opened, []);
+});
+
 test("drops historical focus when a formerly unique title becomes ambiguous", async () => {
   const title = "A duplicate task title that remains readable in the controller";
   const appServer = new FakeAppServer([
@@ -368,7 +516,7 @@ test("drops historical focus when a formerly unique title becomes ambiguous", as
   assert.ok(ambiguous.every(({ label }) => label.length <= 64 && /\[default:[a-f0-9]{6}\]$/.test(label)));
 
   const settings = await catalog.settings({ modelLabel: "Sol", level: "medium" });
-  assert.equal(settings.binding, null);
+  assert.equal(settings.target, null);
   assert.equal(settings.model.available, false);
   assert.equal(settings.reasoning.available, false);
 

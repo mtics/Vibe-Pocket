@@ -26,11 +26,16 @@ async function withServer(run, {
   const revokedPrincipals = [];
   const attachedThreads = [];
   const hooks = [];
+  const microConfigurations = [];
   const service = {
     async snapshot() { return { revision: "r_7", controller: { taskState: "idle" } }; },
     async bindDesktopThread(threadId) {
       attachedThreads.push(threadId);
       return { attached: true, revision: "r_8" };
+    },
+    async configureMicro() {
+      microConfigurations.push(true);
+      return { configured: true, message: "Configured Micro." };
     },
     async codexHook(event, payload) {
       hooks.push({ event, payload });
@@ -110,6 +115,7 @@ async function withServer(run, {
       operationResults,
       revokedPrincipals,
       attachedThreads,
+      microConfigurations,
       hooks,
       invitations,
       readiness,
@@ -137,7 +143,7 @@ test("requires every HTTP server call site to supply readiness", () => {
 });
 
 test("health remains live while readiness waits for service startup", async () => {
-  assert.equal(PROTOCOL_VERSION, 11);
+  assert.equal(PROTOCOL_VERSION, 12);
   const readiness = readyReadiness({ ready: false });
   assert.equal(readiness.state, NOT_READY);
   await withServer(async ({ baseUrl }) => {
@@ -296,7 +302,7 @@ test("pairing claims stay gated until a bodyless, repeatable commit", async () =
       token: DEVICE_TOKEN,
       credentialState: "pending",
       credentialExpiresAt: invitation.expiresAt,
-      protocolVersion: 11,
+      protocolVersion: 12,
       capabilities: ["device_credentials", "events", "virtual_hardware", "pairing_commit", "command_results", "binding_context"],
     });
 
@@ -440,6 +446,25 @@ test("desktop task attachment is authenticated and forwards only the task ID", a
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { attached: true, revision: "r_8" });
     assert.deepEqual(attachedThreads, ["019f2ce2-e042-7ab0-a73d-9fa41d58e210"]);
+  });
+});
+
+test("Micro setup is bodyless and restricted to the local root credential", async () => {
+  await withServer(async ({ baseUrl, microConfigurations }) => {
+    const device = await fetch(`${baseUrl}/v1/pocket/micro/configure`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${DEVICE_TOKEN}` },
+    });
+    assert.equal(device.status, 403);
+    assert.equal((await device.json()).error.code, "root_credential_required");
+
+    const configured = await fetch(`${baseUrl}/v1/pocket/micro/configure`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    assert.equal(configured.status, 200);
+    assert.deepEqual(await configured.json(), { configured: true, message: "Configured Micro." });
+    assert.equal(microConfigurations.length, 1);
   });
 });
 

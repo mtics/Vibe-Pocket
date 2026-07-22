@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 
-const READ_ONLY_METHODS = new Set(["model/list", "thread/list", "thread/resume"]);
+const READ_ONLY_METHODS = new Set(["model/list", "thread/list", "thread/read"]);
 
 /**
  * Small JSON-RPC client for the locally installed `codex app-server` command.

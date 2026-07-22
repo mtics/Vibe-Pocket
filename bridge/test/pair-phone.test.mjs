@@ -18,6 +18,20 @@ const VALID_RESPONSE = JSON.stringify({
   expiresAt: "2099-01-01T00:05:00.000Z",
 });
 
+function expectedAdbCommand(deepLink) {
+  return [
+    "if pm path au.edu.uts.vibepocket >/dev/null 2>&1; then",
+    `  exec am start -W -n au.edu.uts.vibepocket/.MainActivity -a android.intent.action.VIEW -d ${deepLink}`,
+    "fi",
+    "if pm path au.edu.uts.vibepocket.research >/dev/null 2>&1; then",
+    `  exec am start -W -n au.edu.uts.vibepocket.research/au.edu.uts.vibepocket.MainActivity -a android.intent.action.VIEW -d ${deepLink}`,
+    "fi",
+    "echo 'Vibe Pocket is not installed.' >&2",
+    "exit 1",
+    "",
+  ].join("\n");
+}
+
 test("delegates a source checkout to the exact installed pairing launcher", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "vibe-pocket-pair-delegation-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -163,7 +177,11 @@ test("keeps the pairing URL and claim code out of Node and adb argv", async (t) 
   assert.match(adbStdin, new RegExp(CLAIM_CODE));
   assert.match(
     adbStdin,
-    /^exec am start -W -n au\.edu\.uts\.vibepocket\/\.MainActivity -a android\.intent\.action\.VIEW -d /,
+    /^if pm path au\.edu\.uts\.vibepocket >\/dev\/null 2>&1; then\n  exec am start -W -n au\.edu\.uts\.vibepocket\/\.MainActivity -a android\.intent\.action\.VIEW -d /,
+  );
+  assert.match(
+    adbStdin,
+    /au\.edu\.uts\.vibepocket\.research\/au\.edu\.uts\.vibepocket\.MainActivity/,
   );
   assert.doesNotMatch(adbStdin, /(?:^|\s)-p(?:\s|$)/);
 });
@@ -180,7 +198,7 @@ test("shell-quotes the deep link passed through adb stdin", async (t) => {
   const shellQuotedUrl = `'${quotedUrl.replaceAll("'", "'\\''")}'`;
   assert.equal(
     result.stdout,
-    `exec am start -W -n au.edu.uts.vibepocket/.MainActivity -a android.intent.action.VIEW -d ${shellQuotedUrl}\n`,
+    expectedAdbCommand(shellQuotedUrl),
   );
   assert.equal(result.stdout.includes("note=it's"), false);
 });

@@ -5,6 +5,7 @@ import { isAbsolute, relative, sep } from "node:path";
 import { open } from "./open.mjs";
 import { Activity } from "./activity.mjs";
 import { Settings } from "./settings.mjs";
+import { TargetBinding, canonicalWorkspaceId } from "./target.mjs";
 
 const MAX_THREADS = 100;
 const MAX_AGENT_COUNT = 24;
@@ -36,6 +37,7 @@ export class Catalog {
   #agentThreads = new Map();
   #activityReader;
   #settings;
+  #targetBinding;
   #focusedThreadId = null;
   #lastSuccessfulAgents = [];
   #failureStartedAt = null;
@@ -49,20 +51,34 @@ export class Catalog {
     fallbackTtlMs = DEFAULT_FALLBACK_TTL_MS,
     now = Date.now,
     workspaces = { default: process.cwd() },
+    bridgeInstanceId,
+    targetBinding = null,
   }) {
     if (!appServer) throw new TypeError("Catalog requires an app-server client.");
     this.#appServer = appServer;
     this.#openThread = openThread;
     this.#activityReader = activityReader;
     this.#settings = new Settings({ appServer });
+    this.#targetBinding = targetBinding ?? new TargetBinding({
+      ...(bridgeInstanceId == null ? {} : { bridgeInstanceId }),
+    });
     this.#cacheTtlMs = cacheTtlMs;
     this.#fallbackTtlMs = fallbackTtlMs;
     this.#now = now;
     this.#workspaces = canonicalWorkspaces(workspaces);
+    this.#appServer.on?.("transportReset", () => this.#onTransportReset());
   }
 
   get freshness() {
     return { ...this.#freshness };
+  }
+
+  get target() {
+    return this.#targetBinding.current;
+  }
+
+  get appServerGeneration() {
+    return this.#targetBinding.appServerGeneration;
   }
 
   async resolveVisibleAgents(visibleAgents) {
@@ -171,31 +187,38 @@ export class Catalog {
   async settings(visible) {
     await this.#ensureStarted();
     await this.#settings.start();
-    const thread = this.#cachedThreads.find(({ id }) => id === this.#focusedThreadId) ?? null;
-    return this.#settings.projection(thread, visible);
+    const target = this.#targetBinding.current;
+    const thread = target
+      ? this.#cachedThreads.find(({ id }) => id === target.threadId) ?? { id: target.threadId }
+      : null;
+    return this.#settings.projection(thread, visible, target);
   }
 
-  async selectModel(modelId) {
+  async selectModel(selection) {
     await this.#ensureStarted();
     await this.#settings.start();
-    return this.#settings.selectModel(modelId);
+    const target = this.#targetBinding.require(selection?.target);
+    return this.#settings.selectModel({ ...selection, target });
   }
 
-  async validateModel(modelId) {
+  async validateModel(selection) {
     await this.#ensureStarted();
-    return this.#settings.modelOption(modelId, { refresh: true });
+    const target = this.#targetBinding.require(selection?.target);
+    return this.#settings.modelOption({ ...selection, target }, { refresh: true });
   }
 
-  async adjustReasoning(delta) {
-    await this.#ensureStarted();
-    await this.#settings.start();
-    return this.#settings.adjustReasoning(delta);
-  }
-
-  async selectReasoning(level) {
+  async adjustReasoning(delta, target, effects) {
     await this.#ensureStarted();
     await this.#settings.start();
-    return this.#settings.selectReasoning(level);
+    target = this.#targetBinding.require(target);
+    return this.#settings.adjustReasoning(delta, target, effects);
+  }
+
+  async selectReasoning(selection) {
+    await this.#ensureStarted();
+    await this.#settings.start();
+    const target = this.#targetBinding.require(selection?.target);
+    return this.#settings.selectReasoning({ ...selection, target });
   }
 
   reasoningTarget(delta) {
@@ -206,7 +229,7 @@ export class Catalog {
     return this.#settings.hasReasoningLevel(level);
   }
 
-  async focusAgent(agentId) {
+  async focusAgent(agentId, effects = null) {
     if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) {
       throw new Error("A valid Codex task ID is required.");
     }
@@ -215,24 +238,78 @@ export class Catalog {
       throw new Error("That Codex task is no longer available.");
     }
     const thread = await this.#threadForOpen(candidate.id);
-    await this.#openThread(thread.id);
+    await commitEffect(effects, () => this.#openThread(thread.id));
+    const target = this.#bindTarget(thread);
     return {
       ok: true,
       agentId,
       threadId: thread.id,
+      target,
       message: "Opened the selected Codex task through its native task link.",
     };
   }
 
-  async focusThread(threadId) {
+  async selectAgent(agentId, effects = null) {
+    if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) {
+      throw new Error("A valid Codex task ID is required.");
+    }
+    const candidate = this.#agentThreads.get(agentId);
+    if (!candidate || this.#freshness.state !== "fresh") {
+      throw new Error("That Codex task is no longer available.");
+    }
+    const thread = await this.#threadForOpen(candidate.id);
+    const target = await commitEffect(effects, () => this.#bindTarget(thread));
+    return {
+      ok: true,
+      agentId,
+      threadId: thread.id,
+      target,
+      message: "Selected the Codex task as the Vibe Pocket control target.",
+    };
+  }
+
+  async focusThread(threadId, effects = null) {
     const thread = await this.#threadForOpen(threadId);
-    await this.#openThread(thread.id);
+    await commitEffect(effects, () => this.#openThread(thread.id));
+    const target = this.#bindTarget(thread);
     return {
       ok: true,
       agentId: agentIdForThread(thread.id),
       threadId: thread.id,
+      target,
       message: "Opened the requested Codex task through its native task link.",
     };
+  }
+
+  async bindThread(threadId) {
+    const thread = await this.#threadForOpen(threadId);
+    const target = this.#bindTarget(thread);
+    return {
+      ok: true,
+      agentId: agentIdForThread(thread.id),
+      threadId: thread.id,
+      target,
+      message: "Bound the requested Codex task through its native task catalog.",
+    };
+  }
+
+  async attachVisible(agentId, effects = null) {
+    if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) {
+      throw new Error("A single visible Codex task is required for attachment.");
+    }
+    const candidate = this.#agentThreads.get(agentId);
+    if (!candidate || candidate.id !== this.#focusedThreadId || this.#freshness.state !== "fresh") {
+      throw new Error("The visible Codex task changed before attachment.");
+    }
+    const thread = await this.#threadForOpen(candidate.id);
+    if (agentIdForThread(thread.id) !== agentId) {
+      throw new Error("The visible Codex task changed before attachment.");
+    }
+    return commitEffect(effects, () => this.#bindTarget(thread));
+  }
+
+  requireTarget(target) {
+    return this.#targetBinding.require(target);
   }
 
   async dispose() {
@@ -312,6 +389,7 @@ export class Catalog {
       ...thread,
       _catalogCanonicalCwd: workspace.canonicalPath,
       _catalogWorkspaceAlias: workspace.alias,
+      _catalogCanonicalWorkspaceId: workspace.canonicalWorkspaceId,
     };
   }
 
@@ -345,6 +423,23 @@ export class Catalog {
       error: error?.message ?? "The Codex task catalog is unavailable.",
     };
     return timestamp;
+  }
+
+  #bindTarget(thread) {
+    return this.#targetBinding.bind({
+      threadId: thread.id,
+      agentId: agentIdForThread(thread.id),
+      canonicalWorkspaceId: thread._catalogCanonicalWorkspaceId,
+    });
+  }
+
+  #onTransportReset() {
+    this.#targetBinding.transportReset();
+    this.#agentThreads.clear();
+    this.#focusedThreadId = null;
+    this.#cachedThreads = [];
+    this.#cacheExpiresAt = 0;
+    this.#started = false;
   }
 
   async #ensureStarted() {
@@ -440,7 +535,17 @@ function canonicalWorkspaces(workspaces) {
       throw new Error(`Catalog workspace could not be resolved safely: ${path}`, { cause: error });
     }
     if (!identity.isDirectory()) throw new Error(`Catalog workspace is not a directory: ${path}`);
-    return { alias, canonicalPath, dev: identity.dev, ino: identity.ino };
+    return {
+      alias,
+      canonicalPath,
+      dev: identity.dev,
+      ino: identity.ino,
+      canonicalWorkspaceId: canonicalWorkspaceId({
+        canonicalPath,
+        dev: identity.dev,
+        ino: identity.ino,
+      }),
+    };
   });
 }
 
@@ -503,4 +608,8 @@ function shortThreadKey(threadId) {
 
 export function agentIdForThread(threadId) {
   return `agent-${createHash("sha256").update(threadId).digest("hex").slice(0, 24)}`;
+}
+
+function commitEffect(effects, operation) {
+  return effects ? effects.commit(operation) : operation();
 }

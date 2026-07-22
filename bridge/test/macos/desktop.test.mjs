@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { EffectBoundary } from "../../src/control/effects.mjs";
 import { Desktop, prepareControlRequest } from "../../src/macos/desktop.mjs";
 import { agentIdForThread } from "../../src/task/catalog.mjs";
 
 const FOCUSED_AGENT_ID = agentIdForThread("thread-1");
+const TARGET = Object.freeze({
+  threadId: "thread-1",
+  agentId: FOCUSED_AGENT_ID,
+  bindingEpoch: 1,
+  bridgeInstanceId: "bridge-aaaaaaaaaaaaaaaa",
+  appServerGeneration: 0,
+  canonicalWorkspaceId: "workspace-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+});
 
 function effectBoundary(calls = []) {
   let crossed = false;
@@ -68,6 +77,7 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
   await controller.cycleMode();
   await controller.cycleAccess();
   await controller.openModel();
+  await controller.configureMicro();
   await controller.deleteBackward();
   await controller.clearInput();
   await controller.workflow("Review the visible task.");
@@ -79,26 +89,31 @@ test("maps semantic Codex controls to the prebuilt Swift helper", async () => {
     ["/tmp/vibe-pocket-test.sock", "plan-mode", [], ""],
     ["/tmp/vibe-pocket-test.sock", "access-cycle", [], ""],
     ["/tmp/vibe-pocket-test.sock", "model-picker", [], ""],
+    ["/tmp/vibe-pocket-test.sock", "configure-micro-reasoning", [], ""],
     ["/tmp/vibe-pocket-test.sock", "delete-backward", [], ""],
     ["/tmp/vibe-pocket-test.sock", "clear-input", [], ""],
     ["/tmp/vibe-pocket-test.sock", "workflow", [], "Review the visible task."],
   ]);
 });
 
-test("writes model and reasoning only through the bound app-server catalog", async () => {
+test("writes exact model and reasoning selections through app-server without desktop automation", async () => {
   const calls = [];
   const settings = {
-    binding: { threadId: "thread-1" },
+    target: TARGET,
     model: {
       available: true,
       id: "gpt-sol",
       label: "Sol",
-      options: [{ id: "gpt-sol", label: "Sol", selected: true }],
+      options: [
+        { id: "gpt-sol", label: "Sol", selected: true },
+        { id: "gpt-luna", label: "Luna", selected: false },
+      ],
     },
     reasoning: {
       available: true,
       label: "Minimal",
       level: "minimal",
+      options: ["minimal", "low"],
       canIncrease: true,
       canDecrease: false,
     },
@@ -106,46 +121,50 @@ test("writes model and reasoning only through the bound app-server catalog", asy
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
+      target: TARGET,
       async resolveVisibleAgents() {
         return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
       },
       async settings() { return settings; },
-      async validateModel({ id }) { return settings.model.options.find((option) => option.id === id); },
-      async selectModel({ id, effects }) {
-        return effects.commit(() => {
-          calls.push(["catalog", "selectModel", id]);
-          settings.model = {
-            ...settings.model,
-            id,
-            options: settings.model.options.map((option) => ({ ...option, selected: option.id === id })),
-          };
-          return settings;
-        });
+      async validateModel({ id, target }) {
+        assert.deepEqual(target, TARGET);
+        return settings.model.options.find((option) => option.id === id);
+      },
+      async selectModel({ id, target, effects }) {
+        assert.deepEqual(target, TARGET);
+        await effects.commit(async () => { calls.push(["app-server", "model", id]); });
+        settings.model = {
+          ...settings.model,
+          id,
+          label: "Luna",
+          options: settings.model.options.map((option) => ({ ...option, selected: option.id === id })),
+        };
+        return settings;
       },
       reasoningTarget() { return "low"; },
-      async selectReasoning({ level, effects }) {
-        return effects.commit(() => {
-          calls.push(["catalog", "selectReasoning", level]);
-          settings.reasoning = {
-            available: true,
-            label: "Low",
-            level,
-            canIncrease: true,
-            canDecrease: true,
-          };
-          return settings;
-        });
+      requireTarget(target) { assert.deepEqual(target, TARGET); },
+      hasReasoningLevel(level) { return ["minimal", "low"].includes(level); },
+      async selectReasoning({ level, target, effects }) {
+        assert.deepEqual(target, TARGET);
+        await effects.commit(async () => { calls.push(["app-server", "reasoning", level]); });
+        settings.reasoning = {
+          ...settings.reasoning,
+          label: "Low",
+          level,
+          canIncrease: false,
+          canDecrease: true,
+        };
+        return settings;
       },
     },
     run: async (_socketPath, action, args) => {
       calls.push(["helper", action, args]);
       return {
         ok: true,
-        foreground: true,
-        controls: { "model-picker": true, reasoning: true },
-        identity: { mutationToken: "desktop-0123456789abcdef01234567" },
+        foreground: false,
+        controls: { "model-picker": false, reasoning: false },
         agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
-        reasoning: { modelLabel: "Sol", level: "minimal" },
+        reasoning: { modelLabel: settings.model.label, level: settings.reasoning.level },
       };
     },
   });
@@ -154,35 +173,32 @@ test("writes model and reasoning only through the bound app-server catalog", asy
   assert.deepEqual(status.binding, { state: "confirmed", contextId: FOCUSED_AGENT_ID });
   assert.equal(status.controls.model, true);
   assert.equal(status.controls.reasoning, true);
-  await controller.selectModel("gpt-sol", effectBoundary(calls));
-  await controller.adjustReasoning(1, effectBoundary(calls));
+  await controller.selectModel("gpt-luna", TARGET, effectBoundary(calls));
+  await controller.adjustReasoning(1, TARGET, effectBoundary(calls));
 
   assert.deepEqual(calls, [
     ["helper", "status", []],
-    ["helper", "status", []],
-    ["helper", "status", []],
     ["effect", "commit"],
-    ["catalog", "selectModel", "gpt-sol"],
-    ["helper", "status", []],
-    ["helper", "status", []],
+    ["app-server", "model", "gpt-luna"],
     ["effect", "commit"],
-    ["catalog", "selectReasoning", "low"],
+    ["app-server", "reasoning", "low"],
   ]);
 });
 
-test("reports a conflict when the focused Agent and settings thread disagree", async () => {
+test("keeps task B target-bound while task A remains the only confirmed desktop focus", async () => {
   const otherAgentId = agentIdForThread("thread-2");
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
+      target: TARGET,
       async resolveVisibleAgents() {
         return [{ id: otherAgentId, label: "Other task", focused: true }];
       },
       async settings() {
         return {
-          binding: { threadId: "thread-1" },
+          target: TARGET,
           model: { available: true },
-          mode: { available: true },
+          mode: { available: false },
           reasoning: { available: true },
         };
       },
@@ -197,50 +213,161 @@ test("reports a conflict when the focused Agent and settings thread disagree", a
 
   const status = await controller.status();
 
-  assert.deepEqual(status.binding, { state: "conflict", contextId: otherAgentId });
-  assert.equal(status.controls.model, false);
-  assert.equal(status.controls.reasoning, false);
+  assert.deepEqual(status.binding, { state: "reconciling", contextId: otherAgentId });
+  assert.deepEqual(status.target, TARGET);
+  assert.equal(status.agents.find(({ focused }) => focused)?.id, otherAgentId);
+  assert.equal(status.controls.model, true);
+  assert.equal(status.controls.reasoning, true);
+  assert.equal(status.controls.approve, false);
   assert.equal(status.controls["mode-cycle"], false);
+  const effects = effectBoundary();
+  await assert.rejects(
+    () => controller.press("approve", effects),
+    /not confirmed as the visible desktop focus/i,
+  );
+  assert.equal(effects.crossed, false);
 });
 
-test("reports reconciliation while desktop identity evidence is incomplete", async () => {
+test("marks failed exact app-server evidence stale and disables target-bound settings", async () => {
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
+      target: TARGET,
       async resolveVisibleAgents() {
         return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
       },
       async settings() {
         return {
-          binding: { threadId: "thread-1" },
-          model: { available: true },
-          mode: { available: true },
-          reasoning: { available: true },
+          target: TARGET,
+          fresh: false,
+          model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
+          mode: { available: false, id: "default", label: "Default", options: [] },
+          reasoning: { available: true, label: "High", level: "high" },
         };
       },
     },
     run: async () => ({
       ok: true,
-      controls: { "model-picker": true, reasoning: true },
+      controls: { approve: true, reasoning: true },
       agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
     }),
   });
 
   const status = await controller.status();
 
-  assert.deepEqual(status.binding, { state: "reconciling", contextId: FOCUSED_AGENT_ID });
+  assert.equal(status.sources.appServer.fresh, false);
   assert.equal(status.controls.model, false);
   assert.equal(status.controls.reasoning, false);
+  assert.equal(status.model.available, false);
+  assert.equal(status.reasoning.available, false);
+  assert.equal(status.controls.approve, true);
+});
+
+test("advertises bound app-server settings without desktop controls or identity", async () => {
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      target: TARGET,
+      async resolveVisibleAgents() {
+        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
+      },
+      async settings() {
+        return {
+          target: TARGET,
+          model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
+          mode: { available: false, id: "default", label: "Default", options: [] },
+          reasoning: {
+            available: true,
+            label: "High",
+            level: "high",
+            canIncrease: true,
+            canDecrease: true,
+          },
+        };
+      },
+    },
+    run: async () => ({
+      ok: true,
+      taskState: "idle",
+      controls: { "model-picker": false, reasoning: false, stop: false },
+      agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
+    }),
+  });
+
+  const status = await controller.status();
+
+  assert.deepEqual(status.binding, { state: "confirmed", contextId: FOCUSED_AGENT_ID });
+  assert.equal(status.controls.model, true);
+  assert.equal(status.controls.reasoning, true);
+  assert.equal(status.controls["mode-cycle"], false);
+  assert.equal(status.model.available, true);
+  assert.equal(status.reasoning.available, true);
+  assert.equal(status.mode.available, false);
+});
+
+test("keeps bound model and reasoning available when the Host is unavailable", async () => {
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      target: TARGET,
+      freshness: { state: "fresh" },
+      async resolveVisibleAgents() { return []; },
+      async settings() {
+        return {
+          target: TARGET,
+          model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
+          mode: { available: false, id: "default", label: "Default", options: [] },
+          reasoning: {
+            available: true,
+            label: "High",
+            level: "high",
+            canIncrease: true,
+            canDecrease: true,
+          },
+        };
+      },
+    },
+    run: async () => { throw new Error("Host unavailable"); },
+  });
+
+  const status = await controller.status();
+
+  assert.deepEqual(status.target, TARGET);
+  assert.equal(status.sources.appServer.fresh, true);
+  assert.equal(status.sources.desktopUI.fresh, false);
+  assert.equal(status.controls.model, true);
+  assert.equal(status.controls.reasoning, true);
+  assert.equal(status.model.available, true);
+  assert.equal(status.reasoning.available, true);
+  assert.equal(status.controls["mode-cycle"], false);
+  assert.equal(status.voice.available, false);
+  assert.match(status.message, /Host unavailable/i);
+});
+
+test("rejects mode writes before crossing an effect boundary", async () => {
+  const calls = [];
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: { target: TARGET },
+    run: async () => { calls.push(["helper"]); return { ok: true }; },
+  });
+  const effects = effectBoundary(calls);
+
+  await assert.rejects(() => controller.selectMode("plan", effects), /disabled by protocol v12/i);
+
+  assert.deepEqual(calls, []);
+  assert.equal(effects.crossed, false);
 });
 
 test("reports an unbound desktop when no visible Agent is focused", async () => {
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
+      target: null,
       async resolveVisibleAgents() { return []; },
       async settings() {
         return {
-          binding: null,
+          target: null,
           model: { available: false },
           mode: { available: false },
           reasoning: { available: false },
@@ -260,12 +387,13 @@ test("rejects stale model IDs before any prefix-colliding desktop option can be 
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
+      target: TARGET,
       async resolveVisibleAgents() {
         return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
       },
       async settings() {
         return {
-          binding: { threadId: "thread-1" },
+          target: TARGET,
           model: {
             available: true,
             id: "gpt-solar",
@@ -275,7 +403,10 @@ test("rejects stale model IDs before any prefix-colliding desktop option can be 
           reasoning: { available: true, label: "Low", level: "low" },
         };
       },
-      async validateModel() { throw new Error("The requested Codex model is unavailable or stale."); },
+      async validateModel({ target }) {
+        assert.deepEqual(target, TARGET);
+        throw new Error("The requested Codex model is unavailable or stale.");
+      },
     },
     run: async (_socketPath, action, args) => {
       calls.push([action, args]);
@@ -291,31 +422,41 @@ test("rejects stale model IDs before any prefix-colliding desktop option can be 
   });
 
   const effects = effectBoundary(calls);
-  await assert.rejects(() => controller.selectModel("gpt-sol", effects), /unavailable or stale/i);
-  assert.deepEqual(calls, [["status", []]]);
+  await assert.rejects(() => controller.selectModel("gpt-sol", TARGET, effects), /unavailable or stale/i);
+  assert.deepEqual(calls, []);
   assert.equal(effects.crossed, false);
 });
 
-test("rejects both delta and exact reasoning changes while Stop is visible", async () => {
+test("selects reasoning through app-server while the desktop task is running", async () => {
   const calls = [];
+  const settings = {
+    target: TARGET,
+    model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
+    mode: { available: false, id: "default", label: "Default", options: [] },
+    reasoning: {
+      available: true,
+      label: "High",
+      level: "high",
+      canIncrease: true,
+      canDecrease: true,
+    },
+  };
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
-      async resolveVisibleAgents() { return []; },
-      async settings() {
-        return {
-          model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
-          reasoning: {
-            available: true,
-            label: "High",
-            level: "high",
-            canIncrease: true,
-            canDecrease: true,
-          },
-        };
+      target: TARGET,
+      async resolveVisibleAgents() {
+        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
       },
-      reasoningTarget() { return "xhigh"; },
+      async settings() { return settings; },
       hasReasoningLevel() { return true; },
+      requireTarget(target) { assert.deepEqual(target, TARGET); },
+      async selectReasoning({ level, target, effects }) {
+        assert.deepEqual(target, TARGET);
+        await effects.commit(async () => { calls.push(["app-server", "reasoning", level]); });
+        settings.reasoning = { ...settings.reasoning, level, label: "Extra high" };
+        return settings;
+      },
     },
     run: async (_socketPath, action, args) => {
       calls.push([action, args]);
@@ -323,26 +464,25 @@ test("rejects both delta and exact reasoning changes while Stop is visible", asy
         ok: true,
         taskState: "executing",
         controls: { stop: true, "model-picker": false, reasoning: false },
-        agents: [],
+        agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
         reasoning: { modelLabel: "Sol", level: "high" },
       };
     },
   });
 
-  const deltaEffects = effectBoundary(calls);
   const exactEffects = effectBoundary(calls);
-  await assert.rejects(() => controller.adjustReasoning(1, deltaEffects), /while .* running/i);
-  await assert.rejects(() => controller.selectReasoning("xhigh", exactEffects), /while .* running/i);
-  assert.deepEqual(calls, [["status", []], ["status", []]]);
-  assert.equal(deltaEffects.crossed, false);
-  assert.equal(exactEffects.crossed, false);
+  await controller.selectReasoning("xhigh", TARGET, exactEffects);
+  assert.deepEqual(calls, [
+    ["effect", "commit"],
+    ["app-server", "reasoning", "xhigh"],
+  ]);
+  assert.equal(exactEffects.crossed, true);
 });
 
-test("rejects a changed desktop identity before crossing the settings boundary", async () => {
+test("rejects a stale TargetRef before crossing the settings boundary", async () => {
   const calls = [];
-  let scans = 0;
   const settings = {
-    binding: { threadId: "thread-1" },
+    target: TARGET,
     model: {
       available: true,
       id: "gpt-sol",
@@ -354,67 +494,59 @@ test("rejects a changed desktop identity before crossing the settings boundary",
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
-      async resolveVisibleAgents() {
-        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
+      target: TARGET,
+      async validateModel({ target }) {
+        if (target.bindingEpoch !== TARGET.bindingEpoch) {
+          throw new Error("The bound Codex target changed at bindingEpoch before its settings mutation.");
+        }
+        return settings.model.options[0];
       },
-      async settings() { return settings; },
-      async validateModel({ id }) { return settings.model.options.find((option) => option.id === id); },
       async selectModel() { calls.push(["catalog", "selectModel"]); return settings; },
     },
-    run: async () => {
-      scans += 1;
-      return {
-        ok: true,
-        taskState: "idle",
-        controls: { "model-picker": true, reasoning: true },
-        identity: {
-          mutationToken: scans === 1
-            ? "desktop-0123456789abcdef01234567"
-            : "desktop-89abcdef0123456701234567",
-        },
-        agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
-        reasoning: { modelLabel: "Sol", level: "high" },
-      };
-    },
+    run: async () => { calls.push(["helper"]); return { ok: true }; },
   });
   const effects = effectBoundary(calls);
+  const staleTarget = { ...TARGET, bindingEpoch: TARGET.bindingEpoch + 1 };
 
   await assert.rejects(
-    () => controller.selectModel("gpt-sol", effects),
-    /task changed before/i,
+    () => controller.selectModel("gpt-sol", staleTarget, effects),
+    /changed at bindingEpoch/i,
   );
 
-  assert.equal(scans, 2);
   assert.equal(effects.crossed, false);
   assert.deepEqual(calls, []);
 });
 
-test("does not advertise companion settings while visible desktop controls are unavailable", async () => {
+test("keeps bound app-server settings mutable without desktop controls or a desktop token", async () => {
   const settings = {
+    target: TARGET,
     model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
     reasoning: { available: true, label: "Medium", level: "medium", canIncrease: true, canDecrease: true },
   };
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
     threadCatalog: {
-      async resolveVisibleAgents() { return []; },
+      target: TARGET,
+      async resolveVisibleAgents() {
+        return [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }];
+      },
       async settings() { return settings; },
     },
     run: async () => ({
       ok: true,
       foreground: false,
       controls: { "model-picker": false, reasoning: false },
-      agents: [],
+      agents: [{ id: FOCUSED_AGENT_ID, label: "Focused task", focused: true }],
       reasoning: { modelLabel: "Sol", level: "medium" },
     }),
   });
 
   const status = await controller.status();
 
-  assert.equal(status.controls.model, false);
-  assert.equal(status.controls.reasoning, false);
-  assert.equal(status.model.available, false);
-  assert.equal(status.reasoning.available, false);
+  assert.equal(status.controls.model, true);
+  assert.equal(status.controls.reasoning, true);
+  assert.equal(status.model.available, true);
+  assert.equal(status.reasoning.available, true);
 });
 
 test("routes push-to-talk to the verified desktop dictation state", async () => {
@@ -431,23 +563,19 @@ test("routes push-to-talk to the verified desktop dictation state", async () => 
   ]);
 });
 
-test("opens an exact desktop task and attaches only after catalog focus confirmation", async () => {
+test("binds an exact semantic task without requiring desktop focus", async () => {
   const calls = [];
-  let opened = false;
   const targetId = "agent-111111111111111111111111";
+  const target = { ...TARGET, agentId: targetId, threadId: "019f2ce2-e042-7ab0-a73d-9fa41d58e210" };
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
-    focusPollAttempts: 2,
-    wait: async (milliseconds) => { calls.push(["wait", milliseconds]); },
     threadCatalog: {
-      async focusThread(threadId) {
-        calls.push(["focusThread", threadId]);
-        opened = true;
-        return { agentId: targetId };
+      async bindThread(threadId) {
+        calls.push(["bindThread", threadId]);
+        return { agentId: targetId, target };
       },
       async resolveVisibleAgents() {
-        calls.push(["resolveVisibleAgents"]);
-        return [{ id: targetId, label: "Bound", state: "idle", focused: opened }];
+        return [{ id: targetId, label: "Bound task", focused: true }];
       },
     },
     run: async (socketPath, action, args, input = "") => {
@@ -456,16 +584,42 @@ test("opens an exact desktop task and attaches only after catalog focus confirma
     },
   });
 
-  await controller.bindThread("019f2ce2-e042-7ab0-a73d-9fa41d58e210");
+  const bound = await controller.bindThread(
+    "019f2ce2-e042-7ab0-a73d-9fa41d58e210",
+    effectBoundary(calls),
+  );
+  assert.deepEqual(bound.target, target);
   assert.deepEqual(calls, [
-    ["focusThread", "019f2ce2-e042-7ab0-a73d-9fa41d58e210"],
-    ["/tmp/vibe-pocket-test.sock", "status", [], ""],
-    ["resolveVisibleAgents"],
-    ["/tmp/vibe-pocket-test.sock", "attach", [], ""],
+    ["effect", "commit"],
+    ["bindThread", "019f2ce2-e042-7ab0-a73d-9fa41d58e210"],
   ]);
   const lifecycle = controller.applyLifecycleHook("Stop", {});
   assert.equal(lifecycle.accepted, false);
   assert.deepEqual(await lifecycle.response, {});
+});
+
+test("selects a controller Agent without opening or polling the desktop focus", async () => {
+  const calls = [];
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    threadCatalog: {
+      async selectAgent(agentId, effects) {
+        calls.push(["selectAgent", agentId]);
+        await effects.commit(async () => { calls.push(["bind"]); });
+        return { agentId, target: TARGET };
+      },
+    },
+    run: async () => { throw new Error("desktop helper must not run"); },
+  });
+
+  const selected = await controller.selectAgent(FOCUSED_AGENT_ID, effectBoundary(calls));
+
+  assert.deepEqual(selected.target, TARGET);
+  assert.deepEqual(calls, [
+    ["selectAgent", FOCUSED_AGENT_ID],
+    ["effect", "commit"],
+    ["bind"],
+  ]);
 });
 
 test("resolves and focuses Agent keys through native task links instead of Accessibility", async () => {
@@ -482,7 +636,7 @@ test("resolves and focuses Agent keys through native task links instead of Acces
     async focusAgent(agentId) {
       calls.push(["nativeFocus", agentId]);
       requestedFocus = agentId;
-      return { ok: true, message: "opened", agentId };
+      return { ok: true, message: "opened", agentId, target: TARGET };
     },
     async dispose() {
       calls.push(["dispose"]);
@@ -545,7 +699,7 @@ test("allows native Agent navigation while Codex is not frontmost", async () => 
   assert.equal(focused, true);
 });
 
-test("holds a following desktop action until delayed deep-link focus is observed", async () => {
+test("holds a following desktop action until the TargetRef focus lease is confirmed", async () => {
   const calls = [];
   let observations = 0;
   const currentId = "agent-111111111111111111111111";
@@ -558,7 +712,7 @@ test("holds a following desktop action until delayed deep-link focus is observed
     threadCatalog: {
       async focusAgent(agentId) {
         calls.push(["open", agentId]);
-        return { agentId };
+        return { agentId, target: TARGET };
       },
       async resolveVisibleAgents() {
         observations += 1;
@@ -584,21 +738,75 @@ test("holds a following desktop action until delayed deep-link focus is observed
     > calls.findIndex((call) => call[0] === "observe" && call[1] === "target"));
 });
 
-test("times out a no-op deep link without executing its dependent action", async () => {
+test("keeps the selected control target distinct from the visible desktop binding", async () => {
   const calls = [];
   const currentId = "agent-111111111111111111111111";
   const targetId = "agent-222222222222222222222222";
+  const target = { ...TARGET, agentId: targetId, threadId: "thread-b" };
+  let boundTarget = null;
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
-    focusPollAttempts: 3,
-    wait: async () => {},
+    focusPollAttempts: 1,
     threadCatalog: {
-      async focusAgent(agentId) { calls.push(["open", agentId]); return { agentId }; },
+      get target() { return boundTarget; },
+      async focusAgent(agentId) {
+        calls.push(["open", agentId]);
+        boundTarget = target;
+        return { agentId, target };
+      },
       async resolveVisibleAgents() {
-        calls.push(["observe", "current"]);
+        calls.push(["observe"]);
         return [
-          { id: currentId, label: "Current", state: "idle", focused: true },
-          { id: targetId, label: "Target", state: "idle", focused: false },
+          { id: currentId, label: "Task A", state: "idle", focused: true },
+          { id: targetId, label: "Task B", state: "idle", focused: false },
+        ];
+      },
+      async settings() {
+        return {
+          fresh: true,
+          target,
+          model: { available: true, id: "gpt-sol", label: "Sol", options: [] },
+          mode: { available: false },
+          reasoning: { available: true, level: "high", label: "High" },
+        };
+      },
+    },
+    run: async () => {
+      calls.push(["helper"]);
+      return { ok: true, controls: { approve: true }, agents: [] };
+    },
+  });
+
+  await assert.rejects(() => controller.focusAgent(targetId), /focus timeout/i);
+  const status = await controller.status();
+
+  assert.deepEqual(status.target, target);
+  assert.deepEqual(status.binding, { state: "reconciling", contextId: currentId });
+  assert.equal(status.agents.find(({ focused }) => focused)?.id, targetId);
+  assert.equal(status.controls.approve, false);
+  assert.equal(status.controls.model, true);
+  assert.equal(status.controls.reasoning, true);
+});
+
+test("rechecks a revoked credential after the desktop queue and focus lease unblock", async () => {
+  const calls = [];
+  const currentId = "agent-111111111111111111111111";
+  const targetId = "agent-222222222222222222222222";
+  let targetFocused = false;
+  const focusWait = Promise.withResolvers();
+  const controller = new Desktop({
+    socketPath: "/tmp/vibe-pocket-test.sock",
+    focusPollAttempts: 2,
+    wait: async () => focusWait.promise,
+    threadCatalog: {
+      async focusAgent(agentId, effects) {
+        await effects.commit(async () => { calls.push(["open", agentId]); });
+        return { agentId, target: TARGET };
+      },
+      async resolveVisibleAgents() {
+        return [
+          { id: currentId, label: "Task A", state: "idle", focused: !targetFocused },
+          { id: targetId, label: "Task B", state: "idle", focused: targetFocused },
         ];
       },
     },
@@ -608,39 +816,38 @@ test("times out a no-op deep link without executing its dependent action", async
     },
   });
 
-  await assert.rejects(async () => {
-    await controller.focusAgent(targetId);
-    await controller.press("new-task");
-  }, /focus timeout/i);
+  const focus = controller.focusAgent(targetId, new EffectBoundary());
+  await new Promise((resolve) => setImmediate(resolve));
+  let valid = true;
+  const actionEffects = new EffectBoundary(() => valid);
+  const action = controller.press("new-task", actionEffects);
 
-  assert.equal(calls.filter((call) => call[0] === "observe").length, 3);
-  assert.equal(calls.some((call) => call[0] === "helper" && call[1] === "control"), false);
+  valid = false;
+  targetFocused = true;
+  focusWait.resolve();
+
+  await focus;
+  await assert.rejects(
+    action,
+    (error) => error.code === "credential_revoked",
+  );
+  assert.equal(actionEffects.crossed, false);
+  assert.equal(calls.some(([kind, actionName]) => kind === "helper" && actionName === "control"), false);
 });
 
-test("never confirms focus from the cached catalog when fresh observations fail", async () => {
+test("propagates native catalog focus failure without Host fallback", async () => {
   const targetId = "agent-222222222222222222222222";
-  let failCatalog = false;
-  let catalogCalls = 0;
+  let hostCalls = 0;
   const controller = new Desktop({
     socketPath: "/tmp/vibe-pocket-test.sock",
-    focusPollAttempts: 3,
-    wait: async () => {},
     threadCatalog: {
-      async focusAgent(agentId) { return { agentId }; },
-      async resolveVisibleAgents() {
-        catalogCalls += 1;
-        if (failCatalog) throw new Error("temporary app-server failure");
-        return [{ id: targetId, label: "Target", state: "idle", focused: true }];
-      },
+      async focusAgent() { throw new Error("temporary app-server failure"); },
     },
-    run: async () => ({ ok: true, controls: {}, agents: [] }),
+    run: async () => { hostCalls += 1; return { ok: true, controls: {}, agents: [] }; },
   });
 
-  await controller.status();
-  failCatalog = true;
-
-  await assert.rejects(() => controller.focusAgent(targetId), /focus timeout/i);
-  assert.equal(catalogCalls, 4);
+  await assert.rejects(() => controller.focusAgent(targetId), /temporary app-server failure/i);
+  assert.equal(hostCalls, 0);
 });
 
 test("retains the last task catalog across a transient catalog refresh failure", async () => {

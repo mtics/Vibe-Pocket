@@ -171,7 +171,7 @@ test("recovers after a child error before the next request", async () => {
   assert.equal(children.length, 2);
 });
 
-test("restarts a hung read-only request once and bounds the retry", async () => {
+test("restarts a hung thread read once and never treats resume as read-only", async () => {
   const children = [];
   let resets = 0;
   const appServer = new Rpc({
@@ -180,8 +180,8 @@ test("restarts a hung read-only request once and bounds the retry", async () => 
       const generation = children.length;
       const child = scriptedProcess((message, process) => {
         if (message.method === "initialize") return reply(process, message, {});
-        if (message.method === "thread/resume" && generation === 1) {
-          reply(process, message, { model: "gpt-test" });
+        if (message.method === "thread/read" && generation === 1) {
+          reply(process, message, { thread: { id: "thread-a" } });
         }
       });
       children.push(child);
@@ -190,15 +190,21 @@ test("restarts a hung read-only request once and bounds the retry", async () => 
   });
   appServer.on("transportReset", () => { resets += 1; });
 
-  assert.deepEqual(await appServer.request("thread/resume", { threadId: "thread-a" }), {
-    model: "gpt-test",
+  assert.deepEqual(await appServer.request("thread/read", { threadId: "thread-a" }), {
+    thread: { id: "thread-a" },
   });
   assert.equal(children.length, 2);
   assert.equal(resets, 1);
   assert.equal(
-    children.flatMap((child) => child.messages).filter(({ method }) => method === "thread/resume").length,
+    children.flatMap((child) => child.messages).filter(({ method }) => method === "thread/read").length,
     2,
   );
+
+  await assert.rejects(
+    () => appServer.request("thread/resume", { threadId: "thread-b" }),
+    /timed out.*thread\/resume/i,
+  );
+  assert.equal(children.length, 2);
 });
 
 test("times out but never retries an in-flight settings mutation", async () => {
